@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
-from wg_manager.models import NodeStatus
+from wg_manager.models import NodeStatus, SSHKeyMode
 
 
 # Smallest prefix length that still leaves usable host space for a server
@@ -101,6 +101,12 @@ class SSHKeyRead(BaseModel):
     row. Post-Alembic-0005 every row should report ``True`` in steady
     state; a ``False`` here flags a row that was inserted bypassing
     the encryption seam (direct INSERT, restored old backup).
+
+    ``mode`` (Phase 2c CP4.1) is the row's per-key auth mode. A
+    ``legacy`` row authenticates via the stored ciphertext key; a
+    ``ca`` row mints a fresh user cert from the SSH CA at every
+    connection. Drives the dashboard "SSH roles" badge and the
+    rollout-progress view that ships in CP4.3.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -109,6 +115,7 @@ class SSHKeyRead(BaseModel):
     name: str
     created_at: datetime
     encrypted: bool = False
+    mode: SSHKeyMode = SSHKeyMode.legacy
 
     @model_validator(mode="before")
     @classmethod
@@ -123,6 +130,11 @@ class SSHKeyRead(BaseModel):
                 "name": value.name,
                 "created_at": value.created_at,
                 "encrypted": value.private_key_ct is not None,
+                # ``mode`` is populated on the ORM row by CP4.1's
+                # migration (defaults to ``legacy``); surface it
+                # verbatim so the dashboard reads the row's truth and
+                # not an inferred value.
+                "mode": value.mode,
             }
         return value
 

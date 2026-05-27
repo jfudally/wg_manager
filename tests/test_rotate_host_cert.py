@@ -28,7 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.conftest import FakeSSHRunner
+from tests.conftest import FakeSSHRunner, promote_all_keys_to_ca
 from wg_manager.models import Server
 
 
@@ -55,13 +55,27 @@ def _enable_ca_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SSH_CA_LOCAL_DEV_PEM", raising=False)
 
 
-def _register_server(client: TestClient, hostname: str) -> int:
+def _register_server(
+    client: TestClient,
+    hostname: str,
+    *,
+    ca_mode_session: Session | None = None,
+) -> int:
+    """Register an SSH key + server.
+
+    Pass ``ca_mode_session=session`` (Phase 2c CP4.1) to flip the
+    freshly-created SSH key into CA mode before the server POST, so
+    the task layer routes through the cert branch and CP3's host-cert
+    install runs.
+    """
     key_id = int(
         client.post(
             "/ssh-keys",
             json={"name": "cp3-rot", "private_key_b64": _SAMPLE_PEM_B64},
         ).json()["id"]
     )
+    if ca_mode_session is not None:
+        promote_all_keys_to_ca(ca_mode_session)
     resp = client.post(
         "/servers",
         json={
@@ -87,12 +101,15 @@ class TestRotateHostCertEndpoint:
         self,
         client: TestClient,
         engine: object,
+        session: Session,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable_ca_mode(monkeypatch)
         host = "rot-ok.example.com"
         _register_host_pubkey(host)
-        server_id = _register_server(client, host)
+        # CP4.1: ca_mode_session promotes the SSH key into CA mode so
+        # the row's key passes the rotate endpoint's precondition.
+        server_id = _register_server(client, host, ca_mode_session=session)
 
         resp = client.post(f"/servers/{server_id}/rotate-host-cert")
 
@@ -152,12 +169,14 @@ class TestRotateHostCertTask:
         self,
         client: TestClient,
         engine: object,
+        session: Session,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable_ca_mode(monkeypatch)
         host = "rot-overwrite.example.com"
         _register_host_pubkey(host)
-        server_id = _register_server(client, host)
+        # CP4.1: ca_mode_session promotes the SSH key into CA mode.
+        server_id = _register_server(client, host, ca_mode_session=session)
 
         # Snapshot the first cert's serial so we can prove rotation
         # produced a different one.

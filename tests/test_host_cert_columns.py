@@ -188,7 +188,12 @@ class TestHostCertMigration:
         from alembic import command
 
         cfg = _alembic_config(file_db_url)
-        command.upgrade(cfg, "head")
+        # Pin the upgrade target to 0006 so this test stays scoped to
+        # the CP3 migration even as later revisions (0007 ``mode``
+        # column, etc.) accumulate on the chain. A bare ``head``
+        # would otherwise include those later columns and ``-1`` would
+        # roll back the most recent revision rather than 0006.
+        command.upgrade(cfg, "0006_host_cert_columns")
         before = self._columns(file_db_url)
         command.downgrade(cfg, "-1")
         after = self._columns(file_db_url)
@@ -209,9 +214,11 @@ class TestHostCertMigration:
         from alembic import command
 
         cfg = _alembic_config(file_db_url)
-        command.upgrade(cfg, "head")
+        # Pin to 0006 (see the sibling test) so the round-trip stays
+        # scoped to the CP3 migration body.
+        command.upgrade(cfg, "0006_host_cert_columns")
         command.downgrade(cfg, "-1")
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0006_host_cert_columns")
         cols = self._columns(file_db_url)
         for name in _HOST_CERT_COLUMNS:
             assert name in cols

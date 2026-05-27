@@ -9,6 +9,15 @@
 
 export type NodeStatus = "pending" | "ready" | "error";
 
+/**
+ * Per-row SSH auth mode (Phase 2c CP4.1). A `legacy` row still
+ * carries an encrypted private-key body in `private_key_ct` and
+ * authenticates via the historical Phase 2b path; a `ca` row is a
+ * label only — every connection mints a short-lived user cert from
+ * the SSH CA and presents that instead.
+ */
+export type SSHKeyMode = "legacy" | "ca";
+
 export interface SSHKey {
   id: number;
   name: string;
@@ -21,6 +30,13 @@ export interface SSHKey {
    * rewrapping. The Crypto Status panel surfaces the aggregate count.
    */
   encrypted: boolean;
+  /**
+   * Per-row auth mode. Defaults to `legacy` on every existing row
+   * after Alembic 0007 backfills, and flips to `ca` once an operator
+   * runs `wg-manager ssh migrate-to-ca <id>` (CP4.2). Drives the
+   * "SSH roles" badge + migration affordance on the keys page.
+   */
+  mode: SSHKeyMode;
 }
 
 export interface SSHKeyCreate {

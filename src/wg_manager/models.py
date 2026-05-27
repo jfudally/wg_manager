@@ -22,6 +22,33 @@ class NodeStatus(str, Enum):
     error = "error"
 
 
+class SSHKeyMode(str, Enum):
+    """How wg-manager authenticates to hosts that use a given :class:`SSHKey`.
+
+    Phase 2c CP4.1 introduces this as a per-row switch so a fleet can
+    migrate to the SSH CA host-by-host rather than via the global
+    ``SSH_AUTH_MODE`` flag CP2 shipped.
+
+    :cvar legacy: The row carries an encrypted private key in
+        ``private_key_ct``; the task layer decrypts it and authenticates
+        via the historical Phase 2b path. This is the default for any
+        row inserted before CP4.1.
+    :cvar ca: The row is a label only; no plaintext private material
+        lives on it. Each connection mints a short-lived user cert from
+        the SSH CA (see :mod:`wg_manager.ssh_ca`) and presents it to
+        the host. CP4.2's ``wg-manager ssh migrate-to-ca`` is the
+        supported way to flip a row from ``legacy`` to ``ca`` because
+        the operation has to install CA trust on every server first.
+
+    Subclassing ``str`` keeps the enum JSON-serialisable as its value
+    (``"legacy"`` / ``"ca"``) — the schema layer in CP4.1c relies on
+    that so dashboards and CLI clients see plain string literals.
+    """
+
+    legacy = "legacy"
+    ca = "ca"
+
+
 def _utcnow() -> datetime:
     """Return the current UTC timestamp.
 
@@ -41,6 +68,18 @@ class SSHKey(SQLModel, table=True):
     through :func:`wg_manager.crypto.resolve_sshkey_private` and
     :func:`wg_manager.crypto.resolve_sshkey_passphrase`; the row itself
     no longer carries any plaintext attribute.
+
+    Phase 2c CP4.1 layers on :attr:`mode`, the per-row switch between
+    legacy stored-key auth and CA-minted user-cert auth. See
+    :class:`SSHKeyMode` for the semantics; the task layer reads this
+    field (not the global ``SSH_AUTH_MODE`` env var) to decide which
+    auth path to use for any given connection. ``ca`` rows have NULL
+    ciphertext columns once CP4.4 drops them; until then they remain
+    populated but ignored.
+
+    :ivar mode: ``legacy`` (default) or ``ca``. Flipped from ``legacy``
+        to ``ca`` by ``wg-manager ssh migrate-to-ca`` once the CA trust
+        anchor is installed on every server using the row.
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -50,11 +89,16 @@ class SSHKey(SQLModel, table=True):
         sa_column=Column(Text, nullable=True),
     )
     passphrase_ct: str | None = None
+    # Phase 2c CP4.1 — per-row auth mode. Defaults to ``legacy`` so any
+    # row created before this migration (or inserted via a Phase 2b
+    # codepath in mixed-deploy environments) behaves exactly as before
+    # until the operator runs ``wg-manager ssh migrate-to-ca``.
+    mode: SSHKeyMode = Field(default=SSHKeyMode.legacy)
     created_at: datetime = Field(default_factory=_utcnow)
 
     def __repr__(self) -> str:
         return (
-            f"SSHKey(id={self.id!r}, name={self.name!r}, "
+            f"SSHKey(id={self.id!r}, name={self.name!r}, mode={self.mode!r}, "
             # ``_ct`` columns are encrypted blobs and safe to log, but we
             # still render them as "<set>" / "None" because the raw blob
             # bodies are 200+ bytes of base64 noise that crowds out useful

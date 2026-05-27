@@ -39,7 +39,7 @@ from cryptography.hazmat.primitives.serialization import (
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.conftest import FakeSSHRunner
+from tests.conftest import FakeSSHRunner, promote_all_keys_to_ca
 from wg_manager.models import NodeStatus, Server
 
 
@@ -134,7 +134,10 @@ class TestProvisionServerCertMode:
     """``provision_server_task`` mints a per-session user cert under CA mode."""
 
     def test_runner_receives_cert_and_ca(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+        self,
+        client: TestClient,
+        session: Session,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable_ca_mode(monkeypatch)
         # CP3 host-cert install runs at the end of CA-mode provisioning
@@ -155,6 +158,11 @@ class TestProvisionServerCertMode:
                 json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
             ).json()["id"]
         )
+        # CP4.1: routing is per-row. Flip the freshly-created key into
+        # ``mode='ca'`` before provisioning so the task layer picks the
+        # cert branch. The CLI shipped in CP4.2 will be the production
+        # path; tests use the conftest helper for brevity.
+        promote_all_keys_to_ca(session)
         resp = client.post(
             "/servers",
             json={
@@ -194,7 +202,10 @@ class TestReconfigureServerCertMode:
     """``reconfigure_server_task`` (the post-client-add fast path) also mints."""
 
     def test_runner_receives_cert_and_ca(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+        self,
+        client: TestClient,
+        session: Session,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Bootstrap without CA mode so the initial provision uses legacy creds
         # (we're not testing the bootstrap path here — we're testing what
@@ -202,6 +213,9 @@ class TestReconfigureServerCertMode:
         server_id = _bootstrap_ready_server(client, hostname="hub2.example.com")
 
         _enable_ca_mode(monkeypatch)
+        # CP4.1: flip the bootstrap-created key into CA mode before the
+        # reconfigure act so the task layer picks the cert branch.
+        promote_all_keys_to_ca(session)
         from wg_manager.tasks import reconfigure_server_task
 
         reconfigure_server_task(server_id)
@@ -224,12 +238,15 @@ class TestProvisionClientCertMode:
         self,
         client: TestClient,
         engine: object,
+        session: Session,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         # Bootstrap the server in legacy mode so it lands ``ready`` cheaply.
         server_id = _bootstrap_ready_server(client, hostname="hub3.example.com")
 
         _enable_ca_mode(monkeypatch)
+        # CP4.1: flip the key into CA mode now that bootstrap is done.
+        promote_all_keys_to_ca(session)
         client_resp = client.post(
             "/clients",
             json={
@@ -265,11 +282,16 @@ class TestDiscoverPeersCertMode:
     """Discovery is read-only but still goes over SSH — must use CA mode too."""
 
     def test_runner_receives_cert_and_ca(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+        self,
+        client: TestClient,
+        session: Session,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         server_id = _bootstrap_ready_server(client, hostname="hub4.example.com")
 
         _enable_ca_mode(monkeypatch)
+        # CP4.1: flip the key into CA mode after bootstrap.
+        promote_all_keys_to_ca(session)
         # Provide a minimal valid `wg show wg0 dump` body so discovery
         # succeeds — this isolates the test to the *runner construction*
         # path rather than the discovery-error fallback.

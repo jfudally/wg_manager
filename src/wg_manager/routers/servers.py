@@ -10,7 +10,14 @@ from sqlmodel import Session, select
 
 from wg_manager.config import settings
 from wg_manager.db import get_session
-from wg_manager.models import Client, DiscoveredPeer, NodeStatus, SSHKey, Server
+from wg_manager.models import (
+    Client,
+    DiscoveredPeer,
+    NodeStatus,
+    SSHKey,
+    SSHKeyMode,
+    Server,
+)
 from wg_manager.schemas import (
     DiscoverAllResponse,
     DiscoveredPeerRead,
@@ -290,37 +297,47 @@ def rotate_server_host_cert(
     overwrites the row's ``host_cert_*`` columns with the freshly-
     minted cert (new serial, new validity window).
 
-    Refuses synchronously with **409** when
-    :attr:`wg_manager.config.Settings.ssh_auth_mode` is not
-    ``"ca"`` — host certs are a CA-mode concept; rotating in legacy
-    mode would silently no-op the row and confuse the operator. Use
-    ``SSH_AUTH_MODE=ca`` (plus a configured SSH CA backend) to enable
-    the rotation path.
+    Refuses synchronously with **409** when the server's
+    :class:`SSHKey` is not in :attr:`~SSHKeyMode.ca` mode — host certs
+    are a CA-mode concept; rotating one for a row that authenticates
+    with a stored private key would silently no-op and confuse the
+    operator. Phase 2c CP4.1 moved this precondition from the global
+    ``SSH_AUTH_MODE`` env var onto the row's
+    :attr:`~wg_manager.models.SSHKey.mode` column; the migration path
+    is ``wg-manager ssh migrate-to-ca <key_id>`` (CP4.2).
 
     :return: ``{task_id, server}`` — task to poll, plus the row as it
         was at dispatch time. The row's columns update once the task
         completes; the dashboard re-queries to pick up the new cert.
     :raises HTTPException: 404 when ``server_id`` doesn't exist; 409
-        when ``ssh_auth_mode != "ca"``.
+        when the row's SSH key is not in CA mode.
     """
     row = session.get(Server, server_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Server not found")
 
-    # Re-read Settings rather than trusting the module-level singleton:
-    # the test suite flips ``SSH_AUTH_MODE`` via ``monkeypatch.setenv``
-    # and the endpoint must observe that change without a process
-    # restart. In production the value is stable across the process
-    # lifetime, so the re-read is a no-op cost.
-    from wg_manager.config import Settings as _Settings
-
-    if _Settings().ssh_auth_mode.lower() != "ca":
+    ssh_key = session.get(SSHKey, row.ssh_key_id)
+    if ssh_key is None:
+        # The FK is non-nullable so this shouldn't happen, but a 409 is
+        # more honest than a 500 if a row's referenced key got deleted
+        # behind a broken constraint.
         raise HTTPException(
             status_code=409,
             detail=(
-                "host-cert rotation requires SSH_AUTH_MODE=ca; "
-                f"current value is {_Settings().ssh_auth_mode!r}. "
-                "See docs/vault-cookbook.md §3 for the CA-mode setup."
+                f"server {row.id} references SSHKey {row.ssh_key_id} "
+                f"which no longer exists; reassign before rotating"
+            ),
+        )
+    if ssh_key.mode != SSHKeyMode.ca:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"host-cert rotation requires SSHKey {ssh_key.id} "
+                f"({ssh_key.name!r}) to be in CA mode; current value "
+                f"is {ssh_key.mode.value!r}. Run "
+                f"`wg-manager ssh migrate-to-ca {ssh_key.id}` first, "
+                f"or see docs/vault-cookbook.md §3 for the CA-mode "
+                f"setup."
             ),
         )
 

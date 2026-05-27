@@ -361,6 +361,56 @@ tests/test_rotate_host_cert.py`):
 (Plus 2 vitest specs in `web/__tests__/servers-host-cert.test.tsx`
 covering the dashboard rotation button + cert summary line.)
 
+### Phase 2c checkpoint 4.1 — per-key auth mode shipped (2026-05-27)
+
+CP4 reframes the `sshkey` table from "credential store" to "role
+label" by moving the auth-mode decision off the global
+`SSH_AUTH_MODE` env var and onto the row itself. 4.1 ships just the
+column + routing flip; 4.2 will ship the
+`wg-manager ssh migrate-to-ca <id>` CLI that walks a legacy row
+through to `ca`.
+
+What CP4.1 turns on:
+
+1. **`SSHKey.mode` column** (Alembic 0007). VARCHAR(16), NOT NULL,
+   server-default `'legacy'`. Existing rows are backfilled to
+   `'legacy'` so a populated Phase 2b/2c DB stays consistent
+   without operator action. The enum is a `str` subclass
+   ([`wg_manager.models.SSHKeyMode`](../src/wg_manager/models.py))
+   so JSON / SQL serialise to the literal value, not the Python
+   repr — important for the dashboard and for the CP4.2 migration
+   CLI's `WHERE mode = 'legacy'` lookups.
+2. **Per-row routing.** [`wg_manager.tasks._open_runner`](../src/wg_manager/tasks.py)
+   and `_maybe_install_host_cert` now branch on `ssh_key.mode`,
+   not `settings.ssh_auth_mode`. The
+   `POST /servers/{id}/rotate-host-cert` endpoint's 409 precondition
+   reads the row's key mode too, and its detail string names the
+   exact `wg-manager ssh migrate-to-ca <key_id>` invocation an
+   operator needs to run. `SSH_AUTH_MODE` survives in
+   [`Settings`](../src/wg_manager/config.py) for backwards compat
+   but is no longer consulted on any code path — CP4.4 removes the
+   setting once every row is `ca`.
+3. **API surface.** `SSHKeyRead` (`GET /ssh-keys`, `POST /ssh-keys`,
+   `GET /ssh-keys/{id}`) carries `mode`. `web/lib/types.ts` mirrors
+   the `SSHKeyMode` literal so the CP4.3 dashboard reframe can
+   render the badge without a backend round-trip.
+
+```bash
+# .env additions on top of CP3 — none. The CP2 SSH_AUTH_MODE setting
+# stays in place but is now a no-op; the column drives routing.
+```
+
+Test snapshot (`pytest -q tests/test_ssh_key_mode.py`):
+
+```
+13 passed in ~0.4s
+```
+
+Plus 8 CP2 / CP3 tests refactored to use the new
+`promote_all_keys_to_ca(session)` conftest helper instead of relying
+on `SSH_AUTH_MODE=ca` to flip routing. Full suite 216/216 green in
+`local` mode; dashboard vitest 26/26.
+
 ### Target-host setup (Phase 2c provisioning step)
 
 The managed host needs to trust the CA. Provisioning writes:

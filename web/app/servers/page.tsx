@@ -311,7 +311,7 @@ function ServerTable({
                   size="sm"
                   onClick={() => rotateHostCert.mutate(s.id)}
                   disabled={rotateHostCert.isPending}
-                  title="Re-mint and install this server's SSH host cert (requires SSH_AUTH_MODE=ca)"
+                  title="Re-mint and install this server's SSH host cert (requires the server's SSH key to be in CA mode — see the SSH keys page)"
                 >
                   Rotate cert
                 </Button>

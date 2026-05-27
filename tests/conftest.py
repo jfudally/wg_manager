@@ -186,6 +186,33 @@ def session(engine: Any) -> Generator[Session, None, None]:
         yield db_session
 
 
+def promote_all_keys_to_ca(session: Session) -> None:
+    """Flip every :class:`SSHKey` row to ``mode=ca`` in the test engine.
+
+    Phase 2c CP4.1 made the task layer's auth routing per-row: a key
+    must have ``mode='ca'`` before the task layer will mint a user
+    cert for it. The production migration path is
+    ``wg-manager ssh migrate-to-ca <id>`` (CP4.2), which installs the
+    CA trust anchor on every host using the key before flipping the
+    column.
+
+    Tests that exercise the CA-mode runner / host-cert / rotation
+    paths don't want to drive that whole CLI for every case; they
+    just need the column flipped so the routing seam picks the cert
+    branch. This helper is the test-only shortcut — call it after any
+    SSH-key rows have been created (typically right after
+    ``POST /ssh-keys`` or :func:`_bootstrap_ready_server`).
+    """
+    from sqlmodel import select
+
+    from wg_manager.models import SSHKey, SSHKeyMode
+
+    for row in session.exec(select(SSHKey)).all():
+        row.mode = SSHKeyMode.ca
+        session.add(row)
+    session.commit()
+
+
 @pytest.fixture()
 def client(
     engine: Any,

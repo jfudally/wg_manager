@@ -187,9 +187,11 @@ export const api = {
    * `host_cert_*` columns update once the task completes — poll via
    * `taskStatus(task_id)` to see the new serial / `valid_before`.
    *
-   * Fails with `ApiError(status=409)` when the backend's
-   * `SSH_AUTH_MODE` is not `"ca"`. Surface the error's `detail` to
-   * the operator — the message points at the cookbook for setup.
+   * Fails with `ApiError(status=409)` when the server's SSH key is
+   * not in CA mode (Phase 2c CP4.1 moved this precondition from the
+   * global `SSH_AUTH_MODE` env var to the per-row `SSHKey.mode`).
+   * Surface the error's `detail` to the operator — the message names
+   * the exact `wg-manager ssh migrate-to-ca <id>` command to run.
    */
   rotateHostCert: (id: number) =>
     request<HostCertRotateResponse>(`/servers/${id}/rotate-host-cert`, {

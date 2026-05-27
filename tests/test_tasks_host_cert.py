@@ -27,7 +27,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.conftest import FakeSSHRunner
+from tests.conftest import FakeSSHRunner, promote_all_keys_to_ca
 from wg_manager.models import NodeStatus, Server
 
 
@@ -61,11 +61,23 @@ def _register_host_pubkey(host: str, pubkey: str = _HOST_PUBKEY) -> None:
     FakeSSHRunner.OUTPUTS[(host, "ssh_host_ed25519_key.pub")] = pubkey + "\n"
 
 
-def _register_server(client: TestClient, hostname: str) -> int:
+def _register_server(
+    client: TestClient,
+    hostname: str,
+    *,
+    ca_mode_session: Session | None = None,
+) -> int:
     """Register an SSH key + server and return the server id.
 
     The eagerly-run task drives provisioning to completion; we assert
     on the resulting row's host_cert_* columns in each test.
+
+    Pass ``ca_mode_session=session`` (Phase 2c CP4.1) to flip the
+    freshly-created SSH key into CA mode before the server POST. The
+    routing seam reads ``SSHKey.mode``, not the global env var, so
+    tests that want CA-mode provisioning have to promote the key
+    explicitly. The flip is the test-only equivalent of CP4.2's
+    ``wg-manager ssh migrate-to-ca`` CLI.
     """
     key_id = int(
         client.post(
@@ -73,6 +85,8 @@ def _register_server(client: TestClient, hostname: str) -> int:
             json={"name": "cp3-task", "private_key_b64": _SAMPLE_PEM_B64},
         ).json()["id"]
     )
+    if ca_mode_session is not None:
+        promote_all_keys_to_ca(ca_mode_session)
     resp = client.post(
         "/servers",
         json={
@@ -98,13 +112,17 @@ class TestProvisionServerPersistsHostCert:
         self,
         client: TestClient,
         engine: object,
+        session: Session,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable_ca_mode(monkeypatch)
         host = "ca-prov.example.com"
         _register_host_pubkey(host)
 
-        server_id = _register_server(client, host)
+        # CP4.1: flip the freshly-created key into CA mode so the
+        # routing seam picks the cert branch and the host-cert install
+        # runs.
+        server_id = _register_server(client, host, ca_mode_session=session)
 
         with Session(engine) as session:  # type: ignore[arg-type]
             row = session.get(Server, server_id)
@@ -179,6 +197,7 @@ class TestProvisionFailsWhenHostKeyMissing:
         self,
         client: TestClient,
         engine: object,
+        session: Session,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable_ca_mode(monkeypatch)
@@ -193,7 +212,14 @@ class TestProvisionFailsWhenHostKeyMissing:
         original = celery_app.conf.task_eager_propagates
         celery_app.conf.task_eager_propagates = False
         try:
-            server_id = _register_server(client, "no-host-key.example.com")
+            # CP4.1: ca_mode_session promotes the key before the server
+            # POST so the routing seam picks the cert branch (where the
+            # missing-host-key error is expected to surface).
+            server_id = _register_server(
+                client,
+                "no-host-key.example.com",
+                ca_mode_session=session,
+            )
         finally:
             celery_app.conf.task_eager_propagates = original
 
