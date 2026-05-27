@@ -1,0 +1,42 @@
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# --- Virtualenvs ------------------------------------------------------------
+.venv/
+venv/
+env/
+
+# --- Node / Next.js ---------------------------------------------------------
+node_modules/
+.next/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# --- Editors / OS -----------------------------------------------------------
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# --- Secrets / local config -------------------------------------------------
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+!.env.example
+
+# --- Build artefacts --------------------------------------------------------
+*.log
+*.sqlite
+*.sqlite3

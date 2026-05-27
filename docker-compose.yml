@@ -1,0 +1,54 @@
+services:
+  mysql:
+    image: mysql:8
+    container_name: wg_manager_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_DATABASE: wg_manager
+      MYSQL_USER: wg
+      MYSQL_PASSWORD: wg
+    ports:
+      - "3307:3306"
+    volumes:
+      - wg_manager_mysql_data:/var/lib/mysql
+
+  valkey:
+    image: valkey/valkey:7-alpine
+    container_name: wg_manager_valkey
+    restart: unless-stopped
+    command: ["valkey-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - wg_manager_valkey_data:/data
+
+  # Vault in `-dev` mode. Phase 2a only — see docs/vault-cookbook.md.
+  # Dev mode is in-memory and unsealed at boot, which is the *point*: any
+  # `docker compose down && up` resets state, and scripts/vault_smoke.py is
+  # written to be idempotent so that's a feature, not a bug. A production
+  # Vault story (file/raft storage, auto-unseal, audit log shipping) is
+  # tracked in docs/vault-cookbook.md and lands in Phase 2e.
+  vault:
+    image: hashicorp/vault:1.18
+    container_name: wg_manager_vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-only-root
+      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      VAULT_ADDR: http://127.0.0.1:8200
+    command: ["server", "-dev"]
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  wg_manager_mysql_data:
+  wg_manager_valkey_data:

@@ -1,0 +1,356 @@
+# Roadmap
+
+Phased delivery plan for wg-manager. Updated in the same change as the code,
+so the plan and the repo never disagree. Each phase has measurable acceptance
+criteria — "done" means the criteria are checked off in this file and a CI
+run on `main` proves it.
+
+Status legend: `[x]` shipped · `[~]` in progress · `[ ]` not started.
+
+Cross-references:
+- [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) — threats the security
+  phases close (T-1..T-12).
+- [`SECURITY.md`](SECURITY.md) — public-facing posture and disclosure policy.
+
+---
+
+## Phase 0 — Spike (shipped)
+
+- [x] Single-host docker-compose with MySQL + Valkey
+- [x] Provision a WireGuard hub over SSH end-to-end on a throwaway VM
+
+## Phase 1 — MVP (shipped)
+
+- [x] FastAPI control plane (`/ssh-keys`, `/servers`, `/clients`, `/tasks`)
+- [x] Async provisioning via Celery
+- [x] Manual-client flow (server-side keygen + `wg0.conf` re-export)
+- [x] Peer discovery (`wg show <iface> dump` → `discoveredpeer`)
+- [x] Next.js dashboard with full UI parity for the above
+- [x] CLI (`wg-manager …`) covering the same surface
+- [x] Alembic-managed schema, in-memory SQLite test harness
+
+---
+
+## Phase 2 — Hardening (in progress)
+
+Phase 2 is dominated by security work, organised as five sub-phases. The
+substrate is **HashiCorp Vault** — chosen because it collapses encryption
+at rest, SSH credentialing, internal PKI, and audit logging into one
+piece of infra a reader can recognise and run locally.
+
+Each sub-phase lists which threats from the
+[threat model](docs/THREAT_MODEL.md) it closes, plus acceptance criteria
+that are demonstrable on `main`.
+
+### Phase 2a — Vault spike `[x]` (2026-05-27)
+
+**Goal.** De-risk the Vault dependency before any production code depends
+on it. Throwaway work, time-boxed to ~2 days.
+
+**Shipped.**
+- `vault` service added to `docker-compose.yml` running
+  `hashicorp/vault:1.18 server -dev` with the fixed root token
+  `dev-only-root`. **Dev mode is in-memory by design** — restarts wipe
+  state, and `scripts/vault_smoke.py` is idempotent so re-runs always
+  succeed. Production storage / unseal / HA story is captured in
+  [`docs/vault-cookbook.md`](docs/vault-cookbook.md) §6 and lands in
+  Phase 2e.
+- [`scripts/vault_smoke.py`](scripts/vault_smoke.py) — single throwaway
+  script proving Transit encrypt/decrypt (with per-row context), KV v2
+  read/write, SSH CA sign of an ephemeral Ed25519 keypair, and PKI leaf
+  issuance from an in-Vault root. Lives outside `src/`. No `wg_manager`
+  code imports `hvac` yet.
+- `make vault-up` / `make vault-down` / `make vault-logs` /
+  `make vault-smoke` targets.
+- AppRole decision recorded in
+  [`docs/vault-cookbook.md`](docs/vault-cookbook.md) §5: production
+  uses AppRole with the `role_id` baked into the deploy manifest and
+  the `secret_id` delivered via Vault response-wrapping so the deploy
+  operator never sees it in cleartext.
+
+**Acceptance — met.**
+- `make vault-up && make vault-smoke` exits 0; second back-to-back run
+  also exits 0 (idempotency check). Captured run output:
+
+  ```
+  [PASS] transit  ( 466 ms) — ciphertext=vault:v1:hDHQECDtXdjuoh0… round-trip ok
+  [PASS] kv-v2    (   6 ms) — path=secret/wg-manager-smoke round-trip ok
+  [PASS] ssh-ca   (1655 ms) — signed 1780 bytes of cert (ttl=60s)
+  [PASS] pki      ( 253 ms) — issued leaf cert serial=07:16:21:2e:… (ttl=5m)
+  ```
+- Four happy paths captured in
+  [`docs/vault-cookbook.md`](docs/vault-cookbook.md).
+- Spike code lives under `scripts/`; `hvac` is a dev-only dep in
+  `pyproject.toml`.
+
+**Carried forward to later phases.**
+- Auto-unseal / Raft storage / HA / audit-log retention — Phase 2e.
+- AppRole policy file + token-TTL values — Phase 2b (when
+  `wg_manager.crypto` is the first real consumer).
+- Cleanup: delete `scripts/vault_smoke.py` once Phase 2b/c/d each have
+  their own integration tests; the spike has served its purpose and
+  should not become a maintenance burden.
+
+---
+
+### Phase 2b — Encryption at rest (Vault Transit) `[x]` (shipped 2026-05-27)
+
+**Status snapshot.**
+- **Checkpoint 1 `[x]`** — `wg_manager.crypto` module with both backends,
+  per-row context binding, `SSHKey.__repr__` / `Client.__repr__` scrub,
+  22 backend tests + 5 repr regression tests, both modes green.
+- **Checkpoint 2 `[x]`** — Alembic 0004 dual-write migration, ciphertext
+  columns on `sshkey` + `client`, routers and tasks wired through
+  `resolve_*` / `encrypt_*` helpers, `wg-manager crypto migrate` CLI,
+  log-scrub guardrail (5 tests). 162/162 green in both `local` and
+  `vault` modes.
+- **Checkpoint 3 `[x]`** — Alembic 0005 drops the legacy plaintext
+  columns; the row carries ciphertext only. New `GET /crypto/status`
+  endpoint + dashboard "Crypto" page surface backend, key version, and
+  per-table counts of encrypted/legacy rows. New `wg-manager crypto
+  rewrap` re-encrypts every row under the active Transit key version
+  (post-rotation upgrade). SSH Keys table grows a per-row `encrypted`
+  badge. `crypto migrate` is removed (its job is done). README + Vault
+  cookbook document the full rollout sequence and the recovery flow
+  for a 0005 downgrade.
+
+
+**Closes.** T-1, T-2, T-3, T-4.
+
+**Goal.** No plaintext private key material ever lives in MySQL again.
+
+**Backend.**
+- New module `wg_manager.crypto` wrapping Transit:
+  - `encrypt(plaintext: bytes, context: str) -> str` returns a versioned
+    ciphertext blob (`vault:v1:…`).
+  - `decrypt(blob: str, context: str) -> bytes`.
+  - `context` is per-row (e.g. `f"sshkey:{key_id}"`) so a swapped
+    ciphertext from another row fails to decrypt — defeats T-1's "DB-read
+    attacker reshuffles rows" variant.
+  - A `LocalDevBackend` fallback (Fernet keyed from
+    `WG_MANAGER_DEV_KEY`) so unit tests run without a Vault container.
+    Selected by env (`WG_MANAGER_CRYPTO_BACKEND=local|vault`); never the
+    default in containers.
+- Alembic migration: add `private_key_ct`, `passphrase_ct`,
+  `client_private_key_ct` columns alongside the existing plaintext.
+  **Dual-write** for one release; **dual-read** with ciphertext
+  preferred. A second migration drops the plaintext columns once dual-write
+  has been verified.
+- A one-shot `wg-manager crypto migrate` CLI command walks every row,
+  encrypts what isn't already encrypted, and reports counts.
+- Audit hygiene: scrub `SSHKey.private_key` etc. from any `__repr__`,
+  exception body, and structured-log field. Add a `pytest` test that
+  greps captured logs for `BEGIN OPENSSH PRIVATE KEY` and fails the suite
+  if it ever appears.
+
+**Frontend (UI parity, per global memory).**
+- "Crypto status" panel on the dashboard showing the active backend
+  (`vault` / `local-dev`), the current Transit key version, and counts of
+  rows encrypted vs. legacy.
+- The SSH-keys table gains a small "encrypted" badge per row.
+
+**Tests.**
+- Round-trip property test: every key registered via `POST /ssh-keys`
+  decrypts to the byte-identical original.
+- Tamper test: flipping a bit in `private_key_ct` makes provisioning fail
+  with a clear error (no partial-success).
+- Rotation test: `vault write -f transit/keys/wg-manager/rotate` ⇒
+  existing rows still decrypt, new writes use the new version, and
+  `wg-manager crypto rewrap` updates them all.
+- Log-scrub test described above.
+
+**Acceptance.**
+- `pytest -q` green with `WG_MANAGER_CRYPTO_BACKEND=local`.
+- `make vault-up && WG_MANAGER_CRYPTO_BACKEND=vault pytest -q` green
+  against the dev container.
+- After running `wg-manager crypto migrate` on a copy of prod, a
+  `mysqldump | grep -c "BEGIN OPENSSH"` returns `0`.
+- README documents how to provision a Vault Transit key for first use.
+
+**Rollout strategy.** Dual-write → dual-read → drop plaintext columns.
+Each step is its own Alembic revision so an operator can pause between
+them. Documented in `docs/migrations/2b-transit.md`.
+
+**Risks.** Vault outage now blocks provisioning. Mitigation: cache the
+Transit key's data-key client-side for a short TTL (Vault's
+`/transit/datakey/plaintext` flow), and surface Vault health on `/healthz`.
+
+---
+
+### Phase 2c — Eliminate stored SSH keys (Vault SSH CA) `[ ]`
+
+**Closes.** T-5, T-6 (and a stronger form of T-1: there's nothing left to
+steal).
+
+**Goal.** Replace long-lived SSH keys with short-lived Vault-signed
+certificates. The `sshkey` table becomes metadata-only.
+
+**Backend.**
+- Configure Vault SSH secrets engine with two roles:
+  - `wg-manager-provision` — client cert role; signs short-lived (5 min,
+    configurable) user certificates with the principals matching the
+    target host's `ssh_username`.
+  - `wg-manager-hosts` — host cert role; signs host certificates for
+    managed servers/clients during provisioning.
+- New `wg_manager.ssh_ca` module:
+  - `mint_user_cert(role, principals, ttl) -> (private_pem, cert_pem)`.
+    Generates an ephemeral Ed25519 keypair in memory, asks Vault to sign
+    the public half, returns both. **Never persisted.**
+  - `mint_host_cert(public_key, principals, ttl) -> cert_pem` for the
+    server side.
+- `SSHRunner` accepts a `(pkey_pem, cert_pem)` pair; paramiko's
+  `Ed25519Key.load_certificate` handles the cert. Connection sends the
+  cert; the target host validates against the CA pubkey installed in
+  `TrustedUserCAKeys`.
+- Host-key verification flips from `AutoAddPolicy` to
+  `RejectPolicy` + a `KnownHostsCAPolicy` that trusts certs signed by the
+  Vault host CA. TOFU is gone.
+- Provisioning step now also writes the host's signed cert and the
+  `TrustedUserCAKeys` line into `/etc/ssh/sshd_config.d/wg-manager.conf`.
+- `SSHKey` table becomes a label/metadata reference to a Vault role. The
+  `private_key_ct` column is dropped in a follow-up migration.
+
+**Frontend.**
+- Existing "SSH keys" page reframes as "SSH roles" — list roles, their
+  TTLs, allowed principals. No upload form for private keys anymore.
+- Server detail page shows the host certificate's serial, principals,
+  validity window, and a "rotate" button.
+
+**Tests.**
+- Cert TTL is honoured (sleep-past-expiry test against `vault server -dev`
+  with a 5-second TTL).
+- Mismatched principals are rejected by `sshd`.
+- Host-cert mismatch (re-signed by an attacker CA) is rejected by the
+  client.
+- The `sshkey` table at end of Phase 2c contains no `private_key*`
+  columns (Alembic migration test).
+
+**Acceptance.**
+- Provisioning a fresh server end-to-end on a throwaway VM completes
+  using only Vault-signed certs.
+- `grep -r "Ed25519Key.from_private_key\|RSAKey.from_private_key" src/` for
+  uses on persisted material returns nothing — the only key material
+  paramiko sees is ephemeral.
+- README and dashboard "how to add a server" docs are rewritten around
+  roles, not uploads.
+
+**Risks.** Operators who already have a fleet provisioned with the
+Phase 1 / Phase 2b keys need a migration path. Ship `wg-manager ssh
+migrate-to-ca <server-id>` that installs the CA trust line over the
+existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
+
+---
+
+### Phase 2d — TLS / mTLS everywhere (Vault PKI) `[ ]`
+
+**Closes.** T-7, T-8, T-9.
+
+**Goal.** Every trust boundary in the system is mutually authenticated
+and encrypted using certs from the same Vault PKI.
+
+**Backend.**
+- Stand up a Vault PKI mount with a 10-year root and a 1-year
+  intermediate. Issue:
+  - Server cert for the FastAPI app.
+  - Client cert for the dashboard origin and for the CLI.
+  - Server cert for MySQL; client cert for the app and the worker.
+- FastAPI runs behind uvicorn with `--ssl-keyfile`/`--ssl-certfile`/
+  `--ssl-ca-certs`, requiring client certs. Auth identity comes from the
+  cert's CN / SANs; map to an operator record (new table) for audit.
+- MySQL connection string switches to `mysql+pymysql://…?ssl_ca=…&ssl_cert=…`
+  with `require_secure_transport=ON` enforced server-side.
+- Cert renewal: a tiny `wg-manager certs renew` command (idempotent;
+  noop if the cert has >50% of its TTL remaining) wired to a systemd
+  timer in the deploy story. Same command works in CI.
+- The plain HTTP listener is removed; the `.env.example` no longer
+  contains an unauthenticated path.
+
+**Frontend.**
+- Dashboard uses a browser-imported PKCS#12 client cert. README walks
+  through generating one with `wg-manager certs issue --type dashboard`.
+- New "Certificates" page: lists every cert wg-manager has issued
+  (operator certs, internal service certs), with serial, SANs, NotAfter,
+  and a revoke button (writes to Vault PKI's CRL).
+- Login page is replaced by a "Who am I?" splash showing the cert
+  subject the API saw — proves the mTLS handshake worked.
+
+**Tests.**
+- Cert rotation under load: a script flips MySQL's cert while the API
+  serves requests; the app reconnects without dropping.
+- An expired client cert is rejected with HTTP 401 and an audit log line
+  is emitted.
+- Revoked certs are rejected once the CRL has been re-pulled (TTL is set
+  short enough for the test to wait).
+
+**Acceptance.**
+- `curl http://127.0.0.1:8000/servers` ⇒ connection refused.
+- `curl --cert ops.pem --key ops-key.pem https://127.0.0.1:8000/servers`
+  ⇒ 200.
+- Wireshark capture between app and MySQL on loopback shows TLS, not
+  plaintext SQL.
+
+**Risks.** mTLS in the browser is friction. Mitigation: keep a documented
+"reverse-proxy with OIDC + service-internal mTLS" alternative in
+`docs/auth-alternatives.md` so a reader who hates client certs sees we
+considered it.
+
+---
+
+### Phase 2e — Supply-chain & ops hygiene `[ ]`
+
+**Closes.** T-10, T-11.
+
+**Goal.** The boring stuff that distinguishes a hobby project from one
+you'd actually deploy.
+
+**Work.**
+- **CI gates** (`.github/workflows/ci.yml`):
+  - `gitleaks` on every push (catches accidental key commits).
+  - `pip-audit` and `npm audit --omit=dev` on every dependency lockfile
+    change.
+  - `bandit -ll` over `src/`; `semgrep` with the `p/python` ruleset.
+  - `cosign verify` of the published Docker image in the release job.
+- **SBOM.** `cyclonedx-py` and `cyclonedx-npm` emit SBOMs in the release
+  workflow; attached to the GitHub release.
+- **Dependency hygiene.** Dependabot enabled for `pip`, `npm`, and
+  `github-actions`. Weekly schedule.
+- **Vault audit log** is shipped off-host (file sink + a `vector`
+  sidecar in compose; production story documented for journald/syslog).
+- **Application audit log.** New `audit_event` table; every mutating
+  endpoint writes one row with operator subject (from the mTLS cert),
+  resource, action, before/after hash. Read-only `/audit` endpoint
+  surfaces it; dashboard page lists recent events filterable by operator
+  and resource.
+- **Backup story.** Documented `vault operator raft snapshot save`
+  cadence; MySQL dumps documented to be encrypted at rest using the
+  Transit data-key flow so a leaked dump is not equivalent to a leaked
+  key (closes a residual variant of T-1).
+- **Reproducible builds.** `pyproject.toml` is locked via `uv lock`; the
+  release workflow builds from the lockfile and refuses unpinned
+  upgrades.
+
+**Acceptance.**
+- The CI badge in the README is green and the `security` job exists.
+- `docs/runbooks/key-compromise.md` and `docs/runbooks/vault-down.md`
+  exist with concrete steps a half-asleep on-call engineer can follow.
+- A SOC 2-style "evidence pack" is generatable via `make evidence` —
+  pulls last 30 days of audit logs, current cert inventory, and Vault
+  audit hash chain into a tarball. (Stretch; useful for the showcase.)
+
+---
+
+## Phase 3 — Scale / Polish (future)
+
+These are explicitly deferred until Phase 2 is closed. Listed so we don't
+quietly let them creep into the hardening work.
+
+- **Multi-tenant operator model.** Roles, scoped tokens, per-tenant peer
+  pools.
+- **HA control plane.** Two-replica FastAPI behind a load balancer;
+  Celery workers horizontally scaled; MySQL primary + replica with
+  failover.
+- **Observability.** Prometheus metrics, Grafana dashboard, OTLP traces
+  through the provisioning path.
+- **Public API spec.** OpenAPI versioning, deprecation policy, a
+  `v1`/`v2` namespace.
+- **Helm chart / Terraform module.** First-class Kubernetes deploy.
