@@ -247,6 +247,57 @@ signed = client.secrets.ssh.sign_ssh_key(
 # signed is an `ssh-ed25519-cert-v01@openssh.com …` line.
 ```
 
+### Phase 2c checkpoint 2 — runner + task wiring shipped (2026-05-27)
+
+The runner-side half of CP2 lives in
+[`wg_manager.ssh`](../src/wg_manager/ssh.py); the task-side half lives
+in [`wg_manager.tasks`](../src/wg_manager/tasks.py). The whole CA
+flow becomes a single setting flip:
+
+```bash
+# .env (or your AppRole-wrapped equivalent)
+SSH_AUTH_MODE=ca               # default "legacy" until CP4 promotes it
+SSH_CA_BACKEND=vault           # uses VaultSSHCA from CP1
+SSH_USER_CERT_TTL_SECONDS=300  # cap aligns with the Vault role's max_ttl
+```
+
+What that turns on:
+
+1. Every Celery task (`provision_server_task`,
+   `reconfigure_server_task`, `provision_client_task`,
+   `discover_peers_task`) calls `_open_runner(...)` which mints a
+   fresh Ed25519 keypair + user cert for the principal matching the
+   row's `ssh_username`. The keypair never touches disk; the cert
+   carries only the principal sshd needs.
+2. The runner is constructed with `cert_pem` + `ca_public_key`. It:
+   - calls `paramiko.Ed25519Key.load_certificate(cert_pem)` so the
+     client offers `ssh-ed25519-cert-v01@openssh.com` to the server;
+   - installs `KnownHostsCAPolicy(ca_public_key)` in place of
+     `AutoAddPolicy`. TOFU is gone — the connection refuses any host
+     that doesn't present a host cert signed by the same CA.
+3. The new `UntrustedHostKeyError` is in the task layer's
+   `_SSH_EXPECTED_ERRORS` tuple, so a missing host cert surfaces as a
+   tidy task failure (clean message, no 30-frame paramiko traceback)
+   rather than an unhandled exception. Same for `SSHCAError` when
+   Vault refuses to sign — the row's `status` flips to `error` and
+   the API caller sees a normal failure.
+
+Legacy mode is unchanged. Flipping `SSH_AUTH_MODE` back to `legacy`
+(or simply leaving it unset) skips the mint entirely and resolves
+credentials from the `sshkey` ciphertext columns as in Phase 2b.
+
+> The runner is ready to dial CA-mode sessions today, but the
+> *target* host still needs `TrustedUserCAKeys` and a signed host
+> cert installed in `/etc/ssh/sshd_config.d/` before a real
+> connection will succeed. That host-side install is CP3.
+
+Test snapshot (`pytest -q tests/test_ssh_cert_mode.py
+tests/test_tasks_ssh_ca.py`):
+
+```
+14 passed in ~0.2s
+```
+
 ### Target-host setup (Phase 2c provisioning step)
 
 The managed host needs to trust the CA. Provisioning writes:

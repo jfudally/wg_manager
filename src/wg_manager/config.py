@@ -82,6 +82,21 @@ class Settings(BaseSettings):
     ssh_ca_vault_mount: str = "ssh"
     ssh_ca_vault_user_role: str = "wg-manager-provision"
     ssh_ca_vault_host_role: str = "wg-manager-hosts"
+    # Selects how the Celery task layer authenticates SSH sessions.
+    # ``"legacy"`` (default) reads a long-lived private key from the
+    # ``sshkey`` ciphertext columns (Phase 2b behaviour). ``"ca"`` mints
+    # a fresh ed25519 keypair + short-lived user certificate via the
+    # SSH CA backend for every session, and refuses to TOFU unknown
+    # hosts via :class:`wg_manager.ssh.KnownHostsCAPolicy`. CP4 will
+    # promote the default once the per-row ``SSHKey.mode`` migration
+    # has landed.
+    ssh_auth_mode: str = "legacy"
+    # TTL the task layer asks for when minting a user certificate.
+    # 5 minutes is long enough for one provisioning round-trip and
+    # short enough that a leaked cert dies on its own; the Vault role
+    # bootstrap also caps ``max_ttl`` so the CA can't be coerced into
+    # signing anything longer.
+    ssh_user_cert_ttl_seconds: int = 300
 
     @field_validator("default_subnet")
     @classmethod

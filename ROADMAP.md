@@ -187,8 +187,19 @@ Transit key's data-key client-side for a short TTL (Vault's
   `VaultSSHCA.bootstrap()`, `scripts/ssh_ca_bootstrap.py` + `make
   ssh-ca-bootstrap` target. 26 ssh_ca tests green (13 local + 13 vault);
   full suite 194/194 green in both modes. Cookbook §3 updated.
-- **Checkpoint 2 `[ ]`** — `SSHRunner` cert-based auth + `RejectPolicy` +
-  `KnownHostsCAPolicy`; tasks mint per-session.
+- **Checkpoint 2 `[x]`** (2026-05-27) — `SSHRunner` accepts a
+  ``cert_pem`` + ``ca_public_key`` pair (CA mode), loads the cert onto
+  the pkey via `paramiko.Ed25519Key.load_certificate`, and replaces
+  `AutoAddPolicy` with the new `KnownHostsCAPolicy` (rejects raw host
+  keys, wrong-CA certs, and user certs spliced in as host keys; raises
+  `UntrustedHostKeyError`). New `SSH_AUTH_MODE` setting (`legacy` /
+  `ca`) and `SSH_USER_CERT_TTL_SECONDS` (default 300s); a single
+  `_open_runner` helper in `wg_manager.tasks` routes both modes so all
+  four tasks (`provision_server`, `reconfigure_server`,
+  `provision_client`, `discover_peers`) opt into CA mode together. 14
+  CP2 tests added (9 SSHRunner / policy unit, 5 task-layer end-to-end);
+  208/208 green in `local` mode, 40/40 CP2-relevant tests green in
+  `vault` mode.
 - **Checkpoint 3 `[ ]`** — Host-side provisioning installs
   `TrustedUserCAKeys` + signed host cert; Alembic 0006 (`Server`
   host-cert columns); `POST /servers/{id}/rotate-host-cert` + dashboard

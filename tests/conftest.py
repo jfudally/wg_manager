@@ -73,6 +73,11 @@ class FakeSSHRunner:
     # plaintext is what flows through to paramiko. The list is reset in the
     # ``client`` fixture between tests.
     KEYS_USED: list[tuple[str, str, str | None]] = []
+    # Phase 2c CP2: the task layer constructs the runner with
+    # ``cert_pem`` / ``ca_public_key`` when ``SSH_AUTH_MODE=ca``. We record
+    # them on a separate list so the legacy 3-tuple shape of ``KEYS_USED``
+    # stays intact for Phase 2b's regression tests.
+    CERTS_USED: list[tuple[str, str | None, str | None, str]] = []
 
     def __init__(
         self,
@@ -81,13 +86,21 @@ class FakeSSHRunner:
         username: str,
         pkey_pem: str,
         passphrase: str | None = None,
+        *,
+        cert_pem: str | None = None,
+        ca_public_key: str | None = None,
+        connect_timeout: float = 15.0,
     ) -> None:
         self.host = host
         self.port = port
         self.username = username
         self.pkey_pem = pkey_pem
         self.passphrase = passphrase
+        self.cert_pem = cert_pem
+        self.ca_public_key = ca_public_key
+        self.connect_timeout = connect_timeout
         FakeSSHRunner.KEYS_USED.append((host, pkey_pem, passphrase))
+        FakeSSHRunner.CERTS_USED.append((host, cert_pem, ca_public_key, username))
 
     def __enter__(self) -> FakeSSHRunner:
         exc = FakeSSHRunner.RAISE_ON_ENTER.get(self.host)
@@ -190,6 +203,7 @@ def client(
     FakeSSHRunner.OUTPUTS = {}
     FakeSSHRunner.RAISE_ON_ENTER = {}
     FakeSSHRunner.KEYS_USED = []
+    FakeSSHRunner.CERTS_USED = []
 
     # Swap SSHRunner as used inside the Celery tasks (import-time binding).
     monkeypatch.setattr(tasks_module, "SSHRunner", FakeSSHRunner)

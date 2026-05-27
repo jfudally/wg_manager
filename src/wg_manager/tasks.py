@@ -3,6 +3,22 @@
 Tasks operate on row IDs (never ORM instances) so they survive a hop through
 the broker. They open their own session against ``wg_manager.db.engine`` and
 update the row's ``status`` to ``ready`` or ``error`` before returning.
+
+Phase 2c CP2 introduces a second SSH authentication mode behind the
+``SSH_AUTH_MODE`` setting:
+
+* ``legacy`` (default) — the long-lived private key on the ``sshkey``
+  row, decrypted through :mod:`wg_manager.crypto`. Same path as
+  Phase 2b.
+* ``ca`` — a freshly minted ephemeral Ed25519 keypair + short-lived
+  user certificate from :func:`wg_manager.ssh_ca.make_ssh_ca_backend`.
+  The runner is constructed with ``cert_pem`` and ``ca_public_key`` so
+  client auth presents the cert and host trust comes from the SSH CA.
+
+The :func:`_open_runner` helper is the single seam through which both
+modes flow, so all four tasks (provision_server, reconfigure_server,
+provision_client, discover_peers) opt into CA mode by changing one
+setting rather than four call sites.
 """
 
 from __future__ import annotations
@@ -15,6 +31,7 @@ from celery.utils.log import get_task_logger
 from sqlmodel import Session, select
 
 from wg_manager.celery_app import celery_app
+from wg_manager.config import Settings
 from wg_manager.crypto import (
     make_backend,
     resolve_sshkey_passphrase,
@@ -22,6 +39,7 @@ from wg_manager.crypto import (
 )
 from wg_manager.models import Client, DiscoveredPeer, NodeStatus, SSHKey, Server
 from wg_manager.ssh import SSHCommandError, SSHConnectionError, SSHRunner
+from wg_manager.ssh_ca import SSHCAError, make_ssh_ca_backend
 from wg_manager.wireguard import (
     discover_peers,
     provision_client,
@@ -51,6 +69,7 @@ def _mark_error(session: Session, row: Server | Client) -> None:
 _SSH_EXPECTED_ERRORS: tuple[type[BaseException], ...] = (
     SSHConnectionError,
     SSHCommandError,
+    SSHCAError,
     socket.timeout,
     TimeoutError,
     OSError,
@@ -71,6 +90,66 @@ def _resolve_ssh_credentials(ssh_key: SSHKey) -> tuple[str, str | None]:
     return (
         resolve_sshkey_private(backend, ssh_key),
         resolve_sshkey_passphrase(backend, ssh_key),
+    )
+
+
+def _open_runner(
+    *,
+    host: str,
+    port: int,
+    username: str,
+    ssh_key: SSHKey,
+) -> SSHRunner:
+    """Construct an :class:`SSHRunner` honouring the active auth mode.
+
+    When :attr:`Settings.ssh_auth_mode` is ``"ca"`` the runner is
+    minted a per-session ed25519 keypair + short-lived user cert from
+    the SSH CA backend, and configured with the same CA's public key
+    for host trust (so :class:`wg_manager.ssh.KnownHostsCAPolicy`
+    rejects anything not signed by it). Otherwise the historical
+    private-key path is used.
+
+    Settings are re-read on every call rather than imported at module
+    load — the test suite flips ``SSH_AUTH_MODE`` via
+    ``monkeypatch.setenv`` and the helper must observe that without a
+    process restart.
+
+    :param host: Target SSH host (used for cert minting principals and
+        the runner constructor).
+    :param port: Target SSH port.
+    :param username: Remote username. Becomes the cert principal in CA
+        mode — sshd will reject the cert unless this principal is in
+        the cert's ``valid_principals`` list.
+    :param ssh_key: Row whose plaintext is consulted in legacy mode.
+        Ignored in CA mode (kept on the signature so the call sites
+        can stay symmetric across both modes).
+    :return: An unentered :class:`SSHRunner`. The caller is responsible
+        for entering it as a context manager.
+    :raises SSHCAError: If CA mode is requested but the backend cannot
+        be constructed (Vault unreachable, malformed PEM, …).
+    """
+    settings = Settings()
+    if settings.ssh_auth_mode.lower() == "ca":
+        ca = make_ssh_ca_backend(settings)
+        user_cert = ca.mint_user_cert(
+            principals=[username],
+            ttl_seconds=settings.ssh_user_cert_ttl_seconds,
+        )
+        return SSHRunner(
+            host=host,
+            port=port,
+            username=username,
+            pkey_pem=user_cert.private_pem,
+            cert_pem=user_cert.cert_pem,
+            ca_public_key=ca.ca_public_key,
+        )
+    pkey_pem, passphrase = _resolve_ssh_credentials(ssh_key)
+    return SSHRunner(
+        host=host,
+        port=port,
+        username=username,
+        pkey_pem=pkey_pem,
+        passphrase=passphrase,
     )
 
 
@@ -124,15 +203,13 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
             raise ValueError(f"SSH key {server.ssh_key_id} not found")
 
         clients = _ready_clients_for(session, server_id)
-        pkey_pem, passphrase = _resolve_ssh_credentials(ssh_key)
 
         try:
-            with SSHRunner(
+            with _open_runner(
                 host=server.hostname,
                 port=server.ssh_port,
                 username=server.ssh_username,
-                pkey_pem=pkey_pem,
-                passphrase=passphrase,
+                ssh_key=ssh_key,
             ) as runner:
                 public_key = provision_server(runner, server, clients)
         except _SSH_EXPECTED_ERRORS as exc:
@@ -193,15 +270,13 @@ def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
             raise ValueError(f"SSH key {server.ssh_key_id} not found")
 
         clients = _ready_clients_for(session, server_id)
-        pkey_pem, passphrase = _resolve_ssh_credentials(ssh_key)
 
         try:
-            with SSHRunner(
+            with _open_runner(
                 host=server.hostname,
                 port=server.ssh_port,
                 username=server.ssh_username,
-                pkey_pem=pkey_pem,
-                passphrase=passphrase,
+                ssh_key=ssh_key,
             ) as runner:
                 reconfigure_server(runner, server, clients)
         except _SSH_EXPECTED_ERRORS as exc:
@@ -250,14 +325,12 @@ def provision_client_task(self, client_id: int) -> dict[str, Any]:
             _mark_error(session, client)
             raise ValueError("SSH key for client is missing")
 
-        pkey_pem, passphrase = _resolve_ssh_credentials(client_key)
         try:
-            with SSHRunner(
+            with _open_runner(
                 host=client.hostname,
                 port=client.ssh_port,
                 username=client.ssh_username,
-                pkey_pem=pkey_pem,
-                passphrase=passphrase,
+                ssh_key=client_key,
             ) as client_runner:
                 client_pubkey = provision_client(client_runner, client, server)
         except _SSH_EXPECTED_ERRORS as exc:
@@ -335,14 +408,12 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
         if ssh_key is None:
             raise ValueError(f"SSH key {server.ssh_key_id} not found")
 
-        pkey_pem, passphrase = _resolve_ssh_credentials(ssh_key)
         try:
-            with SSHRunner(
+            with _open_runner(
                 host=server.hostname,
                 port=server.ssh_port,
                 username=server.ssh_username,
-                pkey_pem=pkey_pem,
-                passphrase=passphrase,
+                ssh_key=ssh_key,
             ) as runner:
                 _interface, peers = discover_peers(runner, server)
         except _SSH_EXPECTED_ERRORS as exc:
