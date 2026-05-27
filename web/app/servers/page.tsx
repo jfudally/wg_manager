@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/empty-state";
 import { TaskPoller } from "@/components/task-poller";
-import { formatDateTime } from "@/lib/utils";
+import { cn, formatDateTime } from "@/lib/utils";
 
 /**
  * Servers page. Each row exposes the three operations the API supports
@@ -206,6 +206,17 @@ function ServerTable({
     onSuccess: (data) =>
       onTaskDispatched(data.task_id, `Discover #${data.server.id}`),
   });
+  // Phase 2c CP3.4 — operator-driven host cert rotation. Dispatches
+  // the same task envelope shape as the other server-side actions so
+  // the existing TaskPoller surfaces progress without special-casing.
+  const rotateHostCert = useMutation({
+    mutationFn: (id: number) => api.rotateHostCert(id),
+    onSuccess: (data) =>
+      onTaskDispatched(
+        data.task_id,
+        `Rotate host cert #${data.server.id}`,
+      ),
+  });
 
   // When a DELETE returns 409 we surface it inline so the operator can
   // retry with ``force=true`` without losing context. Keyed by server id
@@ -264,7 +275,10 @@ function ServerTable({
           {servers.map((s) => (
             <TableRow key={s.id}>
               <TableCell className="font-mono text-xs">{s.id}</TableCell>
-              <TableCell className="font-medium">{s.hostname}</TableCell>
+              <TableCell className="font-medium">
+                {s.hostname}
+                <HostCertSummary server={s} />
+              </TableCell>
               <TableCell className="text-xs">
                 {s.endpoint_host}:{s.endpoint_port}
               </TableCell>
@@ -291,6 +305,15 @@ function ServerTable({
                   disabled={reprovision.isPending}
                 >
                   Reprovision
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => rotateHostCert.mutate(s.id)}
+                  disabled={rotateHostCert.isPending}
+                  title="Re-mint and install this server's SSH host cert (requires SSH_AUTH_MODE=ca)"
+                >
+                  Rotate cert
                 </Button>
                 <Button
                   variant="ghost"
@@ -322,6 +345,14 @@ function ServerTable({
       ) : null}
       {discover.isError ? (
         <Alert variant="error">{(discover.error as Error).message}</Alert>
+      ) : null}
+      {rotateHostCert.isError ? (
+        <Alert
+          variant="error"
+          title="Couldn't rotate host cert"
+        >
+          {(rotateHostCert.error as Error).message}
+        </Alert>
       ) : null}
       {deleteError ? (
         <Alert
@@ -721,5 +752,42 @@ function EditServerForm({
         </form>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Phase 2c CP3.4 — compact host-cert summary rendered under the
+ * server hostname. Shows nothing when the row has no host cert minted
+ * (legacy mode, or a pre-CP3 row that hasn't been re-provisioned).
+ *
+ * The rendered line is intentionally muted so operators reading the
+ * table for routine work can skim past it; the "expires Xd" badge
+ * goes amber inside 30 days and red once expired so a row about to
+ * lose host-cert auth grabs attention.
+ */
+function HostCertSummary({ server }: { server: Server }) {
+  if (!server.host_cert_serial || !server.host_cert_valid_before) {
+    return null;
+  }
+  const expires = new Date(server.host_cert_valid_before);
+  const now = Date.now();
+  const daysLeft = Math.floor(
+    (expires.getTime() - now) / (1000 * 60 * 60 * 24),
+  );
+  const expired = daysLeft < 0;
+  const warning = daysLeft < 30 && !expired;
+  return (
+    <div className="text-xs font-normal text-muted-foreground">
+      cert <span className="font-mono">#{server.host_cert_serial}</span>{" "}
+      ·{" "}
+      <span
+        className={cn(
+          expired && "font-medium text-destructive",
+          warning && "font-medium text-amber-600 dark:text-amber-400",
+        )}
+      >
+        {expired ? "expired" : `expires in ${daysLeft}d`}
+      </span>
+    </div>
   );
 }

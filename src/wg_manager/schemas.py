@@ -350,6 +350,25 @@ class ServerRegisterResponse(BaseModel):
     server: ServerRead
 
 
+class HostCertRotateResponse(BaseModel):
+    """202 response for ``POST /servers/{id}/rotate-host-cert``.
+
+    Phase 2c CP3.3. Same shape as :class:`ServerRegisterResponse` —
+    the row is returned alongside the dispatched task so the dashboard
+    can immediately render "rotation in flight" without re-fetching.
+    The row's ``host_cert_*`` columns reflect the *previous* cert at
+    202 time; poll ``GET /tasks/{task_id}`` for the new serial /
+    ``valid_before`` reported by the task result.
+
+    :ivar task_id: Celery task ID of the dispatched
+        :func:`wg_manager.tasks.rotate_host_cert_task`.
+    :ivar server: The server row at dispatch time.
+    """
+
+    task_id: str
+    server: ServerRead
+
+
 class ClientRegisterResponse(BaseModel):
     """202 response for ``POST /clients``: row + Celery task ID to poll."""
 

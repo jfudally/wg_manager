@@ -137,6 +137,17 @@ class TestProvisionServerCertMode:
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _enable_ca_mode(monkeypatch)
+        # CP3 host-cert install runs at the end of CA-mode provisioning
+        # and probes ``/etc/ssh/ssh_host_ed25519_key.pub``. Register a
+        # real ed25519 pubkey so the install succeeds and the test
+        # stays scoped to CP2's runner-construction assertion.
+        FakeSSHRunner.OUTPUTS[
+            ("hub.example.com", "ssh_host_ed25519_key.pub")
+        ] = (
+            "ssh-ed25519 "
+            "AAAAC3NzaC1lZDI1NTE5AAAAINcv8wY+y8d0KcKZ6t6S/n7JoYx7M3jzqu7K2YgQGvD7"
+            " root@hub.example.com\n"
+        )
 
         key_id = int(
             client.post(

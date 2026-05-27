@@ -97,6 +97,14 @@ class Settings(BaseSettings):
     # bootstrap also caps ``max_ttl`` so the CA can't be coerced into
     # signing anything longer.
     ssh_user_cert_ttl_seconds: int = 300
+    # TTL the host-cert install path asks the CA for. 24 h matches the
+    # default Vault role bootstrap (see
+    # :meth:`wg_manager.ssh_ca.VaultSSHCA.bootstrap`'s
+    # ``host_default_ttl``); operators can dial this down for short-
+    # lived prod environments and pair it with a more frequent run of
+    # ``POST /servers/{id}/rotate-host-cert`` (Phase 2c CP3). Must be
+    # ``<= max_ttl`` on the configured host role.
+    ssh_host_cert_ttl_seconds: int = 86400
 
     @field_validator("default_subnet")
     @classmethod

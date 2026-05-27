@@ -367,6 +367,66 @@ describe("endpoint paths", () => {
     expect(rows[1].encrypted).toBe(false);
   });
 
+  it("rotateHostCert POSTs to /servers/{id}/rotate-host-cert", async () => {
+    // Phase 2c CP3.3 — the dashboard's "Rotate host cert" button
+    // calls this endpoint, gets back a {task_id, server} envelope,
+    // and threads the task_id through TaskPoller like every other
+    // server-side async action.
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
+      makeResponse(202, {
+        task_id: "rotate-task-123",
+        server: {
+          id: 7,
+          hostname: "hub.example.com",
+          ssh_port: 22,
+          ssh_username: "ubuntu",
+          ssh_key_id: 1,
+          endpoint_host: "hub.example.com",
+          endpoint_port: 51820,
+          interface: "wg0",
+          subnet: "10.9.0.0/24",
+          address: "10.9.0.1/24",
+          public_key: "PUB",
+          status: "ready",
+          created_at: "2026-05-27T00:00:00Z",
+          host_cert_serial: 123456789,
+          host_cert_principals: "hub.example.com",
+          host_cert_valid_after: "2026-05-27T00:00:00Z",
+          host_cert_valid_before: "2026-05-28T00:00:00Z",
+        },
+      }),
+    );
+
+    const result = await api.rotateHostCert(7);
+
+    expect(result.task_id).toBe("rotate-task-123");
+    expect(result.server.id).toBe(7);
+    expect(result.server.host_cert_serial).toBe(123456789);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://test.local/servers/7/rotate-host-cert",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("rotateHostCert surfaces a 409 from the API as ApiError", async () => {
+    // The backend returns 409 when SSH_AUTH_MODE != "ca". The
+    // dashboard catches this through the standard ApiError path and
+    // renders the detail as the inline error message.
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      makeResponse(
+        409,
+        {
+          detail:
+            "host-cert rotation requires SSH_AUTH_MODE=ca; current value is 'legacy'. See docs/vault-cookbook.md §3 for the CA-mode setup.",
+        },
+        false,
+      ),
+    );
+    await expect(api.rotateHostCert(7)).rejects.toMatchObject({
+      status: 409,
+    });
+  });
+
   it("deleteClient returns the hub reconfigure task envelope", async () => {
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
       makeResponse(202, { task_id: "abc", client_id: 3, server_id: 1 }),

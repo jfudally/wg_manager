@@ -58,6 +58,42 @@ export interface Server {
   public_key: string;
   status: NodeStatus;
   created_at: string;
+  /**
+   * Phase 2c CP3.1 — snapshot of the SSH host certificate the control
+   * plane last issued for this server, captured at provisioning /
+   * rotation time. All five fields are present together (or all NULL
+   * on a Phase 2b row whose operator hasn't opted into CA mode yet).
+   */
+  host_cert_serial?: number | null;
+  /** Comma-separated principals embedded in the host cert. */
+  host_cert_principals?: string | null;
+  /** ISO-8601 string. NotBefore on the cert. */
+  host_cert_valid_after?: string | null;
+  /** ISO-8601 string. NotAfter — the rotation deadline. */
+  host_cert_valid_before?: string | null;
+  /**
+   * Full OpenSSH-formatted host cert body. Surfaced so the dashboard
+   * can copy/inspect on demand without re-fetching; not rendered by
+   * default.
+   */
+  host_cert_pem?: string | null;
+  /**
+   * The CA public key that signed the cert, captured at signing time.
+   * Used to flag rows pinned to a CA that's since been rotated.
+   */
+  host_cert_ca_public_key?: string | null;
+}
+
+/**
+ * 202 response for `POST /servers/{id}/rotate-host-cert`. Same shape
+ * as {@link ServerRegisterResponse} — the server row is returned at
+ * dispatch time (its host_cert columns still reflect the previous
+ * cert); poll `GET /tasks/{task_id}` for the freshly-minted serial /
+ * `valid_before`.
+ */
+export interface HostCertRotateResponse {
+  task_id: string;
+  server: Server;
 }
 
 export interface ServerCreate {

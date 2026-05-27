@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import Column, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Column, Text, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -69,7 +69,40 @@ class SSHKey(SQLModel, table=True):
 
 
 class Server(SQLModel, table=True):
-    """WireGuard hub node."""
+    """WireGuard hub node.
+
+    Phase 2c CP3 grows six host-cert columns that hold the SSH CA's
+    latest issuance for this server. None of them is required at row
+    creation time — they stay NULL on registration and are populated
+    only after provisioning installs the cert on the host. Callers
+    creating a row by hand (the registration router, tests) do not
+    need to set them, and the dashboard treats NULL values as "no host
+    cert minted yet" so a Phase 2b row continues to render correctly.
+
+    :ivar host_cert_pem: The full OpenSSH-formatted host certificate
+        wg-manager handed to the host, as last installed. Stored
+        verbatim so the audit log / dashboard can render the exact
+        bytes that were issued.
+    :ivar host_cert_serial: Serial the CA recorded for the latest
+        host cert. Operators use this to correlate a dashboard row
+        with Vault's audit log when a rotation is in flight.
+    :ivar host_cert_principals: Comma-separated principals embedded
+        in the cert (typically the hostname + any aliases). Comma list
+        rather than JSON to keep the SQLite/MySQL schemas identical
+        and to match the pattern :attr:`Server.address` already uses.
+    :ivar host_cert_valid_after: When the cert became valid (per the
+        cert body, not when wg-manager installed it). Equal to
+        :attr:`host_cert_valid_before` minus the TTL.
+    :ivar host_cert_valid_before: Cert expiry. The dashboard turns
+        this into a "rotate now" badge once it crosses 50% of the TTL
+        window. Operators can re-mint at any time via
+        ``POST /servers/{id}/rotate-host-cert``.
+    :ivar host_cert_ca_public_key: The CA public key (OpenSSH single
+        line) that signed the cert, captured at signing time. A
+        deliberate redundancy: if the operator rotates the SSH CA in
+        Vault, this column lets the dashboard surface the rows whose
+        host certs are still pinned to the old CA and need re-minting.
+    """
 
     id: int | None = Field(default=None, primary_key=True)
     hostname: str
@@ -84,6 +117,23 @@ class Server(SQLModel, table=True):
     public_key: str = ""
     status: NodeStatus = Field(default=NodeStatus.pending)
     created_at: datetime = Field(default_factory=_utcnow)
+    # Phase 2c CP3 — host cert snapshot. See class docstring.
+    host_cert_pem: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    # ``secrets.randbits(63)`` (used by both LocalDevSSHCA and the OpenSSH
+    # serial field) regularly exceeds the 32-bit ``Integer`` range MySQL
+    # would otherwise infer. Pin BigInteger so the column survives
+    # serials > 2³¹-1 on MySQL as well as SQLite (which doesn't care).
+    host_cert_serial: int | None = Field(
+        default=None, sa_column=Column(BigInteger, nullable=True)
+    )
+    host_cert_principals: str | None = Field(default=None)
+    host_cert_valid_after: datetime | None = Field(default=None)
+    host_cert_valid_before: datetime | None = Field(default=None)
+    host_cert_ca_public_key: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
 
 
 class Client(SQLModel, table=True):

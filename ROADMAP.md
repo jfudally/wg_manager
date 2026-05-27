@@ -200,10 +200,28 @@ Transit key's data-key client-side for a short TTL (Vault's
   CP2 tests added (9 SSHRunner / policy unit, 5 task-layer end-to-end);
   208/208 green in `local` mode, 40/40 CP2-relevant tests green in
   `vault` mode.
-- **Checkpoint 3 `[ ]`** — Host-side provisioning installs
-  `TrustedUserCAKeys` + signed host cert; Alembic 0006 (`Server`
-  host-cert columns); `POST /servers/{id}/rotate-host-cert` + dashboard
-  rotation panel.
+- **Checkpoint 3 `[x]`** (2026-05-27) — Host-side install lands in a
+  new [`wg_manager.host_ssh`](../src/wg_manager/host_ssh.py) module:
+  CA-mode `provision_server_task` mints a fresh host cert against the
+  target's `/etc/ssh/ssh_host_ed25519_key.pub`, writes the CA pubkey,
+  cert, and a `/etc/ssh/sshd_config.d/wg-manager.conf` drop-in
+  carrying `TrustedUserCAKeys` + `HostCertificate`, then reloads sshd.
+  Alembic 0006 grows six nullable columns on `server`
+  (`host_cert_pem`, `host_cert_serial`, `host_cert_principals`,
+  `host_cert_valid_after`, `host_cert_valid_before`,
+  `host_cert_ca_public_key`); `_persist_host_cert` populates them
+  atomically with the `status=ready` flip. New
+  `POST /servers/{id}/rotate-host-cert` endpoint dispatches
+  `rotate_host_cert_task` for in-place re-mint (idempotent
+  install + column overwrite); refuses with 409 in legacy mode.
+  Dashboard parity: per-row "Rotate cert" button +
+  `cert #<serial> · expires in <N>d` summary line that goes amber
+  inside 30 days and red once expired. New
+  `SSH_HOST_CERT_TTL_SECONDS` setting (default 86400). Side fix:
+  alembic env.py passes `disable_existing_loggers=False` so the
+  `wg_manager.tasks` `caplog` regression tests survive an in-process
+  alembic invocation. 16 CP3 tests + 2 vitest specs added; full
+  suite 224/224 green in `local` mode.
 - **Checkpoint 4 `[ ]`** — Dual-mode rollout: `SSHKey.mode = legacy|ca`,
   `wg-manager ssh migrate-to-ca <id>` CLI, dashboard "SSH roles"
   reframe, Alembic dropping `private_key_ct` once everything is `ca`.

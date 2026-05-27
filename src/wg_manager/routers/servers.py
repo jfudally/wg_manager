@@ -15,6 +15,7 @@ from wg_manager.schemas import (
     DiscoverAllResponse,
     DiscoveredPeerRead,
     DiscoverResponse,
+    HostCertRotateResponse,
     ServerCreate,
     ServerRead,
     ServerRegisterResponse,
@@ -24,6 +25,7 @@ from wg_manager.tasks import (
     discover_all_peers_task,
     discover_peers_task,
     provision_server_task,
+    rotate_host_cert_task,
 )
 
 router = APIRouter(prefix="/servers", tags=["servers"])
@@ -269,6 +271,64 @@ def list_server_discovered_peers(
 def list_all_discovered_peers(session: _SessionDep) -> list[DiscoveredPeer]:
     """List discovered peers across every server."""
     return list(session.exec(select(DiscoveredPeer)).all())
+
+
+@router.post(
+    "/{server_id}/rotate-host-cert",
+    response_model=HostCertRotateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def rotate_server_host_cert(
+    server_id: int, session: _SessionDep
+) -> HostCertRotateResponse:
+    """Re-mint and install the server's SSH host certificate.
+
+    Phase 2c CP3.3 — operator-driven rotation of the cert the SSH CA
+    last signed for this host. Dispatches
+    :func:`wg_manager.tasks.rotate_host_cert_task` which SSHes into
+    the host, re-runs the host-side install (idempotent), and
+    overwrites the row's ``host_cert_*`` columns with the freshly-
+    minted cert (new serial, new validity window).
+
+    Refuses synchronously with **409** when
+    :attr:`wg_manager.config.Settings.ssh_auth_mode` is not
+    ``"ca"`` — host certs are a CA-mode concept; rotating in legacy
+    mode would silently no-op the row and confuse the operator. Use
+    ``SSH_AUTH_MODE=ca`` (plus a configured SSH CA backend) to enable
+    the rotation path.
+
+    :return: ``{task_id, server}`` — task to poll, plus the row as it
+        was at dispatch time. The row's columns update once the task
+        completes; the dashboard re-queries to pick up the new cert.
+    :raises HTTPException: 404 when ``server_id`` doesn't exist; 409
+        when ``ssh_auth_mode != "ca"``.
+    """
+    row = session.get(Server, server_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    # Re-read Settings rather than trusting the module-level singleton:
+    # the test suite flips ``SSH_AUTH_MODE`` via ``monkeypatch.setenv``
+    # and the endpoint must observe that change without a process
+    # restart. In production the value is stable across the process
+    # lifetime, so the re-read is a no-op cost.
+    from wg_manager.config import Settings as _Settings
+
+    if _Settings().ssh_auth_mode.lower() != "ca":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "host-cert rotation requires SSH_AUTH_MODE=ca; "
+                f"current value is {_Settings().ssh_auth_mode!r}. "
+                "See docs/vault-cookbook.md §3 for the CA-mode setup."
+            ),
+        )
+
+    async_result = rotate_host_cert_task.delay(row.id)
+    return HostCertRotateResponse(
+        task_id=async_result.id,
+        server=ServerRead.model_validate(row),
+    )
 
 
 @router.post(

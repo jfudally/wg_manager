@@ -18,6 +18,7 @@ import type {
   DiscoverAllResponse,
   DiscoveredPeer,
   DiscoverResponse,
+  HostCertRotateResponse,
   SSHKey,
   SSHKeyCreate,
   SSHKeyUpdate,
@@ -178,6 +179,20 @@ export const api = {
     }),
   reprovisionServer: (id: number) =>
     request<ServerRegisterResponse>(`/servers/${id}/reprovision`, {
+      method: "POST",
+    }),
+  /**
+   * Re-mint and install the server's SSH host certificate (Phase 2c
+   * CP3.3). Returns 202 with `{task_id, server}`; the row's
+   * `host_cert_*` columns update once the task completes — poll via
+   * `taskStatus(task_id)` to see the new serial / `valid_before`.
+   *
+   * Fails with `ApiError(status=409)` when the backend's
+   * `SSH_AUTH_MODE` is not `"ca"`. Surface the error's `detail` to
+   * the operator — the message points at the cookbook for setup.
+   */
+  rotateHostCert: (id: number) =>
+    request<HostCertRotateResponse>(`/servers/${id}/rotate-host-cert`, {
       method: "POST",
     }),
   /**

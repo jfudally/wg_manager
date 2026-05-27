@@ -37,9 +37,10 @@ from wg_manager.crypto import (
     resolve_sshkey_passphrase,
     resolve_sshkey_private,
 )
+from wg_manager.host_ssh import HostCertInstallError, install_host_cert
 from wg_manager.models import Client, DiscoveredPeer, NodeStatus, SSHKey, Server
 from wg_manager.ssh import SSHCommandError, SSHConnectionError, SSHRunner
-from wg_manager.ssh_ca import SSHCAError, make_ssh_ca_backend
+from wg_manager.ssh_ca import HostCert, SSHCAError, make_ssh_ca_backend
 from wg_manager.wireguard import (
     discover_peers,
     provision_client,
@@ -70,6 +71,7 @@ _SSH_EXPECTED_ERRORS: tuple[type[BaseException], ...] = (
     SSHConnectionError,
     SSHCommandError,
     SSHCAError,
+    HostCertInstallError,
     socket.timeout,
     TimeoutError,
     OSError,
@@ -153,6 +155,59 @@ def _open_runner(
     )
 
 
+def _persist_host_cert(server: Server, cert: HostCert, ca_public_key: str) -> None:
+    """Copy ``cert`` and the signing CA pubkey onto ``server``'s CP3.1 columns.
+
+    Pure data assignment — does not commit. The caller (a Celery task
+    inside its open session) owns the commit so the host-cert update
+    and the row's ``status=ready`` flip ship atomically.
+
+    The principals tuple is flattened to a comma-separated string to
+    match the column shape (see :class:`wg_manager.models.Server`).
+    """
+    server.host_cert_pem = cert.cert_pem
+    server.host_cert_serial = cert.serial
+    server.host_cert_principals = ",".join(cert.principals)
+    server.host_cert_valid_after = cert.valid_after
+    server.host_cert_valid_before = cert.valid_before
+    server.host_cert_ca_public_key = ca_public_key
+
+
+def _maybe_install_host_cert(
+    *,
+    runner: SSHRunner,
+    server: Server,
+    settings: Settings,
+) -> None:
+    """Mint + install a host cert when CA mode is on; persist the cert metadata.
+
+    No-op when ``ssh_auth_mode`` is ``legacy``: Phase 2b rows stay
+    untouched until the operator opts in to CA mode. When on:
+
+    1. Resolves the CA backend (same factory the runner mint uses).
+    2. Calls :func:`wg_manager.host_ssh.install_host_cert` to push the
+       drop-in + cert + CA pubkey to the host and reload sshd.
+    3. Mutates the ``server`` row in-place via
+       :func:`_persist_host_cert` so the caller's session commit
+       captures the new column values alongside the
+       ``status=ready`` flip.
+
+    The TTL comes from ``settings.ssh_host_cert_ttl_seconds`` (24 h
+    by default; an explicit setting so an operator can tighten it
+    for high-security deployments without code changes).
+    """
+    if settings.ssh_auth_mode.lower() != "ca":
+        return
+    ca = make_ssh_ca_backend(settings)
+    cert = install_host_cert(
+        runner=runner,
+        server=server,
+        ca=ca,
+        ttl_seconds=settings.ssh_host_cert_ttl_seconds,
+    )
+    _persist_host_cert(server, cert, ca.ca_public_key)
+
+
 def _fail_clean(message: str) -> RuntimeError:
     """Return a :class:`RuntimeError` with the chained traceback suppressed.
 
@@ -212,6 +267,14 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
                 ssh_key=ssh_key,
             ) as runner:
                 public_key = provision_server(runner, server, clients)
+                # CP3: opt-in host-cert install. No-op in legacy mode;
+                # in CA mode it mints + installs and mutates ``server``
+                # in-place. The same runner is reused so we don't open
+                # a second SSH session for what is logically part of
+                # the same provisioning round.
+                _maybe_install_host_cert(
+                    runner=runner, server=server, settings=Settings()
+                )
         except _SSH_EXPECTED_ERRORS as exc:
             # Expected: timeout / auth / refused / non-zero remote command.
             # Log a single tidy line and convert to a clean failure.
@@ -242,6 +305,98 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
             "public_key": server.public_key,
             "address": server.address,
             "peer_count": len(clients),
+        }
+
+
+@celery_app.task(name="wg_manager.tasks.rotate_host_cert", bind=True)
+def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
+    """Re-mint and install the host certificate for ``server_id``.
+
+    The operator-facing rotation flow (Phase 2c CP3.3): open an SSH
+    session to the host, drive
+    :func:`wg_manager.host_ssh.install_host_cert` end-to-end (which is
+    idempotent — it overwrites every file in place and reloads sshd),
+    then update the CP3.1 host-cert columns on the row with the
+    freshly-minted cert.
+
+    Refuses with a clean failure when ``ssh_auth_mode`` is not
+    ``"ca"`` — host certs are a CA-mode concept, and rotating one
+    that was never minted would only confuse the operator. The HTTP
+    endpoint translates this to 409 ahead of dispatch so the operator
+    sees the precondition error synchronously; the guard here is
+    belt-and-braces for the unlikely case a task is enqueued out of
+    band (e.g. a CLI helper added in a later phase).
+
+    :param server_id: Primary key of the :class:`Server` whose host
+        cert should be rotated.
+    :return: ``{"status", "server_id", "serial", "valid_before"}``.
+        ``valid_before`` is an ISO-8601 string so the result dict is
+        JSON-safe for the ``GET /tasks/{id}`` response.
+    :raises ValueError: If the server (or its SSH key) cannot be loaded.
+    :raises RuntimeError: If CA mode is not active.
+    """
+    from wg_manager.db import engine
+
+    settings = Settings()
+    if settings.ssh_auth_mode.lower() != "ca":
+        # Belt-and-braces: the HTTP endpoint already returned 409
+        # before dispatching. A direct caller (Celery beat, CLI helper)
+        # gets a tidy task failure rather than a half-completed run.
+        raise _fail_clean(
+            "rotate_host_cert_task requires SSH_AUTH_MODE=ca; current "
+            f"value is {settings.ssh_auth_mode!r}"
+        ) from None
+
+    with Session(engine) as session:
+        server = session.get(Server, server_id)
+        if server is None:
+            raise ValueError(f"Server {server_id} not found")
+        ssh_key = session.get(SSHKey, server.ssh_key_id)
+        if ssh_key is None:
+            raise ValueError(f"SSH key {server.ssh_key_id} not found")
+
+        try:
+            with _open_runner(
+                host=server.hostname,
+                port=server.ssh_port,
+                username=server.ssh_username,
+                ssh_key=ssh_key,
+            ) as runner:
+                ca = make_ssh_ca_backend(settings)
+                cert = install_host_cert(
+                    runner=runner,
+                    server=server,
+                    ca=ca,
+                    ttl_seconds=settings.ssh_host_cert_ttl_seconds,
+                )
+                _persist_host_cert(server, cert, ca.ca_public_key)
+        except _SSH_EXPECTED_ERRORS as exc:
+            logger.error(
+                "host-cert rotation failed for server %s (%s): %s",
+                server_id,
+                server.hostname,
+                exc,
+            )
+            raise _fail_clean(
+                f"host-cert rotation failed for server {server_id} "
+                f"({server.hostname}): {exc}"
+            ) from None
+
+        session.add(server)
+        session.commit()
+        session.refresh(server)
+        return {
+            "status": "ok",
+            "server_id": server_id,
+            "serial": server.host_cert_serial,
+            # ISO-8601 string keeps the dict JSON-serialisable for the
+            # ``GET /tasks/{id}`` response. The DB-side datetime is
+            # already UTC.
+            "valid_before": (
+                server.host_cert_valid_before.isoformat()
+                if server.host_cert_valid_before
+                else None
+            ),
         }
 
 

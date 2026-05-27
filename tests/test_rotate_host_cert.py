@@ -1,0 +1,186 @@
+"""Tests for Phase 2c CP3.3: ``POST /servers/{id}/rotate-host-cert``.
+
+The rotate endpoint is operator-driven re-minting of a server's host
+certificate before its TTL expires (or after a Vault CA rotation
+invalidates the current signer). It must:
+
+* 404 when the server doesn't exist.
+* 409 when the global SSH auth mode is ``legacy`` — host certs only
+  make sense in CA mode, and silently no-op'ing would leave the
+  operator wondering why the row's columns never changed.
+* In CA mode, dispatch a Celery task that opens an SSH session,
+  re-runs the host-side install, and overwrites the row's host_cert
+  columns with the freshly-minted cert. The endpoint returns 202 +
+  ``{task_id, server}`` for parity with the other server-side async
+  endpoints.
+
+The task itself (:func:`wg_manager.tasks.rotate_host_cert_task`) is
+also tested directly to pin the per-row update semantics — the
+endpoint test asserts the contract; the task test asserts the
+behaviour.
+"""
+
+from __future__ import annotations
+
+import base64
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session
+
+from tests.conftest import FakeSSHRunner
+from wg_manager.models import Server
+
+
+_SAMPLE_PEM = (
+    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    "cp3-rotate-canary\n"
+    "-----END OPENSSH PRIVATE KEY-----\n"
+)
+_SAMPLE_PEM_B64 = base64.b64encode(_SAMPLE_PEM.encode("utf-8")).decode("ascii")
+_HOST_PUBKEY = (
+    "ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAINcv8wY+y8d0KcKZ6t6S/n7JoYx7M3jzqu7K2YgQGvD7"
+    " root@cp3-rotate.example.com"
+)
+
+
+def _register_host_pubkey(host: str) -> None:
+    FakeSSHRunner.OUTPUTS[(host, "ssh_host_ed25519_key.pub")] = _HOST_PUBKEY + "\n"
+
+
+def _enable_ca_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SSH_AUTH_MODE", "ca")
+    monkeypatch.setenv("SSH_CA_BACKEND", "local")
+    monkeypatch.delenv("SSH_CA_LOCAL_DEV_PEM", raising=False)
+
+
+def _register_server(client: TestClient, hostname: str) -> int:
+    key_id = int(
+        client.post(
+            "/ssh-keys",
+            json={"name": "cp3-rot", "private_key_b64": _SAMPLE_PEM_B64},
+        ).json()["id"]
+    )
+    resp = client.post(
+        "/servers",
+        json={
+            "hostname": hostname,
+            "ssh_username": "ubuntu",
+            "ssh_key_id": key_id,
+            "endpoint_host": hostname,
+        },
+    )
+    assert resp.status_code == 202, resp.text
+    return int(resp.json()["server"]["id"])
+
+
+# ---------------------------------------------------------------------------
+# Endpoint shape
+# ---------------------------------------------------------------------------
+
+
+class TestRotateHostCertEndpoint:
+    """``POST /servers/{id}/rotate-host-cert`` contract."""
+
+    def test_returns_202_and_envelope_in_ca_mode(
+        self,
+        client: TestClient,
+        engine: object,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _enable_ca_mode(monkeypatch)
+        host = "rot-ok.example.com"
+        _register_host_pubkey(host)
+        server_id = _register_server(client, host)
+
+        resp = client.post(f"/servers/{server_id}/rotate-host-cert")
+
+        assert resp.status_code == 202, resp.text
+        body = resp.json()
+        assert "task_id" in body and body["task_id"]
+        assert body["server"]["id"] == server_id
+        # And the row's columns reflect the rotation (eager mode ran
+        # the task synchronously). Serial differs from the cert minted
+        # at provisioning time because the CA picks a fresh
+        # ``secrets.randbits(63)`` for each issuance.
+        with Session(engine) as session:  # type: ignore[arg-type]
+            row = session.get(Server, server_id)
+            assert row is not None
+            assert row.host_cert_serial is not None
+            assert row.host_cert_principals == host
+
+    def test_returns_404_when_server_missing(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _enable_ca_mode(monkeypatch)
+        resp = client.post("/servers/9999/rotate-host-cert")
+        assert resp.status_code == 404, resp.text
+
+    def test_returns_409_in_legacy_mode(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Rotating a host cert in legacy mode is a config-error 409.
+
+        Legacy mode has no host-cert column population at provisioning
+        time; trying to rotate one out of nothing would be a silent
+        no-op. 409 (Conflict) is the standard FastAPI shape for
+        "the resource exists but the requested state transition is
+        invalid".
+        """
+        monkeypatch.setenv("SSH_AUTH_MODE", "legacy")
+        host = "rot-legacy.example.com"
+        _register_host_pubkey(host)
+        server_id = _register_server(client, host)
+
+        resp = client.post(f"/servers/{server_id}/rotate-host-cert")
+        assert resp.status_code == 409, resp.text
+        assert "SSH_AUTH_MODE" in resp.text or "ca" in resp.text.lower()
+
+
+# ---------------------------------------------------------------------------
+# Task-level: in-place rotation overwrites the columns
+# ---------------------------------------------------------------------------
+
+
+class TestRotateHostCertTask:
+    """``rotate_host_cert_task`` re-mints + persists, even on an already-populated row."""
+
+    def test_overwrites_existing_host_cert_columns(
+        self,
+        client: TestClient,
+        engine: object,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _enable_ca_mode(monkeypatch)
+        host = "rot-overwrite.example.com"
+        _register_host_pubkey(host)
+        server_id = _register_server(client, host)
+
+        # Snapshot the first cert's serial so we can prove rotation
+        # produced a different one.
+        with Session(engine) as session:  # type: ignore[arg-type]
+            row = session.get(Server, server_id)
+            assert row is not None
+            first_serial = row.host_cert_serial
+            first_valid_before = row.host_cert_valid_before
+            assert first_serial is not None
+
+        from wg_manager.tasks import rotate_host_cert_task
+
+        result = rotate_host_cert_task(server_id)
+
+        assert result["server_id"] == server_id
+        assert result["status"] == "ok"
+        assert result["serial"] != first_serial
+
+        with Session(engine) as session:  # type: ignore[arg-type]
+            row = session.get(Server, server_id)
+            assert row is not None
+            assert row.host_cert_serial == result["serial"]
+            assert row.host_cert_valid_before is not None
+            # New cert is at least as far out as the old one (TTL
+            # didn't shrink mid-test).
+            assert row.host_cert_valid_before >= first_valid_before

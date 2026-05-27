@@ -20,7 +20,14 @@ from wg_manager.config import settings
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ``disable_existing_loggers=False`` is critical: with the default
+    # (``True``), running ``alembic`` programmatically from a pytest
+    # process silently turns off every logger that isn't named in
+    # alembic.ini — including ``wg_manager.tasks``, which the SSH-error
+    # regression tests assert on via ``caplog``. Preserving existing
+    # loggers means the app's logging contract survives an in-process
+    # alembic invocation (test suite, CLI helpers, ``make migrate``).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Inject the runtime URL so it never has to be duplicated in alembic.ini.
 config.set_main_option("sqlalchemy.url", settings.database_url)

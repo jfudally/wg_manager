@@ -298,6 +298,69 @@ tests/test_tasks_ssh_ca.py`):
 14 passed in ~0.2s
 ```
 
+### Phase 2c checkpoint 3 — host-side install + rotation endpoint shipped (2026-05-27)
+
+CP3 closes the loop the CP2 docstring promised: every CA-mode
+provision now also installs the CA pubkey + a freshly-minted host
+cert on the target host, so [`KnownHostsCAPolicy`](../src/wg_manager/ssh.py)
+has something real to verify against. The new module is
+[`wg_manager.host_ssh`](../src/wg_manager/host_ssh.py); the operator-
+facing rotation hook is `POST /servers/{id}/rotate-host-cert`.
+
+What CP3 turns on (on top of the CP2 setting flip):
+
+1. **Host-side install** during `provision_server_task` when
+   `SSH_AUTH_MODE=ca`. The task SSHes in with a freshly-minted user
+   cert, runs the usual WireGuard install, then calls
+   `host_ssh.install_host_cert(...)` which:
+   - reads `/etc/ssh/ssh_host_ed25519_key.pub` over SSH;
+   - asks the CA to sign it as a host cert for `server.hostname`
+     (TTL controlled by `SSH_HOST_CERT_TTL_SECONDS`, default 24 h);
+   - writes the CA pubkey to `/etc/ssh/wg-manager-user-ca.pub`,
+     the cert to `/etc/ssh/ssh_host_ed25519_key-cert.pub`, and a
+     drop-in at `/etc/ssh/sshd_config.d/wg-manager.conf` with
+     `TrustedUserCAKeys` + `HostCertificate` directives;
+   - runs `systemctl reload sshd` (falls back to `restart sshd`
+     and the `ssh` unit name on debian-likes that use that).
+2. **Persisted snapshot** on the `server` row via the new Alembic
+   0006 columns (`host_cert_serial`, `host_cert_principals`,
+   `host_cert_valid_after`, `host_cert_valid_before`,
+   `host_cert_pem`, `host_cert_ca_public_key`). The dashboard
+   reads these to render the cert summary + expiry badge.
+3. **Operator-driven rotation** at
+   `POST /servers/{id}/rotate-host-cert`. Dispatches the new
+   `rotate_host_cert_task` which re-runs the install (idempotent —
+   every file is overwritten in place) and updates the row's
+   columns. Refuses with **409** when `SSH_AUTH_MODE != "ca"`.
+4. **Dashboard parity** — every server row exposes a "Rotate cert"
+   button; populated rows render a `cert #<serial> · expires in
+   <N>d` line under the hostname, which goes amber inside 30 days
+   and red once expired.
+
+```bash
+# .env additions on top of CP2
+SSH_HOST_CERT_TTL_SECONDS=86400  # 24 h; cap aligns with the Vault host role's max_ttl
+```
+
+The sshd drop-in body wg-manager writes:
+
+```
+# Managed by wg-manager (Phase 2c CP3). Do not hand-edit.
+TrustedUserCAKeys /etc/ssh/wg-manager-user-ca.pub
+HostCertificate   /etc/ssh/ssh_host_ed25519_key-cert.pub
+```
+
+Test snapshot (`pytest -q tests/test_host_cert_columns.py
+tests/test_host_ssh.py tests/test_tasks_host_cert.py
+tests/test_rotate_host_cert.py`):
+
+```
+16 passed in ~0.2s
+```
+
+(Plus 2 vitest specs in `web/__tests__/servers-host-cert.test.tsx`
+covering the dashboard rotation button + cert summary line.)
+
 ### Target-host setup (Phase 2c provisioning step)
 
 The managed host needs to trust the CA. Provisioning writes:
