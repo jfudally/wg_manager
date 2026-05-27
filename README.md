@@ -199,6 +199,41 @@ Alembic revisions:
   only after `GET /crypto/status` reports `sshkey_legacy == 0` and
   `client_legacy == 0`; the cookbook documents the full sequence.
 
+## SSH CA (Phase 2c, in progress)
+
+The follow-up to encryption at rest is **eliminating SSH private keys
+entirely**. [`wg_manager.ssh_ca`](src/wg_manager/ssh_ca.py) mints a
+fresh Ed25519 keypair in memory, asks an SSH CA to sign the public
+half, hands the (private PEM, cert) pair to paramiko for one session,
+then drops both on the floor.
+
+Backend selection mirrors `wg_manager.crypto`:
+
+```bash
+SSH_CA_BACKEND=vault                           # production
+SSH_CA_VAULT_MOUNT=ssh
+SSH_CA_VAULT_USER_ROLE=wg-manager-provision
+SSH_CA_VAULT_HOST_ROLE=wg-manager-hosts
+```
+
+Bootstrap the Vault SSH engine + the two roles (idempotent):
+
+```bash
+make ssh-ca-bootstrap
+```
+
+Tests run hermetically against the `local` backend (in-process
+throwaway CA). Pointing them at a running Vault container exercises
+the full `local`/`vault` matrix:
+
+```bash
+make vault-up
+SSH_CA_BACKEND=vault pytest -q tests/test_ssh_ca.py
+```
+
+Phase 2c is rolling out across five checkpoints (see `ROADMAP.md`).
+Checkpoint 1 — the `ssh_ca` module + bootstrap — is shipped.
+
 ## Migrations
 
 Schema is managed by Alembic. Common commands:

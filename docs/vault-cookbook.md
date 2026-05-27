@@ -157,6 +157,57 @@ in memory, Vault signs the public half, the cert is used for one
 provisioning run, then both are discarded. **No SSH private key ever
 lives in MySQL.**
 
+### Phase 2c checkpoint 1 — `wg_manager.ssh_ca` shipped (2026-05-27)
+
+The raw hvac calls below have been wrapped into
+[`wg_manager.ssh_ca`](../src/wg_manager/ssh_ca.py). Application code
+calls one of two backends instead of poking hvac directly:
+
+* `LocalDevSSHCA` — in-process throwaway Ed25519 CA, selected by
+  `SSH_CA_BACKEND=local`. Used by the test suite (the
+  `local`/`vault` parameterised fixture in `tests/test_ssh_ca.py`)
+  and by developers who don't want a Vault container in the loop.
+* `VaultSSHCA` — wraps the real Vault SSH engine, selected by
+  `SSH_CA_BACKEND=vault`. The CA private key never leaves Vault.
+
+Both implement the same `SSHCABackend` protocol:
+
+```python
+backend.ca_public_key                                    # for TrustedUserCAKeys
+backend.mint_user_cert(principals=["root"], ttl_seconds=300)
+backend.mint_host_cert(public_key_openssh=..., principals=[...], ttl_seconds=86400)
+```
+
+`VaultSSHCA.bootstrap(...)` and the `make ssh-ca-bootstrap` target run
+the idempotent setup against a configured Vault. Example output:
+
+```
+$ make ssh-ca-bootstrap
+[OK] SSH CA configured at 'ssh'
+     user role: wg-manager-provision
+     host role: wg-manager-hosts
+     CA public key (drop into /etc/ssh/wg-manager-user-ca.pub):
+       ssh-rsa AAAAB3NzaC1yc2E…
+```
+
+> The dev-mode Vault generates an **RSA** CA key by default. OpenSSH
+> happily accepts a cert with an `ssh-ed25519-cert-v01@openssh.com`
+> subject signed by an RSA CA, so this is correct but visually noisy.
+> Production bootstraps should pass `key_type="ed25519"` to
+> `submit_ca_information(...)` for symmetry; the `LocalDevSSHCA`
+> already uses Ed25519 for the dev CA so test output is uniform.
+
+Test snapshot (`make vault-up && pytest -q tests/test_ssh_ca.py`):
+
+```
+26 passed in ~23s   # 13 local + 13 vault — full matrix
+```
+
+### Raw hvac flow (reference)
+
+Kept here so a reader can recognise what the wrapper is doing. New
+code should call `wg_manager.ssh_ca` instead.
+
 ```python
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey

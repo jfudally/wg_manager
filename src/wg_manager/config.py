@@ -34,6 +34,22 @@ class Settings(BaseSettings):
         wg-manager secrets. Must be created with ``derived=true`` so the
         per-row context binding actually takes effect.
     :cvar crypto_vault_transit_mount: Mount path of the Transit engine.
+    :cvar ssh_ca_backend: Which SSH-CA backend
+        :func:`wg_manager.ssh_ca.make_ssh_ca_backend` will return.
+        One of ``"local"`` (in-process throwaway ed25519 CA, dev / tests
+        only) or ``"vault"`` (Vault SSH secrets engine). Defaults to
+        ``"local"`` so the test suite stays hermetic.
+    :cvar ssh_ca_local_dev_pem: Optional PEM body of an ed25519 private
+        key used as the CA when ``ssh_ca_backend == "local"``. When unset
+        the backend generates an ephemeral CA at construction. **Never
+        set this in production** — Phase 2c production is Vault.
+    :cvar ssh_ca_vault_mount: Mount path of the Vault SSH secrets engine
+        wg-manager talks to.
+    :cvar ssh_ca_vault_user_role: Vault role name used for short-lived
+        operator-facing user certificates (i.e. the certs the wg-manager
+        worker presents when SSHing into managed hosts).
+    :cvar ssh_ca_vault_host_role: Vault role name used for managed-host
+        certificates installed on the remote sshd.
     """
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)
@@ -59,6 +75,13 @@ class Settings(BaseSettings):
     )
     crypto_vault_transit_key: str = "wg-manager"
     crypto_vault_transit_mount: str = "transit"
+
+    # ----- SSH CA (Phase 2c, see wg_manager.ssh_ca) -----
+    ssh_ca_backend: str = "local"
+    ssh_ca_local_dev_pem: str | None = None
+    ssh_ca_vault_mount: str = "ssh"
+    ssh_ca_vault_user_role: str = "wg-manager-provision"
+    ssh_ca_vault_host_role: str = "wg-manager-hosts"
 
     @field_validator("default_subnet")
     @classmethod

@@ -177,7 +177,27 @@ Transit key's data-key client-side for a short TTL (Vault's
 
 ---
 
-### Phase 2c — Eliminate stored SSH keys (Vault SSH CA) `[ ]`
+### Phase 2c — Eliminate stored SSH keys (Vault SSH CA) `[~]`
+
+**Status snapshot.**
+- **Checkpoint 1 `[x]`** (2026-05-27) — `wg_manager.ssh_ca` module with
+  both backends (`LocalDevSSHCA` in-process Ed25519 CA + `VaultSSHCA`
+  wrapping the Vault SSH engine), `SSHCABackend` Protocol, `UserCert` /
+  `HostCert` value objects, `make_ssh_ca_backend()` factory, idempotent
+  `VaultSSHCA.bootstrap()`, `scripts/ssh_ca_bootstrap.py` + `make
+  ssh-ca-bootstrap` target. 26 ssh_ca tests green (13 local + 13 vault);
+  full suite 194/194 green in both modes. Cookbook §3 updated.
+- **Checkpoint 2 `[ ]`** — `SSHRunner` cert-based auth + `RejectPolicy` +
+  `KnownHostsCAPolicy`; tasks mint per-session.
+- **Checkpoint 3 `[ ]`** — Host-side provisioning installs
+  `TrustedUserCAKeys` + signed host cert; Alembic 0006 (`Server`
+  host-cert columns); `POST /servers/{id}/rotate-host-cert` + dashboard
+  rotation panel.
+- **Checkpoint 4 `[ ]`** — Dual-mode rollout: `SSHKey.mode = legacy|ca`,
+  `wg-manager ssh migrate-to-ca <id>` CLI, dashboard "SSH roles"
+  reframe, Alembic dropping `private_key_ct` once everything is `ca`.
+- **Checkpoint 5 `[ ]`** — Acceptance: end-to-end provision against a
+  dockerised sshd using only Vault-signed certs.
 
 **Closes.** T-5, T-6 (and a stronger form of T-1: there's nothing left to
 steal).
