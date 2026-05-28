@@ -53,6 +53,8 @@ def main() -> int:
             mount_point=settings.ssh_ca_vault_mount,
             user_role=settings.ssh_ca_vault_user_role,
             host_role=settings.ssh_ca_vault_host_role,
+            allowed_users=settings.ssh_ca_vault_allowed_users,
+            allowed_host_domains=settings.ssh_ca_vault_allowed_host_domains,
         )
     except SSHCAError as exc:
         print(f"ERROR: bootstrap failed: {exc}", file=sys.stderr)
@@ -61,6 +63,11 @@ def main() -> int:
     print(f"[OK] SSH CA configured at {settings.ssh_ca_vault_mount!r}")
     print(f"     user role: {settings.ssh_ca_vault_user_role}")
     print(f"     host role: {settings.ssh_ca_vault_host_role}")
+    print(f"     allowed user principals: {settings.ssh_ca_vault_allowed_users}")
+    print(
+        f"     allowed host domains: "
+        f"{settings.ssh_ca_vault_allowed_host_domains or '(any — dev default)'}"
+    )
     print("     CA public key (drop into /etc/ssh/wg-manager-user-ca.pub):")
     print(f"       {backend.ca_public_key}")
     return 0

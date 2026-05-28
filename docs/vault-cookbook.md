@@ -186,9 +186,20 @@ $ make ssh-ca-bootstrap
 [OK] SSH CA configured at 'ssh'
      user role: wg-manager-provision
      host role: wg-manager-hosts
+     allowed user principals: root,ubuntu,ec2-user,azureuser,debian,admin
+     allowed host domains: (any — dev default)
      CA public key (drop into /etc/ssh/wg-manager-user-ca.pub):
        ssh-rsa AAAAB3NzaC1yc2E…
 ```
+
+The user-principal list comes from `SSH_CA_VAULT_ALLOWED_USERS`
+(default covers the common cloud-image accounts so a freshly-cut
+Ubuntu/Amazon-Linux/Azure VM can be reached on first run). The host
+domain set comes from `SSH_CA_VAULT_ALLOWED_HOST_DOMAINS`; empty is
+treated as "any principal" (`allowed_domains='*'`,
+`allow_bare_domains=true`, `allow_subdomains=true`) — appropriate
+for IP-only fleets and dev. Tighten both for production by exporting
+the env vars before `make ssh-ca-bootstrap`.
 
 > The dev-mode Vault generates an **RSA** CA key by default. OpenSSH
 > happily accepts a cert with an `ssh-ed25519-cert-v01@openssh.com`

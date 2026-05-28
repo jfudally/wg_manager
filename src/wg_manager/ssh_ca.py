@@ -13,8 +13,13 @@ Two backends implement :class:`SSHCABackend`:
 * :class:`LocalDevSSHCA` — an in-process throwaway CA. Used by the test
   suite and by developers who don't want a Vault container in the loop.
   **Not** safe for production: the CA private key lives in process
-  memory and is regenerated on every restart unless the operator pins
-  one via ``SSH_CA_LOCAL_DEV_PEM``.
+  memory. The first :func:`make_ssh_ca_backend` call generates (or
+  loads) the CA and every later call in the same process returns the
+  same instance (see :data:`_LOCAL_CA_CACHE`); on a *new* process the
+  CA is fresh again unless the operator pinned one via
+  ``SSH_CA_LOCAL_DEV_PEM``. Multi-process dev (API + Celery worker)
+  therefore requires the pin — otherwise the worker and the API each
+  hold a different CA and CA-mode SSH breaks on the second hop.
 * :class:`VaultSSHCA` — wraps the Vault SSH secrets engine. The CA
   private key never leaves Vault; we hold only the public half and a
   token that can request signatures from the configured roles. This is
@@ -376,7 +381,7 @@ class VaultSSHCA:
         host_role: str,
         user_default_ttl: str = "5m",
         host_default_ttl: str = "24h",
-        allowed_users: str = "root",
+        allowed_users: str = "root,ubuntu,ec2-user,azureuser,debian,admin",
         allowed_host_domains: str = "",
     ) -> "VaultSSHCA":
         """Configure the SSH engine and two roles idempotently, then return a backend.
@@ -397,10 +402,24 @@ class VaultSSHCA:
             ``POST /servers/{id}/rotate-host-cert`` endpoint (Checkpoint 3)
             triggers an explicit re-sign before expiry.
         :param allowed_users: Comma-separated list of legal user-cert
-            principals.
-        :param allowed_host_domains: ``allowed_domains`` for the host role
-            — empty means "no domain restriction", and the bootstrap also
-            sets ``allow_subdomains=False`` in that case.
+            principals. Default covers the common cloud-image accounts
+            (``root`` for bare-metal/self-managed boxes, ``ubuntu`` for
+            Ubuntu AMIs/Multipass, ``ec2-user`` for Amazon Linux,
+            ``azureuser`` for Azure Marketplace images, ``debian`` for
+            Debian AMIs, ``admin`` for some Debian/CIS hardened images)
+            so a first-run ``wg-manager ssh migrate-to-ca`` against any
+            mainstream VM succeeds without forcing the operator to
+            re-bootstrap the role. Production deployments should tighten
+            this to the specific accounts in use.
+        :param allowed_host_domains: ``allowed_domains`` for the host role.
+            Empty (the default) is interpreted as "any principal" —
+            ``allowed_domains='*'`` with ``allow_bare_domains=True`` and
+            ``allow_subdomains=True`` — so the bootstrap is usable
+            against IP-only fleets (the 2026-05-28 cloud-VM lockout was
+            caused by the prior "no restriction" default actually
+            translating to "Vault refuses every principal"). Production
+            deployments with stable DNS should set this to a real
+            domain list (e.g. ``"prod.example.com"``).
         :raises SSHCAError: If Vault rejects the mount / CA / role
             configuration for a reason other than "already exists".
         """
@@ -446,6 +465,19 @@ class VaultSSHCA:
             }
             if allowed_host_domains:
                 host_payload["allowed_domains"] = allowed_host_domains
+                host_payload["allow_subdomains"] = True
+            else:
+                # Vault refuses to sign a host cert unless the role
+                # whitelists the requested principal in some way; an
+                # unset ``allowed_domains`` therefore means "no host
+                # cert is signable", not "any host cert is signable" —
+                # the opposite of what an operator running ``make
+                # ssh-ca-bootstrap`` against a clean Vault expects.
+                # Bridge that by treating the empty-domain default as
+                # "any principal": ``*`` + bare + subdomains covers
+                # IP-only fleets, internal DNS, and FQDNs uniformly.
+                host_payload["allowed_domains"] = "*"
+                host_payload["allow_bare_domains"] = True
                 host_payload["allow_subdomains"] = True
             client.secrets.ssh.create_role(**host_payload)  # type: ignore[arg-type]
         except VaultError as exc:
@@ -571,11 +603,38 @@ class VaultSSHCA:
 # ---------------------------------------------------------------------------
 
 
+# Per-process cache for :class:`LocalDevSSHCA` instances returned by the
+# factory. Keyed by the ``ssh_ca_local_dev_pem`` value (or ``None`` when
+# the operator hasn't pinned one), so:
+#
+# * Two factory calls with the same (or no) pinned PEM return the *same*
+#   backend — host certs installed by one call can be verified by the
+#   next. This fixes the 2026-05-28 lockout, where each factory call
+#   generated a fresh in-memory CA and the resulting host certs were
+#   immediately untrustable by the next session.
+# * Pinning a new PEM still produces a new backend (a different cache
+#   key), so the existing
+#   :func:`test_local_backend_honours_supplied_pem` contract holds.
+#
+# Cache is process-local on purpose — :class:`LocalDevSSHCA` is a
+# dev-only backend whose private key never leaves memory, so sharing
+# across processes would require persisting the key (which defeats the
+# "throwaway" framing). The right answer for multi-process dev is to
+# pin ``SSH_CA_LOCAL_DEV_PEM``; the right answer for prod is Vault.
+_LOCAL_CA_CACHE: dict[str | None, LocalDevSSHCA] = {}
+
+
 def make_ssh_ca_backend(settings: Settings | None = None) -> SSHCABackend:
     """Return the backend selected by ``settings.ssh_ca_backend``.
 
     Mirrors :func:`wg_manager.crypto.make_backend` so the two layers feel
     the same to read.
+
+    The local backend is memoised per-process (see :data:`_LOCAL_CA_CACHE`):
+    the first call generates (or loads) the CA, every subsequent call
+    with the same PEM returns the same backend instance. Without this,
+    each factory call regenerated the CA, which silently broke host-cert
+    verification the moment the second factory call ran.
 
     :param settings: Optional explicit settings instance; defaults to a
         fresh :class:`Settings` (which re-reads ``.env`` and environment).
@@ -589,9 +648,12 @@ def make_ssh_ca_backend(settings: Settings | None = None) -> SSHCABackend:
     backend = settings.ssh_ca_backend.lower()
     if backend == "local":
         pem = settings.ssh_ca_local_dev_pem
-        if pem:
-            return LocalDevSSHCA.from_pem(pem)
-        return LocalDevSSHCA.generate()
+        cached = _LOCAL_CA_CACHE.get(pem)
+        if cached is not None:
+            return cached
+        ca = LocalDevSSHCA.from_pem(pem) if pem else LocalDevSSHCA.generate()
+        _LOCAL_CA_CACHE[pem] = ca
+        return ca
     if backend == "vault":
         if not settings.crypto_vault_token:
             raise SSHCAError(

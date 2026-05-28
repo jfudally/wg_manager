@@ -82,6 +82,24 @@ class Settings(BaseSettings):
     ssh_ca_vault_mount: str = "ssh"
     ssh_ca_vault_user_role: str = "wg-manager-provision"
     ssh_ca_vault_host_role: str = "wg-manager-hosts"
+    # Comma-separated principals the Vault user-cert role accepts. The
+    # default covers the cloud-image accounts (``root``, ``ubuntu``,
+    # ``ec2-user``, ``azureuser``, ``debian``, ``admin``) so the first
+    # ``wg-manager ssh migrate-to-ca`` against a stock AMI/Azure image
+    # works without re-bootstrapping the role. Production deployments
+    # should tighten this to the specific accounts in use — feeds
+    # straight into :meth:`wg_manager.ssh_ca.VaultSSHCA.bootstrap`'s
+    # ``allowed_users`` kwarg via ``scripts/ssh_ca_bootstrap.py``.
+    ssh_ca_vault_allowed_users: str = (
+        "root,ubuntu,ec2-user,azureuser,debian,admin"
+    )
+    # Comma-separated list of domains the host-cert role accepts as
+    # principals. Empty (the default) means "any principal" — see the
+    # extended discussion on
+    # :meth:`wg_manager.ssh_ca.VaultSSHCA.bootstrap`'s
+    # ``allowed_host_domains`` kwarg. Set to a real domain list (e.g.
+    # ``"prod.example.com"``) once the fleet has stable DNS.
+    ssh_ca_vault_allowed_host_domains: str = ""
     # **Deprecated since Phase 2c CP4.1** — left in place so existing
     # ``.env`` files don't trip pydantic's ``extra='forbid'`` shape,
     # but the task layer no longer reads this. Routing is now driven

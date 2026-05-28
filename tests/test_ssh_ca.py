@@ -408,3 +408,157 @@ class TestMakeSSHCABackend:
         monkeypatch.setenv("SSH_CA_BACKEND", "magical-realism")
         with pytest.raises(ValueError, match="magical-realism"):
             make_ssh_ca_backend(Settings())
+
+    def test_local_backend_stable_across_calls(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two calls to ``make_ssh_ca_backend`` with the local backend and
+        no pinned PEM must return backends advertising the *same* CA
+        public key.
+
+        Regression test for the 2026-05-28 lockout: previously each call
+        generated a fresh in-memory CA, so a host cert installed by one
+        call could not be verified by the next. The docstring on
+        :class:`LocalDevSSHCA` advertises "regenerated on every restart" —
+        per-call regeneration violates that contract.
+        """
+        monkeypatch.setenv("SSH_CA_BACKEND", "local")
+        monkeypatch.delenv("SSH_CA_LOCAL_DEV_PEM", raising=False)
+        first = make_ssh_ca_backend(Settings())
+        second = make_ssh_ca_backend(Settings())
+        assert first.ca_public_key == second.ca_public_key, (
+            "local backend regenerated the CA between calls — "
+            "host certs installed by one call cannot be verified by the next"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Settings exposes operator-tunable defaults for the Vault SSH CA roles
+# ---------------------------------------------------------------------------
+
+
+class TestVaultSSHCASettings:
+    """The ``make ssh-ca-bootstrap`` script reads these to configure roles."""
+
+    def test_settings_exposes_allowed_users(self) -> None:
+        """``ssh_ca_vault_allowed_users`` must exist on Settings so the
+        bootstrap script can thread an operator-configured list through to
+        Vault.
+
+        Default must be permissive enough that the common cloud-image
+        usernames (``azureuser``, ``ubuntu``, ``ec2-user``) work
+        out-of-the-box, otherwise the first ``discover-all`` against a
+        cloud VM fails with "is not a valid value for valid_principals"
+        — the exact 2026-05-28 symptom.
+        """
+        s = Settings()
+        allowed = s.ssh_ca_vault_allowed_users
+        assert isinstance(allowed, str) and allowed.strip()
+        names = {u.strip() for u in allowed.split(",") if u.strip()}
+        for required in ("root", "azureuser", "ubuntu", "ec2-user"):
+            assert required in names, (
+                f"{required!r} missing from default ssh_ca_vault_allowed_users "
+                f"({allowed!r}); cloud-image VMs using {required} won't be "
+                f"reachable via CA-mode SSH"
+            )
+
+
+# ---------------------------------------------------------------------------
+# VaultSSHCA.bootstrap defaults must be usable out of the box
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(not _VAULT_AVAILABLE, reason="Vault not reachable")
+class TestVaultSSHCABootstrapDefaults:
+    """The bootstrap defaults must produce roles that actually sign certs.
+
+    The 2026-05-28 incident hit two role-misconfiguration cliffs in
+    succession (host role: no ``allowed_domains`` → refuses any
+    principal; user role: ``allowed_users="root"`` → refuses
+    ``azureuser``). Both are bootstrap defaults the operator would
+    have to override blindly to fix. These tests pin the contract:
+    "bootstrap with the documented defaults and then mint a host cert
+    for an arbitrary host principal".
+    """
+
+    def _bootstrap_default(
+        self, mount_suffix: str, **overrides: object
+    ) -> VaultSSHCA:
+        """Bootstrap a per-test mount with all defaults left implicit.
+
+        Returns the constructed backend so the test can call ``mint_*``.
+        """
+        client = hvac.Client(url=_VAULT_ADDR, token=_VAULT_TOKEN)
+        mount = f"ssh-bootstrap-default-{mount_suffix}"[:64]
+        try:
+            client.sys.enable_secrets_engine(backend_type="ssh", path=mount)
+        except HvacInvalidRequest as exc:
+            if "path is already in use" not in str(exc):
+                raise
+        return VaultSSHCA.bootstrap(
+            client=client,
+            mount_point=mount,
+            user_role="wg-manager-provision",
+            host_role="wg-manager-hosts",
+            **overrides,  # type: ignore[arg-type]
+        )
+
+    def test_default_bootstrap_signs_host_cert_for_ip_principal(self) -> None:
+        """Host role created with the default args must sign a host cert
+        for an IP-only principal.
+
+        Real symptom: ``vault refused to sign (host, principals=['<ip>']):
+        role is not configured to allow any principals``. This test fails
+        today because the bootstrap skips configuring ``allowed_domains``
+        when the caller doesn't pass ``allowed_host_domains``.
+        """
+        backend = self._bootstrap_default(mount_suffix="ip-principal")
+        host_priv = Ed25519PrivateKey.generate()
+        host_pub = (
+            host_priv.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH,
+            )
+            .decode()
+        )
+        cert = backend.mint_host_cert(
+            public_key_openssh=host_pub,
+            principals=["192.0.2.42"],
+            ttl_seconds=60,
+        )
+        assert cert.cert_pem.startswith("ssh-ed25519-cert-v01@openssh.com ")
+
+    def test_default_bootstrap_signs_host_cert_for_arbitrary_domain(self) -> None:
+        """Same shape, with a DNS-style principal — proves the permissive
+        default isn't IP-specific."""
+        backend = self._bootstrap_default(mount_suffix="dns-principal")
+        host_priv = Ed25519PrivateKey.generate()
+        host_pub = (
+            host_priv.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH,
+            )
+            .decode()
+        )
+        cert = backend.mint_host_cert(
+            public_key_openssh=host_pub,
+            principals=["wg-host-7.cloud-provider.internal"],
+            ttl_seconds=60,
+        )
+        assert cert.cert_pem.startswith("ssh-ed25519-cert-v01@openssh.com ")
+
+    def test_default_bootstrap_signs_user_cert_for_cloud_image_principal(
+        self,
+    ) -> None:
+        """User role's default ``allowed_users`` must include the common
+        cloud-image accounts. Specifically ``azureuser`` is the trigger
+        case from the 2026-05-28 incident.
+
+        Fails today because the bootstrap's ``allowed_users`` default is
+        the single string ``"root"``.
+        """
+        backend = self._bootstrap_default(mount_suffix="cloud-user")
+        cert = backend.mint_user_cert(principals=["azureuser"], ttl_seconds=60)
+        assert cert.cert_pem.startswith("ssh-ed25519-cert-v01@openssh.com ")

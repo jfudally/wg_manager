@@ -276,6 +276,27 @@ Transit key's data-key client-side for a short TTL (Vault's
     partial-fail / zero-server) + 4 CLI cases (happy / unknown-key /
     partial-fail exit code / passphrase round-trip). Full suite 254
     passed (1 unrelated pre-existing crypto failure).
+  - **CP4.2.1 `[x]`** (2026-05-28) — Bootstrap usability fixes
+    discovered while running the first real CA-mode `discover-all`
+    against an Azure VM. (a) `VaultSSHCA.bootstrap`'s host-role
+    default now sets `allowed_domains='*'` + `allow_bare_domains` +
+    `allow_subdomains` when no `allowed_host_domains` is supplied
+    (previously: no `allowed_domains` at all, which Vault interprets
+    as "refuse every principal" — the inverse of what the operator
+    expects). (b) User-role default `allowed_users` is now the
+    multi-cloud-image set `root,ubuntu,ec2-user,azureuser,debian,admin`
+    instead of `root` alone, so first-run migrations against stock
+    AMIs/Azure images succeed without re-bootstrapping the role.
+    (c) `make_ssh_ca_backend()`'s local backend is now memoised
+    per-process via `_LOCAL_CA_CACHE` instead of regenerating the CA
+    on every call (the prior behaviour silently broke cross-task
+    host-cert verification — same-process). (d) New Settings fields
+    `SSH_CA_VAULT_ALLOWED_USERS` and `SSH_CA_VAULT_ALLOWED_HOST_DOMAINS`
+    threaded through `scripts/ssh_ca_bootstrap.py` so production
+    tightens via env, not code edits. Tests: 5 new red→green tests in
+    `tests/test_ssh_ca.py` (1 factory stability, 1 Settings field
+    contract, 3 default-bootstrap-signs-cert cases for IP / DNS /
+    cloud-user principals). Full ssh_ca suite 31 passed.
   - **CP4.3 `[ ]`** — Dashboard "SSH roles" reframe: per-row mode
     badge + "Migrate to CA" affordance wired to the CP4.2 endpoint.
   - **CP4.4 `[ ]`** — Alembic 0008 drops `sshkey.private_key_ct` +
