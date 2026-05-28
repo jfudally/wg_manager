@@ -39,6 +39,35 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 
+# Paramiko 4.0.0's stock ``Transport._preferred_keys`` lists only the
+# bare host-key algorithms (``ssh-ed25519``, ``rsa-sha2-512``, …). During
+# the SSH KEX, sshd intersects its server-side list with the client's
+# preferred list and picks the first match — and with no cert variant
+# in the client list, the bare ``ssh-ed25519`` wins even when sshd is
+# configured to offer a ``ssh-ed25519-cert-v01@openssh.com`` host cert.
+# Paramiko then never sees the cert, ``key.public_blob`` is ``None``,
+# and :class:`KnownHostsCAPolicy` rejects the host with
+# ``"server offered no certificate (TOFU is disabled)"`` — the exact
+# symptom hit against host 65.52.211.113 on 2026-05-28 after CP4.2
+# successfully installed a CA-signed host cert.
+#
+# Prepending the cert variant tells sshd that the client *prefers* the
+# cert form: sshd then advertises the cert during KEX, paramiko
+# attaches it to ``pkey.public_blob``, and the policy can verify the
+# signing CA. The patch is harmless when sshd has no cert (paramiko
+# falls back to the bare key); it's only consulted during host-key
+# algorithm negotiation. The check below keeps the patch idempotent
+# across re-imports (pytest loads this module many times in one run).
+#
+# TODO: drop this block once upstream paramiko ships native
+# ``*-cert-v01@openssh.com`` support in ``_preferred_keys``.
+_ED25519_HOST_CERT_ALG = "ssh-ed25519-cert-v01@openssh.com"
+if _ED25519_HOST_CERT_ALG not in paramiko.Transport._preferred_keys:
+    paramiko.Transport._preferred_keys = (
+        _ED25519_HOST_CERT_ALG,
+    ) + paramiko.Transport._preferred_keys
+
+
 class SSHConnectionError(RuntimeError):
     """Raised when the SSH session cannot be established.
 

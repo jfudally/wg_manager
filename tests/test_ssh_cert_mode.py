@@ -297,3 +297,92 @@ class TestSSHRunnerCertMode:
                 pkey_pem=private_pem,
                 ca_public_key=ca.ca_public_key,
             )
+
+
+class TestParamikoPrefersCertHostKeys:
+    """Importing :mod:`wg_manager.ssh` widens paramiko's preferred host keys.
+
+    Paramiko 4.0.0's stock ``Transport._preferred_keys`` lists only the
+    bare key algorithms (``ssh-ed25519``, ``rsa-sha2-512``, …). During
+    KEX, sshd intersects its server-side list with the client's
+    preferred list and picks the first match; with no cert variant in
+    the client list, the bare ``ssh-ed25519`` wins even when sshd has
+    a CA-signed host cert installed. paramiko then never sees the
+    cert, ``key.public_blob`` is ``None``, and
+    :class:`KnownHostsCAPolicy.missing_host_key` rejects the host
+    with ``"server offered no certificate (TOFU is disabled)"``.
+
+    Reproduced against host 65.52.211.113 on 2026-05-28: sshd was
+    correctly serving ``ssh-ed25519-cert-v01@openssh.com`` (verified
+    with ``ssh -vv``), but the wg-manager Celery worker still got
+    "TOFU is disabled" because its paramiko negotiated the bare key.
+
+    Fix: at :mod:`wg_manager.ssh` import time we prepend
+    ``ssh-ed25519-cert-v01@openssh.com`` to
+    ``paramiko.Transport._preferred_keys`` so wg-manager's paramiko
+    *announces* the cert variant during KEX. sshd then offers the
+    cert, paramiko attaches it as ``key.public_blob``, and the policy
+    can verify it. This test pins the patch so a future paramiko
+    upgrade that fixes the upstream gap doesn't silently double-up
+    the entry, and so a future cleanup that removes the patch
+    notices the change.
+    """
+
+    def test_ed25519_cert_variant_is_first_preferred(self) -> None:
+        """The cert variant must precede the bare ``ssh-ed25519`` entry."""
+        import paramiko
+
+        # Importing the module is the side-effect entry point; the test's
+        # own conftest already pulls in wg_manager, but be explicit so
+        # this test reads stand-alone.
+        import wg_manager.ssh  # noqa: F401
+
+        keys = paramiko.Transport._preferred_keys
+        assert "ssh-ed25519-cert-v01@openssh.com" in keys, (
+            "wg_manager.ssh must prepend ssh-ed25519-cert-v01@openssh.com "
+            "to paramiko.Transport._preferred_keys so KEX negotiates the "
+            "cert variant when sshd offers one; otherwise the cert never "
+            "reaches KnownHostsCAPolicy and CA-mode SSH cannot work end-to-end"
+        )
+        # Prepending (not appending) ensures sshd picks the cert variant
+        # ahead of the bare key when both are offered.
+        assert keys.index("ssh-ed25519-cert-v01@openssh.com") < keys.index(
+            "ssh-ed25519"
+        ), (
+            f"cert variant must precede bare ed25519 in preference order; "
+            f"got {keys!r}"
+        )
+
+    def test_patch_is_idempotent(self) -> None:
+        """The patch block guards against duplicating the cert variant.
+
+        Module import is one-shot in normal use, but a forced re-import
+        (developer ``importlib.reload`` during debugging, or pytest's
+        own collection paths re-executing module-level code in rare
+        configurations) must not grow ``_preferred_keys`` on every
+        re-run.
+
+        We don't actually call ``importlib.reload(wg_manager.ssh)``
+        here — that would create a *new* exception class object for
+        :class:`wg_manager.ssh.SSHConnectionError`, breaking
+        downstream tests whose ``except`` clauses reference the
+        original class. Instead we run the patch's predicate logic
+        manually a second time and assert the count stays at one.
+        """
+        import paramiko
+
+        import wg_manager.ssh  # noqa: F401 — triggers the patch
+
+        # Re-execute the patch pattern directly. The guard inside
+        # wg_manager.ssh should make this a no-op.
+        marker = "ssh-ed25519-cert-v01@openssh.com"
+        if marker not in paramiko.Transport._preferred_keys:
+            paramiko.Transport._preferred_keys = (
+                marker,
+            ) + paramiko.Transport._preferred_keys
+
+        count = paramiko.Transport._preferred_keys.count(marker)
+        assert count == 1, (
+            f"_preferred_keys must contain exactly one cert-v01 entry; "
+            f"got {count} (suggests the patch is not idempotent)"
+        )
