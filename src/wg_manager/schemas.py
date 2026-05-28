@@ -6,7 +6,7 @@ from datetime import datetime
 from ipaddress import AddressValueError, IPv4Network, NetmaskValueError
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from wg_manager.models import NodeStatus, SSHKeyMode
 
@@ -51,132 +51,50 @@ def _parse_strict_subnet(value: str) -> IPv4Network:
 
 
 class SSHKeyCreate(BaseModel):
-    """Payload for registering a new SSH key.
+    """Payload for registering a new SSH role.
 
-    The private key body must be base64-encoded so newlines and other control
-    characters in the PEM body do not break JSON encoding on the client side.
-    The SSH username is **not** part of the credential — it is supplied per
-    target host when registering a server or client.
+    Post-Phase-2c-CP4.4 the row is name-and-mode only — the task
+    layer mints a fresh user cert from the SSH CA at every
+    connection, so no private-key body lands here. The body is
+    explicitly ``extra="forbid"`` so an upgrader still sending
+    ``private_key_b64`` / ``passphrase`` from a prior release gets a
+    clear 422 instead of a silently-ignored field that lulls them
+    into thinking the credential was stored.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
-    private_key_b64: str
-    passphrase: str | None = None
 
 
 class SSHKeyUpdate(BaseModel):
     """Partial-update payload for ``PATCH /ssh-keys/{id}``.
 
-    All fields are optional — omitted or null fields are left unchanged on
-    the underlying row (we use ``exclude_unset=True, exclude_none=True``
-    in the router, matching :class:`ServerUpdate` / :class:`ClientUpdate`).
-    To *clear* a previously-set passphrase, delete and recreate the key
-    rather than trying to send an empty string; the existing key body
-    would still be encrypted under the old passphrase and become
-    unusable.
+    Renames only. The pre-CP4.4 PATCH used to accept
+    ``private_key_b64`` and ``passphrase`` for in-place credential
+    rotation; those columns no longer exist, so the fields are
+    rejected with 422 (``extra="forbid"``) rather than silently
+    dropped. Operators replacing a credential should delete and
+    recreate the role.
 
-    :ivar name: New display name. Must be unique across SSH keys; a
-        collision with a different key's name produces 409.
-    :ivar passphrase: New passphrase. Stored as-is — the operator is
-        responsible for making sure it actually unlocks
-        ``private_key_b64`` (if both are sent in the same request, they
-        are both applied without cross-validation).
-    :ivar private_key_b64: Replacement private key body, base64-encoded
-        for transport safety. The decoded PEM overwrites the existing
-        ``private_key`` column on the row. Invalid base64 produces 422.
+    :ivar name: New display name. Must be unique across SSH roles; a
+        collision with a different role's name produces 409.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     name: str | None = None
-    passphrase: str | None = None
-    private_key_b64: str | None = None
-
-
-class SSHKeyMigrateToCARequest(BaseModel):
-    """Body for ``POST /ssh-keys/{id}/migrate-to-ca`` (Phase 2c CP4.2).
-
-    The bootstrap step needs a one-shot SSH private key with which to
-    open a legacy session to every server using the row. The key is
-    used in-memory by the migration helper and never persisted:
-    successful migration leaves the row's ciphertext columns NULL.
-
-    :ivar private_key_b64: Base64-encoded PEM body of an SSH key that
-        each target host currently trusts (typically the same key
-        that was originally registered for the row before its
-        ciphertext was dropped). Same encoding contract as
-        :class:`SSHKeyCreate`. Invalid base64 returns 422.
-    :ivar passphrase: Optional passphrase that unlocks the key. Only
-        forwarded to paramiko in the bootstrap session; not stored.
-    """
-
-    private_key_b64: str
-    passphrase: str | None = None
-
-
-class SSHKeyMigrateToCAServerResult(BaseModel):
-    """Per-server outcome inside :class:`SSHKeyMigrateToCAResponse`.
-
-    The endpoint walks every server using the SSH key in turn; one of
-    these is appended for each host. ``ok`` means the host now trusts
-    the CA and presents its own CA-signed host cert; ``ssh_failed``
-    means the bootstrap session couldn't reach the host or the
-    install couldn't make forward progress, with ``error`` carrying
-    the operator-facing message.
-    """
-
-    server_id: int
-    hostname: str
-    status: str
-    cert_serial: int | None = None
-    valid_before: datetime | None = None
-    error: str | None = None
-
-
-class SSHKeyMigrateToCAResponse(BaseModel):
-    """200 response envelope for ``POST /ssh-keys/{id}/migrate-to-ca``.
-
-    Reports the row's final mode (``ca`` after a fully-successful
-    migration, ``legacy`` when any per-server step failed and the
-    operator can retry) plus a per-server outcome list. The endpoint
-    always returns 200 — partial failure is encoded in the per-server
-    results, not in the HTTP status, so the dashboard and CLI can
-    render the per-host outcome table uniformly.
-
-    :ivar key_id: The SSH key row id.
-    :ivar name: Friendly name of the key (echoed so the CLI doesn't
-        have to round-trip).
-    :ivar mode: Final mode of the row. ``ca`` iff every server
-        succeeded (or the key has no servers); ``legacy`` otherwise.
-    :ivar servers_total: Number of servers that reference the key.
-    :ivar servers_ok: Number of servers whose bootstrap succeeded.
-    :ivar servers_failed: Number of servers whose bootstrap failed.
-    :ivar results: Per-server outcomes; len matches ``servers_total``.
-    """
-
-    key_id: int
-    name: str
-    mode: SSHKeyMode
-    servers_total: int
-    servers_ok: int
-    servers_failed: int
-    results: list[SSHKeyMigrateToCAServerResult]
 
 
 class SSHKeyRead(BaseModel):
-    """Public view of an SSH key — never exposes the private key body.
+    """Public view of an SSH role.
 
-    ``encrypted`` is a derived view of the ciphertext column: ``True``
-    when ``SSHKey.private_key_ct`` is populated. The dashboard uses
-    this to render the per-row "encrypted" badge from Phase 2b
-    checkpoint 3 without having to call ``/crypto/status`` for every
-    row. Post-Alembic-0005 every row should report ``True`` in steady
-    state; a ``False`` here flags a row that was inserted bypassing
-    the encryption seam (direct INSERT, restored old backup).
-
-    ``mode`` (Phase 2c CP4.1) is the row's per-key auth mode. A
-    ``legacy`` row authenticates via the stored ciphertext key; a
-    ``ca`` row mints a fresh user cert from the SSH CA at every
-    connection. Drives the dashboard "SSH roles" badge and the
-    rollout-progress view that ships in CP4.3.
+    Pre-CP4.4 this surfaced an ``encrypted`` flag derived from the
+    row's ciphertext column. Post-CP4.4 the ciphertext columns are
+    gone and the flag is meaningless — it's removed from the public
+    schema. ``mode`` is kept (always ``ca`` in the post-CP4.4 schema)
+    so the dashboard's per-row badge keeps rendering and so a future
+    backend variant has a place to land.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -184,29 +102,7 @@ class SSHKeyRead(BaseModel):
     id: int
     name: str
     created_at: datetime
-    encrypted: bool = False
-    mode: SSHKeyMode = SSHKeyMode.legacy
-
-    @model_validator(mode="before")
-    @classmethod
-    def _derive_encrypted(cls, value: Any) -> Any:
-        # When fed an ORM row, derive ``encrypted`` from the ciphertext
-        # column (which is not part of the public schema). Already-dict
-        # inputs pass through untouched so the model is still
-        # constructible from a plain JSON payload.
-        if hasattr(value, "private_key_ct"):
-            return {
-                "id": value.id,
-                "name": value.name,
-                "created_at": value.created_at,
-                "encrypted": value.private_key_ct is not None,
-                # ``mode`` is populated on the ORM row by CP4.1's
-                # migration (defaults to ``legacy``); surface it
-                # verbatim so the dashboard reads the row's truth and
-                # not an inferred value.
-                "mode": value.mode,
-            }
-        return value
+    mode: SSHKeyMode = SSHKeyMode.ca
 
 
 # ---------------------------------------------------------------------------
@@ -517,11 +413,16 @@ class TaskStatusResponse(BaseModel):
 class CryptoStatusResponse(BaseModel):
     """Snapshot of encryption-at-rest state for the dashboard panel.
 
-    Returned by ``GET /crypto/status``. The shape is stable on purpose —
-    the Next.js dashboard renders these fields verbatim and its
-    contract test in ``tests/test_crypto_status_api.py`` pins the keys.
-    Add new fields freely; do not rename or remove the existing ones
-    without bumping the UI in the same change.
+    Returned by ``GET /crypto/status``. Phase 2c CP4.4 dropped the
+    sshkey ciphertext columns — every ``SSHKey`` row is now a
+    name-and-mode label — so the only persisted secret left is the
+    manual-client WireGuard private key, and the response shape
+    shrinks accordingly. SSH-provisioned clients have no key
+    material the control plane stores and are counted in neither
+    bucket.
+
+    The Next.js dashboard renders these fields verbatim; the contract
+    test in ``tests/test_crypto_status_api.py`` pins the keys.
 
     :ivar backend: Active backend name (``"local-dev"`` or
         ``"vault-transit"``). Maps 1:1 to
@@ -530,22 +431,13 @@ class CryptoStatusResponse(BaseModel):
         (no rotation); Transit ``latest_version`` for vault. After a
         rotation the value bumps and the operator should run
         ``wg-manager crypto rewrap`` to migrate older ciphertext.
-    :ivar sshkey_encrypted: Number of ``SSHKey`` rows whose
-        ``private_key_ct`` column is populated.
-    :ivar sshkey_legacy: Number of ``SSHKey`` rows that still hold only
-        plaintext (ciphertext is ``NULL`` but ``private_key`` is set).
-        Operators want this at zero before applying the future
-        drop-plaintext migration.
     :ivar client_encrypted: Manual-client rows whose
         ``private_key_ct`` is populated.
-    :ivar client_legacy: Manual-client rows still on plaintext only.
-        SSH-provisioned clients are counted in neither bucket — they
-        have no key material the control plane stores.
+    :ivar client_legacy: Manual-client rows still on plaintext only
+        (NULL ciphertext). Operators want this at zero.
     """
 
     backend: str
     key_version: int
-    sshkey_encrypted: int
-    sshkey_legacy: int
     client_encrypted: int
     client_legacy: int

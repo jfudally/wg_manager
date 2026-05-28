@@ -82,7 +82,7 @@ def _register_server(
     key_id = int(
         client.post(
             "/ssh-keys",
-            json={"name": "cp3-task", "private_key_b64": _SAMPLE_PEM_B64},
+            json={"name": "cp3-task"},
         ).json()["id"]
     )
     if ca_mode_session is not None:
@@ -152,42 +152,12 @@ class TestProvisionServerPersistsHostCert:
 # ---------------------------------------------------------------------------
 
 
-class TestLegacyProvisionLeavesHostCertNull:
-    """When CA mode is off, the new columns stay ``None`` on a provision."""
-
-    def test_columns_remain_null(
-        self,
-        client: TestClient,
-        engine: object,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("SSH_AUTH_MODE", "legacy")
-        host = "legacy-prov.example.com"
-        _register_host_pubkey(host)
-
-        server_id = _register_server(client, host)
-
-        with Session(engine) as session:  # type: ignore[arg-type]
-            row = session.get(Server, server_id)
-            assert row is not None
-            assert row.status == NodeStatus.ready
-            for name in (
-                "host_cert_pem",
-                "host_cert_serial",
-                "host_cert_principals",
-                "host_cert_valid_after",
-                "host_cert_valid_before",
-                "host_cert_ca_public_key",
-            ):
-                assert getattr(row, name) is None, (
-                    f"legacy provisioning should not populate {name}; "
-                    f"got {getattr(row, name)!r}"
-                )
-
-
-# ---------------------------------------------------------------------------
-# Missing host pubkey — fails cleanly
-# ---------------------------------------------------------------------------
+# Phase 2c CP4.4 retired the legacy provisioning path — every
+# provision now mints a host cert and populates the CP3.1 columns by
+# construction, so the prior "legacy provisioning leaves the columns
+# null" suite is no longer reachable. The "host has no ed25519
+# pubkey" failure path below still applies and is the remaining
+# pin against a half-applied install.
 
 
 class TestProvisionFailsWhenHostKeyMissing:
@@ -201,10 +171,16 @@ class TestProvisionFailsWhenHostKeyMissing:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         _enable_ca_mode(monkeypatch)
-        # Note: we deliberately do NOT register a host pubkey output.
-        # The FakeSSHRunner returns "" for the probe, triggering the
-        # ``host public key is empty`` branch in
-        # :func:`wg_manager.host_ssh.install_host_cert`.
+        # Opt this host out of FakeSSHRunner's CP4.4 default that
+        # always returns a canned ed25519 pubkey — the failure-mode
+        # test needs the runner to mirror the real not-yet-keygen-ed
+        # shape (empty stdout from the probe), which hits
+        # :func:`wg_manager.host_ssh._read_host_pubkey`'s "host pubkey
+        # is empty" branch.
+        from tests.conftest import FakeSSHRunner
+
+        host = "no-host-key.example.com"
+        FakeSSHRunner.SUPPRESS_HOST_PUBKEY.add(host)
         # Disable eager propagation so the failure surfaces as a 202 +
         # the row going to ``error``, matching the production HTTP path.
         from wg_manager.celery_app import celery_app
@@ -212,12 +188,9 @@ class TestProvisionFailsWhenHostKeyMissing:
         original = celery_app.conf.task_eager_propagates
         celery_app.conf.task_eager_propagates = False
         try:
-            # CP4.1: ca_mode_session promotes the key before the server
-            # POST so the routing seam picks the cert branch (where the
-            # missing-host-key error is expected to surface).
             server_id = _register_server(
                 client,
-                "no-host-key.example.com",
+                host,
                 ca_mode_session=session,
             )
         finally:

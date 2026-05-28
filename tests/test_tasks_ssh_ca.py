@@ -105,7 +105,7 @@ def _bootstrap_ready_server(client: TestClient, *, hostname: str = "hub.example.
     key_id = int(
         client.post(
             "/ssh-keys",
-            json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+            json={"name": "lab"},
         ).json()["id"]
     )
     resp = client.post(
@@ -155,7 +155,7 @@ class TestProvisionServerCertMode:
         key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab"},
             ).json()["id"]
         )
         # CP4.1: routing is per-row. Flip the freshly-created key into
@@ -315,42 +315,8 @@ class TestDiscoverPeersCertMode:
         _assert_cert_matches_ca(cert_pem, ca_public_key)
 
 
-# ---------------------------------------------------------------------------
-# Legacy mode regression — default behaviour MUST be unchanged
-# ---------------------------------------------------------------------------
-
-
-class TestLegacyModeUnchanged:
-    """With ``SSH_AUTH_MODE`` unset / ``legacy``, no cert is minted."""
-
-    def test_provision_server_no_cert_in_legacy_mode(
-        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("SSH_AUTH_MODE", "legacy")
-        key_id = int(
-            client.post(
-                "/ssh-keys",
-                json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
-            ).json()["id"]
-        )
-        client.post(
-            "/servers",
-            json={
-                "hostname": "legacy.example.com",
-                "ssh_username": "ubuntu",
-                "ssh_key_id": key_id,
-                "endpoint_host": "legacy.example.com",
-            },
-        )
-        legacy_records = [
-            r for r in FakeSSHRunner.CERTS_USED if r[0] == "legacy.example.com"
-        ]
-        assert legacy_records, "expected at least one SSHRunner construction"
-        for _host, cert_pem, ca_public_key, _username in legacy_records:
-            assert cert_pem is None, (
-                f"legacy mode unexpectedly produced a cert: {cert_pem!r}"
-            )
-            assert ca_public_key is None, (
-                f"legacy mode unexpectedly passed a CA pubkey: "
-                f"{ca_public_key!r}"
-            )
+# Phase 2c CP4.4 retired the legacy auth mode entirely — every
+# connection mints from the CA now. The prior "legacy mode skips the
+# cert" regression no longer has a code path to pin and has been
+# removed; the surrounding CA-mode tests pin the only path the task
+# layer can take.

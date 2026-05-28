@@ -94,7 +94,7 @@ class TestKeysCLI:
         key_file: Path,
     ) -> None:
         add = _invoke(
-            runner, "keys", "add", "--name", "lab", "--key-file", str(key_file)
+            runner, "keys", "add", "--name", "lab"
         )
         assert '"name": "lab"' in add.output
 
@@ -106,19 +106,6 @@ class TestKeysCLI:
 
         delete = _invoke(runner, "keys", "delete", "1")
         assert "deleted ssh key 1" in delete.output
-
-    def test_add_missing_file_is_caught_by_typer(
-        self,
-        runner: CliRunner,
-        cli_env: None,  # noqa: ARG002
-        tmp_path: Path,
-    ) -> None:
-        missing = tmp_path / "nope.pem"
-        result = runner.invoke(
-            cli.app,
-            ["keys", "add", "--name", "x", "--key-file", str(missing)],
-        )
-        assert result.exit_code != 0
 
     def test_get_unknown_key_exits_nonzero(
         self,
@@ -137,7 +124,7 @@ class TestServersCLI:
         cli_env: None,  # noqa: ARG002
         key_file: Path,
     ) -> None:
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
 
         register = _invoke(
             runner,
@@ -170,7 +157,7 @@ class TestServersCLI:
         cli_env: None,  # noqa: ARG002
         key_file: Path,
     ) -> None:
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
         result = _invoke(
             runner,
             "servers",
@@ -195,7 +182,7 @@ class TestServersCLI:
     ) -> None:
         from tests.conftest import FakeSSHRunner
 
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
         _invoke(
             runner,
             "servers",
@@ -232,7 +219,7 @@ class TestServersCLI:
     ) -> None:
         from tests.conftest import FakeSSHRunner
 
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
         _invoke(
             runner,
             "servers",
@@ -258,7 +245,7 @@ class TestServersCLI:
 
 class TestClientsCLI:
     def _bootstrap(self, runner: CliRunner, key_file: Path) -> None:
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
         _invoke(
             runner,
             "servers",
@@ -477,18 +464,6 @@ class TestTasksCLI:
         assert '"state": "PENDING"' in result.output
 
 
-def test_key_file_is_base64_encoded_over_wire(
-    runner: CliRunner,
-    cli_env: None,  # noqa: ARG002
-    key_file: Path,
-) -> None:
-    # Smoke-check that the CLI really sends a base64 body the API accepts.
-    _invoke(runner, "keys", "add", "--name", "roundtrip", "--key-file", str(key_file))
-    # The canonical base64 of the sample PEM should round-trip.
-    encoded = base64.b64encode(_SAMPLE_PEM.encode("utf-8")).decode("ascii")
-    assert base64.b64decode(encoded).decode("utf-8") == _SAMPLE_PEM
-
-
 # ---------------------------------------------------------------------------
 # db backup / restore
 # ---------------------------------------------------------------------------
@@ -505,7 +480,7 @@ class TestDBBackupRestore:
     @staticmethod
     def _populate(runner: CliRunner) -> None:
         """Create an SSH key, a server, and a client via the HTTP-backed CLI."""
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
 
     def test_backup_creates_valid_json(
         self,
@@ -521,7 +496,7 @@ class TestDBBackupRestore:
         monkeypatch.setattr(cli, "_get_engine", lambda url=None: db_module_ref.engine)
 
         # Populate data via the API
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
         _invoke(
             runner,
             "servers", "register",
@@ -572,7 +547,7 @@ class TestDBBackupRestore:
         monkeypatch.setattr(cli, "_get_engine", lambda url=None: db_module_ref.engine)
 
         # Populate and backup.
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
         _invoke(
             runner,
             "servers", "register",
@@ -626,7 +601,7 @@ class TestDBBackupRestore:
 
         monkeypatch.setattr(cli, "_get_engine", lambda url=None: db_module_ref.engine)
 
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
 
         outfile = tmp_path / "backup.json"
         _invoke(runner, "db", "backup", "--output", str(outfile))
@@ -653,7 +628,7 @@ class TestDBBackupRestore:
         monkeypatch.setattr(cli, "_get_engine", lambda url=None: db_module_ref.engine)
 
         # Populate, backup, then clear the DB.
-        _invoke(runner, "keys", "add", "--name", "lab", "--key-file", str(key_file))
+        _invoke(runner, "keys", "add", "--name", "lab")
         outfile = tmp_path / "backup.json"
         _invoke(runner, "db", "backup", "--output", str(outfile))
 

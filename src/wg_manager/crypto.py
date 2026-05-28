@@ -382,122 +382,8 @@ def _require_id(row: object, table: str) -> int:
     return int(row_id)
 
 
-def _sshkey_context(row_id: int, field: str) -> str:
-    return f"sshkey:{row_id}:{field}"
-
-
 def _client_context(row_id: int, field: str) -> str:
     return f"client:{row_id}:{field}"
-
-
-def set_sshkey_private(
-    backend: CryptoBackend, row: "SSHKey", plaintext: str
-) -> None:
-    """Encrypt ``plaintext`` into ``row.private_key_ct``.
-
-    Overwrites any existing ciphertext on the column. Use this when
-    you have just the private-key body to set — for combined create
-    flows that also need to set the passphrase, call
-    :func:`encrypt_sshkey_secrets`.
-    """
-    row_id = _require_id(row, "sshkey")
-    row.private_key_ct = backend.encrypt(
-        plaintext.encode("utf-8"),
-        context=_sshkey_context(row_id, "private_key"),
-    )
-
-
-def set_sshkey_passphrase(
-    backend: CryptoBackend, row: "SSHKey", plaintext: str | None
-) -> None:
-    """Encrypt ``plaintext`` into ``row.passphrase_ct``.
-
-    Passing ``None`` clears the column (a legitimate state: an SSH
-    key with no passphrase). The caller must be deliberate about
-    "leave the existing passphrase unchanged" vs "clear it"; in the
-    PATCH handler, those map to "field absent from payload" vs "field
-    explicitly null", respectively.
-    """
-    row_id = _require_id(row, "sshkey")
-    if plaintext is None:
-        row.passphrase_ct = None
-        return
-    row.passphrase_ct = backend.encrypt(
-        plaintext.encode("utf-8"),
-        context=_sshkey_context(row_id, "passphrase"),
-    )
-
-
-def encrypt_sshkey_secrets(
-    backend: CryptoBackend,
-    row: "SSHKey",
-    *,
-    private_key: str,
-    passphrase: str | None = None,
-) -> None:
-    """Encrypt the supplied plaintext into ``row.private_key_ct`` and
-    ``row.passphrase_ct``.
-
-    Convenience wrapper around :func:`set_sshkey_private` and
-    :func:`set_sshkey_passphrase` for the create-row case where both
-    are set at once. Callers that only need to rotate one column —
-    e.g. the PATCH router — should call the single-field setters so
-    a passphrase-only PATCH doesn't burn a Vault encrypt on the
-    untouched private key.
-
-    Post-Phase-2b the row carries ciphertext only — the legacy
-    ``row.private_key`` column was dropped in Alembic revision 0005,
-    so the caller is responsible for keeping the plaintext in a local
-    variable (and out of any log line).
-
-    :param private_key: PEM body, required.
-    :param passphrase: Optional passphrase; pass ``None`` to leave
-        ``row.passphrase_ct`` as ``NULL``.
-    :raises ValueError: If ``row.id`` is ``None`` (the per-row context
-        binding needs a stable primary key).
-    """
-    set_sshkey_private(backend, row, private_key)
-    set_sshkey_passphrase(backend, row, passphrase)
-
-
-def resolve_sshkey_private(backend: CryptoBackend, row: "SSHKey") -> str:
-    """Return the SSH key's private-key plaintext.
-
-    Reads the ciphertext column unconditionally. Phase 2b's drop-
-    plaintext migration (Alembic 0005) removed the legacy fallback
-    column; every row must satisfy ``row.private_key_ct is not None``
-    or the read raises.
-
-    :raises DecryptError: If the ciphertext is tampered, the context
-        is wrong, or the key was rotated away. Defenders should treat
-        this as an incident — do NOT silently mask it.
-    :raises ValueError: If the row has no ciphertext at all (should
-        never happen post-0005; means the row was inserted without
-        going through the encryption seam).
-    """
-    if row.private_key_ct is None:
-        raise ValueError(
-            f"sshkey id={row.id} has no private_key_ct — inserts must "
-            "go through wg_manager.crypto.encrypt_sshkey_secrets"
-        )
-    row_id = _require_id(row, "sshkey")
-    return backend.decrypt(
-        row.private_key_ct,
-        context=_sshkey_context(row_id, "private_key"),
-    ).decode("utf-8")
-
-
-def resolve_sshkey_passphrase(
-    backend: CryptoBackend, row: "SSHKey"
-) -> str | None:
-    """Return the SSH key's passphrase, or ``None`` if it isn't set."""
-    if row.passphrase_ct is None:
-        return None
-    row_id = _require_id(row, "sshkey")
-    return backend.decrypt(
-        row.passphrase_ct,
-        context=_sshkey_context(row_id, "passphrase"),
-    ).decode("utf-8")
 
 
 def encrypt_client_private_key(
@@ -548,11 +434,6 @@ __all__ = [
     "LocalDevBackend",
     "VaultTransitBackend",
     "encrypt_client_private_key",
-    "encrypt_sshkey_secrets",
     "make_backend",
     "resolve_client_private_key",
-    "resolve_sshkey_passphrase",
-    "resolve_sshkey_private",
-    "set_sshkey_passphrase",
-    "set_sshkey_private",
 ]

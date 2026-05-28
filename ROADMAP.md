@@ -297,11 +297,79 @@ Transit key's data-key client-side for a short TTL (Vault's
     `tests/test_ssh_ca.py` (1 factory stability, 1 Settings field
     contract, 3 default-bootstrap-signs-cert cases for IP / DNS /
     cloud-user principals). Full ssh_ca suite 31 passed.
-  - **CP4.3 `[ ]`** — Dashboard "SSH roles" reframe: per-row mode
-    badge + "Migrate to CA" affordance wired to the CP4.2 endpoint.
-  - **CP4.4 `[ ]`** — Alembic 0008 drops `sshkey.private_key_ct` +
-    `passphrase_ct`; refuses to run while any row is still
-    `mode=legacy`.
+  - **CP4.3 `[x]`** (2026-05-28) — Dashboard "SSH roles" reframe.
+    The `/ssh-keys` page is now titled "SSH Roles", carries a copy
+    block that explains the `legacy` vs `ca` distinction, and the
+    table grew a per-row Mode column (warn badge for `legacy`,
+    success badge for `ca`) wedged between Name and Status so both
+    backend axes — auth mode and at-rest crypto — stay independently
+    legible. Legacy rows expose a "Migrate to CA" action that opens
+    an inline `MigrateToCAForm` modelled on `AddSshKeyForm` (PEM
+    textarea + file-drop + optional passphrase); submit POSTs
+    base64(PEM) to the CP4.2 endpoint via the new
+    `api.migrateKeyToCA(id, payload)` client and renders a
+    `MigrateResultPanel` with one row per server (status badge +
+    `cert #<serial>` for ok, error string for `ssh_failed`). The
+    panel stays mounted after success so partial-failure shapes
+    leave an operator-readable audit trail; the parent invalidates
+    `["ssh-keys"]` so the row's badge flips without a manual
+    refresh. Types added: `SSHKeyMigrateToCARequest`,
+    `SSHKeyMigrateToCAServerResult`, `SSHKeyMigrateToCAResponse` —
+    mirroring `src/wg_manager/schemas.py`. Tests: 3 new
+    `api.test.ts` cases (happy / 422 / partial-fail) + a new
+    `ssh-keys-mode.test.tsx` (4 cases: mode column renders both
+    badges, button gated on `mode=legacy`, full submit → outcome
+    render, partial-failure error string surfaced). Vitest 33/33
+    green; `tsc --noEmit` clean.
+  - **CP4.4 `[x]`** (2026-05-28) — Alembic 0008 ships
+    `drop_sshkey_ciphertext` and lands the full demolition that
+    finishes the CA migration arc. The migration's `upgrade()`
+    counts `sshkey` rows with `mode='legacy'` first and raises with
+    a CP-aware error pointing at
+    [`docs/migrations/2c-ssh-ca.md`](docs/migrations/2c-ssh-ca.md)
+    if any remain (no DDL runs in that case — re-up after fixing
+    just works). When the table is all-CA, `private_key_ct` and
+    `passphrase_ct` are dropped and the row becomes a name-and-mode
+    label. Downstream surgery in the same release: `SSHKey` loses
+    the two field declarations and the default `mode` flips from
+    `legacy` to `ca`; the `wg_manager.crypto` sshkey helpers
+    (`resolve_sshkey_*`, `set_sshkey_*`, `encrypt_sshkey_secrets`)
+    are deleted alongside `_sshkey_context`; `ssh_migrate.py` is
+    deleted; `POST /ssh-keys/{id}/migrate-to-ca` and the
+    `SSHKeyMigrateTo*` schemas are gone; `POST /ssh-keys` and
+    `PATCH /ssh-keys/{id}` reject `private_key_b64`/`passphrase`
+    with 422 via `extra="forbid"`; `tasks._open_runner` unconditionally
+    mints from the CA and `tasks._install_host_cert` runs on every
+    provision (the legacy `_maybe_install_host_cert` gating + the
+    rotate-host-cert 409-on-legacy precondition are gone); the
+    `wg-manager ssh migrate-to-ca` and `wg-manager keys add
+    --key-file` CLI surface is deleted; `wg-manager crypto rewrap`
+    now walks only the manual-client table; `CryptoStatusResponse`
+    drops `sshkey_encrypted`/`sshkey_legacy`. Dashboard parity:
+    `web/lib/types.ts` narrows `SSHKeyMode` to `"ca"`, drops the
+    migrate envelopes and the legacy `SSHKeyCreate`/`Update` body
+    fields; `api.migrateKeyToCA` is removed; `web/app/ssh-keys/page.tsx`
+    becomes a name-only CRUD with a single `ca` mode badge; the
+    `Crypto` page drops the SSH-key columns from its panel.
+    Conftest pins `SSH_CA_BACKEND=local` (Vault's serials can
+    exceed signed-INT64 and overflow SQLite — exposed once the
+    install became unconditional) and gains a per-host
+    `SUPPRESS_HOST_PUBKEY` opt-out for the "host not yet keygen-ed"
+    failure-mode test. New cookbook
+    [`docs/migrations/2c-ssh-ca.md`](docs/migrations/2c-ssh-ca.md)
+    walks the prior-release CLI path and the manual SQL fixup so
+    an operator who lands on CP4.4 mid-upgrade has a runbook. Tests:
+    9 new `tests/test_alembic_0008.py` cases pin the happy path,
+    guard, and downgrade round-trip; ~12 tests across the suite were
+    rewritten or deleted as their pre-CP4.4 invariants disappeared
+    (most notably the `test_tasks_crypto.py` decrypt-through-resolver
+    file, the `TestLegacyModeUnchanged` and
+    `TestLegacyProvisionLeavesHostCertNull` classes, and the
+    PATCH-rotates-private-key contracts in
+    `test_ssh_keys_api.py`/`test_log_scrub.py`). Backend `pytest`
+    224/225 green (1 unrelated pre-existing crypto failure carried
+    forward from CP4.3); dashboard `vitest` 25/25 green;
+    `tsc --noEmit` clean.
 - **Checkpoint 5 `[ ]`** — Acceptance: end-to-end provision against a
   dockerised sshd using only Vault-signed certs.
 

@@ -15,7 +15,6 @@ from wg_manager.models import (
     DiscoveredPeer,
     NodeStatus,
     SSHKey,
-    SSHKeyMode,
     Server,
 )
 from wg_manager.schemas import (
@@ -297,20 +296,16 @@ def rotate_server_host_cert(
     overwrites the row's ``host_cert_*`` columns with the freshly-
     minted cert (new serial, new validity window).
 
-    Refuses synchronously with **409** when the server's
-    :class:`SSHKey` is not in :attr:`~SSHKeyMode.ca` mode — host certs
-    are a CA-mode concept; rotating one for a row that authenticates
-    with a stored private key would silently no-op and confuse the
-    operator. Phase 2c CP4.1 moved this precondition from the global
-    ``SSH_AUTH_MODE`` env var onto the row's
-    :attr:`~wg_manager.models.SSHKey.mode` column; the migration path
-    is ``wg-manager ssh migrate-to-ca <key_id>`` (CP4.2).
+    Phase 2c CP4.4 dropped the legacy-mode precondition: every
+    ``SSHKey`` row is CA-mode now by construction, so the only
+    pre-flight check left is "does the row exist".
 
     :return: ``{task_id, server}`` — task to poll, plus the row as it
         was at dispatch time. The row's columns update once the task
         completes; the dashboard re-queries to pick up the new cert.
     :raises HTTPException: 404 when ``server_id`` doesn't exist; 409
-        when the row's SSH key is not in CA mode.
+        when the row's referenced SSH key has been deleted out from
+        under it.
     """
     row = session.get(Server, server_id)
     if row is None:
@@ -326,18 +321,6 @@ def rotate_server_host_cert(
             detail=(
                 f"server {row.id} references SSHKey {row.ssh_key_id} "
                 f"which no longer exists; reassign before rotating"
-            ),
-        )
-    if ssh_key.mode != SSHKeyMode.ca:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"host-cert rotation requires SSHKey {ssh_key.id} "
-                f"({ssh_key.name!r}) to be in CA mode; current value "
-                f"is {ssh_key.mode.value!r}. Run "
-                f"`wg-manager ssh migrate-to-ca {ssh_key.id}` first, "
-                f"or see docs/vault-cookbook.md §3 for the CA-mode "
-                f"setup."
             ),
         )
 

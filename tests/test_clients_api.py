@@ -21,7 +21,7 @@ def _bootstrap_server(client: TestClient) -> tuple[int, int]:
     key_id = int(
         client.post(
             "/ssh-keys",
-            json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+            json={"name": "lab"},
         ).json()["id"]
     )
     server_resp = client.post(
@@ -174,7 +174,7 @@ class TestClientsAPI:
         key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab"},
             ).json()["id"]
         )
         resp = client.post(
@@ -300,7 +300,7 @@ class TestClientUpdate:
         other_key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab2", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab2"},
             ).json()["id"]
         )
 
@@ -478,7 +478,7 @@ class TestClientsSSHConfigExport:
         other_key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "prod", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "prod"},
             ).json()["id"]
         )
         created = _register_managed_client(client, key_id, server_id, "alpha")
@@ -612,7 +612,7 @@ class TestManualClient:
         key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab"},
             ).json()["id"]
         )
         with Session(engine) as session:

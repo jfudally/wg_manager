@@ -45,7 +45,7 @@ describe("request()", () => {
       makeResponse(409, { detail: "SSH key named 'lab' already exists" }, false),
     );
 
-    await expect(api.createSshKey({ name: "lab", private_key_b64: "" })).rejects.toMatchObject({
+    await expect(api.createSshKey({ name: "lab" })).rejects.toMatchObject({
       // ApiError is a real class — also assert via instanceof.
       status: 409,
       message: "SSH key named 'lab' already exists",
@@ -212,27 +212,10 @@ describe("endpoint paths", () => {
     );
   });
 
-  it("updateSshKey can rotate the private key body", async () => {
-    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
-      makeResponse(200, {
-        id: 4,
-        name: "lab",
-        created_at: "2026-05-21T00:00:00Z",
-      }),
-    );
-    // The actual base64 body content doesn't matter for this test — we
-    // just need to verify the field is sent on the wire and the response
-    // never echoes it back (the API client just trusts the response shape,
-    // so the type system enforces this).
-    await api.updateSshKey(4, { private_key_b64: "Zm9v" });
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "http://test.local/ssh-keys/4",
-      expect.objectContaining({
-        method: "PATCH",
-        body: JSON.stringify({ private_key_b64: "Zm9v" }),
-      }),
-    );
-  });
+  // Phase 2c CP4.4 retired the ``private_key_b64`` field on the
+  // PATCH body — the row carries no key material, so the only
+  // mutable field is ``name``. The rename case above already pins
+  // that contract.
 
   it("exportSshConfig GETs the export endpoint and returns the raw body", async () => {
     const body =
@@ -329,8 +312,6 @@ describe("endpoint paths", () => {
       makeResponse(200, {
         backend: "local-dev",
         key_version: 1,
-        sshkey_encrypted: 2,
-        sshkey_legacy: 0,
         client_encrypted: 1,
         client_legacy: 0,
       }),
@@ -338,33 +319,28 @@ describe("endpoint paths", () => {
     const result = await api.cryptoStatus();
     expect(result.backend).toBe("local-dev");
     expect(result.key_version).toBe(1);
-    expect(result.sshkey_encrypted).toBe(2);
+    expect(result.client_encrypted).toBe(1);
     expect(fetchSpy).toHaveBeenCalledWith(
       "http://test.local/crypto/status",
       expect.objectContaining({ method: "GET" }),
     );
   });
 
-  it("listSshKeys exposes the per-row encrypted flag", async () => {
+  it("listSshKeys exposes the per-row mode", async () => {
+    // Phase 2c CP4.4 — the row carries `mode` (always `"ca"` post-
+    // CP4.4) and no `encrypted` flag.
     vi.spyOn(global, "fetch").mockResolvedValue(
       makeResponse(200, [
         {
           id: 1,
           name: "lab",
           created_at: "2026-05-27T00:00:00Z",
-          encrypted: true,
-        },
-        {
-          id: 2,
-          name: "orphan",
-          created_at: "2026-05-27T00:00:00Z",
-          encrypted: false,
+          mode: "ca",
         },
       ]),
     );
     const rows = await api.listSshKeys();
-    expect(rows[0].encrypted).toBe(true);
-    expect(rows[1].encrypted).toBe(false);
+    expect(rows[0].mode).toBe("ca");
   });
 
   it("rotateHostCert POSTs to /servers/{id}/rotate-host-cert", async () => {
@@ -426,6 +402,10 @@ describe("endpoint paths", () => {
       status: 409,
     });
   });
+
+  // Phase 2c CP4.4 retired ``api.migrateKeyToCA`` (and the endpoint
+  // it called) — every SSH role is CA-mode by construction now, so
+  // there is no legacy → CA flip to drive from the dashboard.
 
   it("deleteClient returns the hub reconfigure task envelope", async () => {
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(

@@ -13,7 +13,6 @@ until the Celery task reaches a terminal state.
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import time
@@ -40,17 +39,12 @@ crypto_app = typer.Typer(
     help="Encryption-at-rest backfills and key rotation.",
     no_args_is_help=True,
 )
-ssh_app = typer.Typer(
-    help="SSH CA / host-cert migration helpers (Phase 2c).",
-    no_args_is_help=True,
-)
 app.add_typer(keys_app, name="keys")
 app.add_typer(servers_app, name="servers")
 app.add_typer(clients_app, name="clients")
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(db_app, name="db")
 app.add_typer(crypto_app, name="crypto")
-app.add_typer(ssh_app, name="ssh")
 
 
 def _make_http_client(api_url: str) -> httpx.Client:
@@ -159,30 +153,17 @@ def _wait_task(
 @keys_app.command("add")
 def keys_add(
     ctx: typer.Context,
-    name: str = typer.Option(..., "--name", "-n", help="Friendly label for the credential."),
-    key_file: Path = typer.Option(
-        ...,
-        "--key-file",
-        "-f",
-        exists=True,
-        dir_okay=False,
-        readable=True,
-        help="Path to a PEM-encoded SSH private key.",
-    ),
-    passphrase: str | None = typer.Option(
-        None,
-        "--passphrase",
-        help="Passphrase for the key, if any.",
-    ),
+    name: str = typer.Option(..., "--name", "-n", help="Friendly label for the SSH role."),
 ) -> None:
-    """Register a new SSH key from a PEM file on disk."""
-    pem_bytes = key_file.read_bytes()
-    payload: dict[str, Any] = {
-        "name": name,
-        "private_key_b64": base64.b64encode(pem_bytes).decode("ascii"),
-    }
-    if passphrase is not None:
-        payload["passphrase"] = passphrase
+    """Register a new SSH role by name.
+
+    Phase 2c CP4.4 removed every per-row key material from the
+    schema — the row is a name-and-mode label only, and every
+    connection mints a fresh user cert from the SSH CA. The bound
+    credential lives in Vault's SSH role configuration, not on this
+    row, so no PEM body is needed.
+    """
+    payload: dict[str, Any] = {"name": name}
     with _client(ctx) as http:
         _print_json(_handle(http.post("/ssh-keys", json=payload)))
 
@@ -697,8 +678,21 @@ def db_restore(
             rows_data = tables_data.get(table_name, [])
             for row_dict in rows_data:
                 # Parse datetime strings back into datetime objects.
-                if "created_at" in row_dict and isinstance(row_dict["created_at"], str):
-                    row_dict["created_at"] = datetime.fromisoformat(row_dict["created_at"])
+                # ``host_cert_valid_after`` / ``host_cert_valid_before``
+                # are populated on every Server row post-CP4.4 (the
+                # host-cert install runs unconditionally now), so the
+                # backup file carries them as ISO strings and the
+                # restore has to inflate them too — otherwise SQLite's
+                # DateTime type rejects the str at INSERT time.
+                for ts_field in (
+                    "created_at",
+                    "host_cert_valid_after",
+                    "host_cert_valid_before",
+                ):
+                    if ts_field in row_dict and isinstance(row_dict[ts_field], str):
+                        row_dict[ts_field] = datetime.fromisoformat(
+                            row_dict[ts_field]
+                        )
                 # Parse status enums.
                 if "status" in row_dict and isinstance(row_dict["status"], str):
                     row_dict["status"] = NodeStatus(row_dict["status"])
@@ -772,64 +766,22 @@ def crypto_rewrap(
     from wg_manager.crypto import (
         DecryptError,
         encrypt_client_private_key,
-        encrypt_sshkey_secrets,
         make_backend,
         resolve_client_private_key,
-        resolve_sshkey_passphrase,
-        resolve_sshkey_private,
     )
-    from wg_manager.models import Client, SSHKey
+    from wg_manager.models import Client
 
     engine = _get_engine(database_url)
     backend = make_backend()
 
-    sshkey_rewrapped = 0
-    sshkey_skipped = 0
     client_rewrapped = 0
     client_skipped = 0
 
     with Session(engine) as session:
-        # ----- SSHKey rows -----
-        for row in session.exec(select(SSHKey)).all():
-            if row.private_key_ct is None and row.passphrase_ct is None:
-                sshkey_skipped += 1
-                typer.echo(
-                    f"  sshkey id={row.id} name={row.name!r}: skipped "
-                    "(no ciphertext to rewrap)"
-                )
-                continue
-            # Decrypt under the row context into a local variable
-            # (plaintext never lives on the row post-0005), then
-            # re-encrypt back into the ciphertext column. Vault
-            # transparently uses the active key version on the encrypt
-            # path; LocalDevBackend just rotates the nonce.
-            try:
-                pk_plain = (
-                    resolve_sshkey_private(backend, row)
-                    if row.private_key_ct is not None
-                    else None
-                )
-                pp_plain = resolve_sshkey_passphrase(backend, row)
-            except (DecryptError, ValueError) as exc:
-                typer.secho(
-                    f"  sshkey id={row.id} name={row.name!r}: rewrap "
-                    f"failed (decrypt error: {exc})",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(code=1) from exc
-            if pk_plain is not None:
-                encrypt_sshkey_secrets(
-                    backend, row, private_key=pk_plain, passphrase=pp_plain
-                )
-            sshkey_rewrapped += 1
-            if not dry_run:
-                session.add(row)
-            typer.echo(
-                f"  sshkey id={row.id} name={row.name!r}: rewrapped"
-            )
-
-        # ----- Client rows -----
+        # Phase 2c CP4.4 dropped the sshkey ciphertext columns, so the
+        # only remaining secret at rest is the manual-client WireGuard
+        # private key — every other row is metadata-only and has
+        # nothing to rewrap.
         for row in session.exec(select(Client)).all():
             if row.private_key_ct is None:
                 client_skipped += 1
@@ -861,85 +813,8 @@ def crypto_rewrap(
     suffix = " (dry-run; no rows written)" if dry_run else ""
     typer.echo(f"crypto rewrap complete{suffix}")
     typer.echo(
-        f"  sshkey: {sshkey_rewrapped} rewrapped, {sshkey_skipped} skipped"
-    )
-    typer.echo(
         f"  client: {client_rewrapped} rewrapped, {client_skipped} skipped"
     )
-
-
-# ---------------------------------------------------------------------------
-# ssh — Phase 2c CP4.2 SSH CA migration
-# ---------------------------------------------------------------------------
-
-
-@ssh_app.command("migrate-to-ca")
-def ssh_migrate_to_ca(
-    ctx: typer.Context,
-    key_id: int = typer.Argument(..., help="SSH key row id to migrate."),
-    key_file: Path = typer.Option(
-        ...,
-        "--key-file",
-        "-f",
-        exists=True,
-        dir_okay=False,
-        readable=True,
-        help=(
-            "Path to a PEM-encoded SSH private key that every server "
-            "using this key currently trusts. One-shot: the body is "
-            "posted to the API for the bootstrap session and never "
-            "persisted on the server side."
-        ),
-    ),
-    passphrase: str | None = typer.Option(
-        None,
-        "--passphrase",
-        help="Passphrase that unlocks --key-file, if any.",
-    ),
-) -> None:
-    """Bootstrap every server using ``key_id`` and flip the row to CA mode.
-
-    Phase 2c CP4.2 — the migration path from legacy stored-key auth
-    to CA-minted cert auth. The CLI is a thin wrapper around
-    ``POST /ssh-keys/{id}/migrate-to-ca``:
-
-    1. Reads the PEM body from ``--key-file`` and base64-encodes it
-       for transport.
-    2. Posts to the migration endpoint with an optional passphrase.
-    3. Pretty-prints the per-server result envelope so the operator
-       sees each host's outcome at a glance.
-    4. Exits non-zero if any server failed — useful when driving the
-       CLI from a CI pipeline that should abort on partial failure.
-
-    Exit codes:
-
-    * ``0`` — every server succeeded; row is now ``mode=ca`` with
-      ciphertext columns NULLed.
-    * ``1`` — at least one server failed (row mode unchanged) or the
-      HTTP call itself returned a non-2xx (404 unknown key, 422
-      malformed key body, …). Re-run after fixing the failed host(s).
-    """
-    pem_bytes = key_file.read_bytes()
-    payload: dict[str, Any] = {
-        "private_key_b64": base64.b64encode(pem_bytes).decode("ascii"),
-    }
-    if passphrase is not None:
-        payload["passphrase"] = passphrase
-
-    with _client(ctx) as http:
-        data = _handle(http.post(f"/ssh-keys/{key_id}/migrate-to-ca", json=payload))
-    assert isinstance(data, dict)
-    _print_json(data)
-
-    failed = int(data.get("servers_failed", 0))
-    if failed > 0:
-        typer.secho(
-            f"{failed} server(s) failed to bootstrap; row mode left as "
-            f"{data.get('mode', '?')!r}. Fix the failed host(s) and re-run.",
-            fg=typer.colors.RED,
-            err=True,
-        )
-        raise typer.Exit(code=1)
 
 
 def main() -> None:  # pragma: no cover - thin entrypoint

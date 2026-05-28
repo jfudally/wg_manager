@@ -10,54 +10,38 @@
 export type NodeStatus = "pending" | "ready" | "error";
 
 /**
- * Per-row SSH auth mode (Phase 2c CP4.1). A `legacy` row still
- * carries an encrypted private-key body in `private_key_ct` and
- * authenticates via the historical Phase 2b path; a `ca` row is a
- * label only — every connection mints a short-lived user cert from
- * the SSH CA and presents that instead.
+ * Per-row SSH auth mode. Phase 2c CP4.4 retired the historical
+ * `legacy` stored-key path — the row is now name-and-mode only, and
+ * every connection mints a short-lived user cert from the SSH CA.
+ * The literal is kept (rather than narrowed to `"ca"`) so a future
+ * variant — e.g. a Vault-issued mode — has somewhere to land.
  */
-export type SSHKeyMode = "legacy" | "ca";
+export type SSHKeyMode = "ca";
 
 export interface SSHKey {
   id: number;
   name: string;
   created_at: string;
   /**
-   * True when the row's ciphertext column is populated — i.e. the
-   * private key body went through the encryption seam at create or
-   * update time. Post-Phase-2b checkpoint 3 every row should report
-   * `true` in steady state; `false` flags an orphan that needs
-   * rewrapping. The Crypto Status panel surfaces the aggregate count.
-   */
-  encrypted: boolean;
-  /**
-   * Per-row auth mode. Defaults to `legacy` on every existing row
-   * after Alembic 0007 backfills, and flips to `ca` once an operator
-   * runs `wg-manager ssh migrate-to-ca <id>` (CP4.2). Drives the
-   * "SSH roles" badge + migration affordance on the keys page.
+   * Per-row auth mode. Post-CP4.4 every row is `"ca"`; the field
+   * survives so the dashboard's per-row badge keeps rendering and so
+   * a future backend variant has a place to land.
    */
   mode: SSHKeyMode;
 }
 
 export interface SSHKeyCreate {
   name: string;
-  private_key_b64: string;
-  passphrase?: string | null;
 }
 
 /**
- * Partial-update payload for `PATCH /ssh-keys/{id}`. Each field is
- * optional — only keys present on the wire are applied server-side, and
- * `null` is treated the same as "omitted" (the backend strips both).
- *
- * Replacing `private_key_b64` does NOT auto-reprovision servers/clients
- * that still reference this credential — they pick up the new key on the
- * next SSH-touching call (provision / reprovision / discover).
+ * Partial-update payload for `PATCH /ssh-keys/{id}`. Phase 2c CP4.4
+ * dropped the row's secret-bearing columns, so the only mutable
+ * field left is the role's display name. Sending any other field
+ * earns a 422 from the backend (`extra="forbid"` on the schema).
  */
 export interface SSHKeyUpdate {
   name?: string;
-  passphrase?: string;
-  private_key_b64?: string;
 }
 
 export interface Server {
@@ -283,10 +267,14 @@ export interface TaskStatus {
 /**
  * Response from `GET /crypto/status`. Powers the "Crypto status" panel
  * on the dashboard — shows which backend is wrapping secrets at rest,
- * the current key version, and per-table counts of encrypted vs
- * legacy rows. Operators use the legacy counts to decide whether to
- * run `wg-manager crypto rewrap` (or, before applying Alembic 0005,
- * `crypto migrate`).
+ * the current key version, and per-table counts of encrypted vs.
+ * legacy manual-client rows. Operators use the legacy count to
+ * decide whether to run `wg-manager crypto rewrap`.
+ *
+ * Phase 2c CP4.4 dropped the SSHKey ciphertext columns entirely
+ * (the row is now a name-and-mode label), so the `sshkey_*` half of
+ * the response is gone. The remaining shape is what the dashboard
+ * panel renders.
  *
  * Keep in sync with `CryptoStatusResponse` in
  * `src/wg_manager/schemas.py` — the backend pins this shape with a
@@ -295,8 +283,6 @@ export interface TaskStatus {
 export interface CryptoStatus {
   backend: string;
   key_version: number;
-  sshkey_encrypted: number;
-  sshkey_legacy: number;
   client_encrypted: number;
   client_legacy: number;
 }

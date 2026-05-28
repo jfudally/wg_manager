@@ -60,6 +60,7 @@ def fake_runner_clean() -> FakeSSHRunner:
     FakeSSHRunner.RAISE_ON_ENTER = {}
     FakeSSHRunner.KEYS_USED = []
     FakeSSHRunner.CERTS_USED = []
+    FakeSSHRunner.SUPPRESS_HOST_PUBKEY = set()
     runner = FakeSSHRunner(
         host="hub.example.com",
         port=22,
@@ -247,8 +248,10 @@ class TestInstallHostCertEdgeCases:
         ca = LocalDevSSHCA.generate()
         server = _server_row()
 
-        # Don't register an output — FakeSSHRunner returns "" for the
-        # probe command, simulating an empty/absent file.
+        # CP4.4 added a default "always-return-a-canned-pubkey"
+        # fallback to FakeSSHRunner.run; opt this host out so the
+        # probe returns "" and exercises the empty-file failure path.
+        FakeSSHRunner.SUPPRESS_HOST_PUBKEY.add(fake_runner_clean.host)
         with pytest.raises(RuntimeError) as exc_info:
             install_host_cert(
                 runner=fake_runner_clean,

@@ -4,23 +4,16 @@ Tasks operate on row IDs (never ORM instances) so they survive a hop through
 the broker. They open their own session against ``wg_manager.db.engine`` and
 update the row's ``status`` to ``ready`` or ``error`` before returning.
 
-Phase 2c ships two SSH authentication modes, selected per-row by
-:attr:`wg_manager.models.SSHKey.mode` (CP4.1 — replaces the global
-``SSH_AUTH_MODE`` env var CP2 used):
+Phase 2c CP4.4 closed the CA migration arc: every ``SSHKey`` row is
+now in :attr:`~wg_manager.models.SSHKeyMode.ca`, and every connection
+mints a fresh ephemeral Ed25519 keypair + short-lived user
+certificate from :func:`wg_manager.ssh_ca.make_ssh_ca_backend`. The
+runner is constructed with ``cert_pem`` and ``ca_public_key`` so
+client auth presents the cert and host trust comes from the SSH CA
+— there is no stored-key fallback path.
 
-* :attr:`~wg_manager.models.SSHKeyMode.legacy` — the long-lived
-  private key on the ``sshkey`` row, decrypted through
-  :mod:`wg_manager.crypto`. Same path as Phase 2b.
-* :attr:`~wg_manager.models.SSHKeyMode.ca` — a freshly minted
-  ephemeral Ed25519 keypair + short-lived user certificate from
-  :func:`wg_manager.ssh_ca.make_ssh_ca_backend`. The runner is
-  constructed with ``cert_pem`` and ``ca_public_key`` so client
-  auth presents the cert and host trust comes from the SSH CA.
-
-The :func:`_open_runner` helper is the single seam through which both
-modes flow, so all four tasks (provision_server, reconfigure_server,
-provision_client, discover_peers) inherit the per-row routing without
-each call site having to switch on the mode.
+:func:`_open_runner` is the single seam through which every task
+constructs a runner.
 """
 
 from __future__ import annotations
@@ -34,18 +27,12 @@ from sqlmodel import Session, select
 
 from wg_manager.celery_app import celery_app
 from wg_manager.config import Settings
-from wg_manager.crypto import (
-    make_backend,
-    resolve_sshkey_passphrase,
-    resolve_sshkey_private,
-)
 from wg_manager.host_ssh import HostCertInstallError, install_host_cert
 from wg_manager.models import (
     Client,
     DiscoveredPeer,
     NodeStatus,
     SSHKey,
-    SSHKeyMode,
     Server,
 )
 from wg_manager.ssh import SSHCommandError, SSHConnectionError, SSHRunner
@@ -87,85 +74,52 @@ _SSH_EXPECTED_ERRORS: tuple[type[BaseException], ...] = (
 )
 
 
-def _resolve_ssh_credentials(ssh_key: SSHKey) -> tuple[str, str | None]:
-    """Return ``(private_key_pem, passphrase)`` for ``ssh_key``.
-
-    This is the single seam through which the task layer reads SSH
-    credential plaintext. The resolver helpers prefer the ciphertext
-    columns (post-Phase-2b promotion) and fall back to plaintext for
-    rows that haven't been migrated yet, so this function returns
-    correct values across the entire rollout window without each task
-    site having to know which world it's in.
-    """
-    backend = make_backend()
-    return (
-        resolve_sshkey_private(backend, ssh_key),
-        resolve_sshkey_passphrase(backend, ssh_key),
-    )
-
-
 def _open_runner(
     *,
     host: str,
     port: int,
     username: str,
-    ssh_key: SSHKey,
+    ssh_key: SSHKey,  # noqa: ARG001 — kept for call-site symmetry and future routing
 ) -> SSHRunner:
-    """Construct an :class:`SSHRunner` honouring the row's auth mode.
+    """Construct an :class:`SSHRunner` against the SSH CA.
 
-    Phase 2c CP4.1 makes the routing per-row: when
-    :attr:`SSHKey.mode` is :attr:`~SSHKeyMode.ca` the runner is minted
-    a per-session ed25519 keypair + short-lived user cert from the
-    SSH CA backend, and configured with the same CA's public key for
-    host trust (so :class:`wg_manager.ssh.KnownHostsCAPolicy` rejects
-    anything not signed by it). Otherwise (``legacy``, which is the
-    default for any row that predates 0007 or that an operator hasn't
-    migrated yet) the historical private-key path is used.
-
-    The deprecated ``SSH_AUTH_MODE`` env var from CP2 is no longer
-    consulted — it survives in :class:`Settings` for backwards
-    compatibility but the routing decision is now exclusively a
-    property of the row. To migrate a row from ``legacy`` to ``ca``,
-    use the ``wg-manager ssh migrate-to-ca`` CLI shipped in CP4.2
-    rather than flipping the column directly: the CLI installs the
-    CA trust anchor on every host that uses the key first, so a flip
-    never strands a server with no way back in.
+    Phase 2c CP4.4 retired the legacy stored-key path: every
+    connection mints a per-session Ed25519 keypair + short-lived user
+    cert from the SSH CA backend, configured with the same CA's
+    public key for host trust (so
+    :class:`wg_manager.ssh.KnownHostsCAPolicy` rejects anything not
+    signed by it). The ``ssh_key`` argument is kept on the signature
+    so call sites that look up the row up-front don't have to change
+    shape, but its only remaining job is to participate in the
+    eventual per-row routing decision a future mode might
+    re-introduce.
 
     :param host: Target SSH host (used for cert minting principals and
         the runner constructor).
     :param port: Target SSH port.
-    :param username: Remote username. Becomes the cert principal in CA
-        mode — sshd will reject the cert unless this principal is in
-        the cert's ``valid_principals`` list.
-    :param ssh_key: Row whose plaintext is consulted in legacy mode
-        and whose :attr:`SSHKey.mode` selects the auth path.
+    :param username: Remote username. Becomes the cert principal —
+        sshd will reject the cert unless this principal is in the
+        cert's ``valid_principals`` list.
+    :param ssh_key: The SSH role row; unused today, retained for
+        forwards compatibility.
     :return: An unentered :class:`SSHRunner`. The caller is responsible
         for entering it as a context manager.
-    :raises SSHCAError: If CA mode is requested but the backend cannot
-        be constructed (Vault unreachable, malformed PEM, …).
+    :raises SSHCAError: If the CA backend cannot be constructed
+        (Vault unreachable, malformed PEM, …).
     """
-    if ssh_key.mode == SSHKeyMode.ca:
-        settings = Settings()
-        ca = make_ssh_ca_backend(settings)
-        user_cert = ca.mint_user_cert(
-            principals=[username],
-            ttl_seconds=settings.ssh_user_cert_ttl_seconds,
-        )
-        return SSHRunner(
-            host=host,
-            port=port,
-            username=username,
-            pkey_pem=user_cert.private_pem,
-            cert_pem=user_cert.cert_pem,
-            ca_public_key=ca.ca_public_key,
-        )
-    pkey_pem, passphrase = _resolve_ssh_credentials(ssh_key)
+    settings = Settings()
+    ca = make_ssh_ca_backend(settings)
+    user_cert = ca.mint_user_cert(
+        principals=[username],
+        ttl_seconds=settings.ssh_user_cert_ttl_seconds,
+    )
     return SSHRunner(
         host=host,
         port=port,
         username=username,
-        pkey_pem=pkey_pem,
-        passphrase=passphrase,
+        pkey_pem=user_cert.private_pem,
+        cert_pem=user_cert.cert_pem,
+        ca_public_key=ca.ca_public_key,
     )
 
 
@@ -187,23 +141,19 @@ def _persist_host_cert(server: Server, cert: HostCert, ca_public_key: str) -> No
     server.host_cert_ca_public_key = ca_public_key
 
 
-def _maybe_install_host_cert(
+def _install_host_cert(
     *,
     runner: SSHRunner,
     server: Server,
-    ssh_key: SSHKey,
     settings: Settings,
 ) -> None:
-    """Mint + install a host cert when the row's SSH key is in CA mode.
+    """Mint + install a host cert for ``server`` and persist its metadata.
 
-    Phase 2c CP4.1 makes the trigger per-row: the install runs iff
-    ``ssh_key.mode == SSHKeyMode.ca``. Conceptually that's exactly
-    when wg-manager dials the host via cert, so the matching CA
-    trust anchor + host cert have to be installed for the next
-    session to handshake successfully. No-op for legacy-mode rows
-    so a partially migrated fleet keeps working.
-
-    On the CA branch:
+    Phase 2c CP4.4 made this unconditional — every connection is
+    CA-mode now, so the matching CA trust anchor + host cert always
+    need to be present on the host for the *next* session to
+    handshake successfully under
+    :class:`wg_manager.ssh.KnownHostsCAPolicy`.
 
     1. Resolves the CA backend (same factory the runner mint uses).
     2. Calls :func:`wg_manager.host_ssh.install_host_cert` to push the
@@ -217,8 +167,6 @@ def _maybe_install_host_cert(
     by default; an explicit setting so an operator can tighten it
     for high-security deployments without code changes).
     """
-    if ssh_key.mode != SSHKeyMode.ca:
-        return
     ca = make_ssh_ca_backend(settings)
     cert = install_host_cert(
         runner=runner,
@@ -288,15 +236,13 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
                 ssh_key=ssh_key,
             ) as runner:
                 public_key = provision_server(runner, server, clients)
-                # CP3: opt-in host-cert install. No-op in legacy mode;
-                # in CA mode it mints + installs and mutates ``server``
-                # in-place. The same runner is reused so we don't open
-                # a second SSH session for what is logically part of
-                # the same provisioning round.
-                _maybe_install_host_cert(
+                # CP3: mint + install the host cert on the same SSH
+                # session — CP4.4 made this unconditional, so every
+                # successful provision lands a fresh cert on the host
+                # and the matching ``host_cert_*`` columns on the row.
+                _install_host_cert(
                     runner=runner,
                     server=server,
-                    ssh_key=ssh_key,
                     settings=Settings(),
                 )
         except _SSH_EXPECTED_ERRORS as exc:
@@ -343,17 +289,9 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
     then update the CP3.1 host-cert columns on the row with the
     freshly-minted cert.
 
-    Refuses with a clean failure when the server's SSH key is not in
-    CA mode — host certs are a CA-mode concept, and rotating one
-    that was never minted would only confuse the operator. The HTTP
-    endpoint translates this to 409 ahead of dispatch so the operator
-    sees the precondition error synchronously; the guard here is
-    belt-and-braces for the unlikely case a task is enqueued out of
-    band (e.g. a CLI helper added in a later phase).
-
-    Phase 2c CP4.1: the precondition reads from the row's
-    :attr:`SSHKey.mode` rather than the deprecated global
-    ``SSH_AUTH_MODE`` — see :func:`_open_runner` for the rationale.
+    Phase 2c CP4.4 dropped the legacy-mode precondition that earlier
+    versions guarded with — every ``SSHKey`` row is now CA-mode by
+    construction, so the task can dial unconditionally.
 
     :param server_id: Primary key of the :class:`Server` whose host
         cert should be rotated.
@@ -361,7 +299,6 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
         ``valid_before`` is an ISO-8601 string so the result dict is
         JSON-safe for the ``GET /tasks/{id}`` response.
     :raises ValueError: If the server (or its SSH key) cannot be loaded.
-    :raises RuntimeError: If the row's SSH key is not in CA mode.
     """
     from wg_manager.db import engine
 
@@ -374,18 +311,6 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
         ssh_key = session.get(SSHKey, server.ssh_key_id)
         if ssh_key is None:
             raise ValueError(f"SSH key {server.ssh_key_id} not found")
-        if ssh_key.mode != SSHKeyMode.ca:
-            # Belt-and-braces: the HTTP endpoint already returned 409
-            # before dispatching. A direct caller (Celery beat, CLI
-            # helper) gets a tidy task failure rather than a half-
-            # completed run. The error names the offending row so an
-            # operator can locate it in ``GET /ssh-keys`` immediately.
-            raise _fail_clean(
-                f"host-cert rotation requires the server's SSH key to be "
-                f"in CA mode; SSHKey {ssh_key.id} ({ssh_key.name!r}) is "
-                f"currently {ssh_key.mode.value!r}. Run "
-                f"`wg-manager ssh migrate-to-ca {ssh_key.id}` first."
-            ) from None
 
         try:
             with _open_runner(

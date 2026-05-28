@@ -20,11 +20,26 @@ os.environ["DEFAULT_SUBNET"] = "10.9.0.0/24"
 # encrypt() output is reproducible between test runs (useful for `vcr`-style
 # fixtures) and the suite is hermetic — no `.env` file is consulted. The
 # value is published in the repo, so do NOT use it outside tests.
+#
+# Phase 2c CP4.4 also forces ``SSH_CA_BACKEND=local`` here. Pre-CP4.4 the
+# host-cert install only ran in CA mode (legacy rows skipped it
+# entirely), so tests that happened to inherit ``SSH_CA_BACKEND=vault``
+# from a developer's ``.env`` never exercised it. CP4.4 made the install
+# unconditional — every provision/reconfigure path mints a host cert
+# now — and Vault's serials regularly exceed ``2^63 - 1``, which is
+# exactly the value SQLite's INTEGER stops at. Pinning ``local`` keeps
+# the test suite hermetic and the serials inside SQLite's signed-INT64
+# range (the production INT64 overflow concern lives in a separate
+# follow-up).
 os.environ.setdefault("CRYPTO_BACKEND", "local")
 os.environ.setdefault(
     "CRYPTO_LOCAL_DEV_KEY",
     "6BR-12U4QDta_TTnZnieCyvMU5VzRSnUqbH6hA80Ihw=",
 )
+os.environ.setdefault("SSH_CA_BACKEND", "local")
+# Override aggressively so a developer ``.env`` that pins
+# ``SSH_CA_BACKEND=vault`` for daily work doesn't leak into the suite.
+os.environ["SSH_CA_BACKEND"] = "local"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -78,6 +93,15 @@ class FakeSSHRunner:
     # them on a separate list so the legacy 3-tuple shape of ``KEYS_USED``
     # stays intact for Phase 2b's regression tests.
     CERTS_USED: list[tuple[str, str | None, str | None, str]] = []
+    # Phase 2c CP4.4: the host-cert install runs on every connection
+    # now (the legacy branch is gone), so the runner's default
+    # ``cat /etc/ssh/ssh_host_ed25519_key.pub`` returns a canned
+    # pubkey for every host. Tests that specifically need to exercise
+    # the "host has no ed25519 pubkey yet" failure mode can populate
+    # this set with a hostname to opt that host out of the fallback —
+    # the runner then returns an empty stdout, which mirrors the real
+    # not-yet-provisioned shape.
+    SUPPRESS_HOST_PUBKEY: set[str] = set()
 
     def __init__(
         self,
@@ -131,6 +155,23 @@ class FakeSSHRunner:
                 return CommandResult(cmd=cmd, rc=0, stdout=stdout, stderr="")
         if "cat /etc/wireguard/publickey" in cmd:
             stdout = self._canned_pubkey() + "\n"
+        elif "ssh_host_ed25519_key.pub" in cmd:
+            # Phase 2c CP4.4 made the host-cert install unconditional —
+            # every provision/reconfigure path now probes the target's
+            # ed25519 host pubkey. The realistic format is `ssh-ed25519
+            # <base64> <comment>`. We return a stable, well-formed
+            # canned line keyed on host so tests don't have to register
+            # one each. Tests that specifically need to exercise the
+            # "host has no pubkey yet" failure mode opt out by adding
+            # the host to :attr:`SUPPRESS_HOST_PUBKEY`.
+            if self.host in FakeSSHRunner.SUPPRESS_HOST_PUBKEY:
+                stdout = ""
+            else:
+                stdout = (
+                    "ssh-ed25519 "
+                    "AAAAC3NzaC1lZDI1NTE5AAAAINcv8wY+y8d0KcKZ6t6S/n7JoYx7M3jzqu7K2YgQGvD7"
+                    f" root@{self.host}\n"
+                )
         elif cmd.startswith("grep -q"):
             # Report "not found" so the [Peer] append branch runs.
             return CommandResult(cmd=cmd, rc=1, stdout="", stderr="")
@@ -187,30 +228,15 @@ def session(engine: Any) -> Generator[Session, None, None]:
 
 
 def promote_all_keys_to_ca(session: Session) -> None:
-    """Flip every :class:`SSHKey` row to ``mode=ca`` in the test engine.
+    """Backwards-compatible no-op.
 
-    Phase 2c CP4.1 made the task layer's auth routing per-row: a key
-    must have ``mode='ca'`` before the task layer will mint a user
-    cert for it. The production migration path is
-    ``wg-manager ssh migrate-to-ca <id>`` (CP4.2), which installs the
-    CA trust anchor on every host using the key before flipping the
-    column.
-
-    Tests that exercise the CA-mode runner / host-cert / rotation
-    paths don't want to drive that whole CLI for every case; they
-    just need the column flipped so the routing seam picks the cert
-    branch. This helper is the test-only shortcut — call it after any
-    SSH-key rows have been created (typically right after
-    ``POST /ssh-keys`` or :func:`_bootstrap_ready_server`).
+    Phase 2c CP4.4 made ``mode='ca'`` the only mode any row can carry
+    (the legacy stored-key path is gone), so the historical "flip
+    every row to CA before exercising the cert path" helper has no
+    work to do. Existing call sites are left intact so a quick
+    ``git revert`` of CP4.4 doesn't have to re-thread them; once the
+    surgery has had time to settle the call sites can be removed too.
     """
-    from sqlmodel import select
-
-    from wg_manager.models import SSHKey, SSHKeyMode
-
-    for row in session.exec(select(SSHKey)).all():
-        row.mode = SSHKeyMode.ca
-        session.add(row)
-    session.commit()
 
 
 @pytest.fixture()
@@ -231,17 +257,10 @@ def client(
     FakeSSHRunner.RAISE_ON_ENTER = {}
     FakeSSHRunner.KEYS_USED = []
     FakeSSHRunner.CERTS_USED = []
+    FakeSSHRunner.SUPPRESS_HOST_PUBKEY = set()
 
     # Swap SSHRunner as used inside the Celery tasks (import-time binding).
     monkeypatch.setattr(tasks_module, "SSHRunner", FakeSSHRunner)
-    # Phase 2c CP4.2 — the migration helper opens its own bootstrap
-    # SSH session (legacy auth, regardless of the row's mode). Same
-    # import-time binding pattern, so we swap it here so the
-    # ``/ssh-keys/{id}/migrate-to-ca`` endpoint tests don't have to
-    # repeat the monkeypatch per-test.
-    import wg_manager.ssh_migrate as ssh_migrate_module
-
-    monkeypatch.setattr(ssh_migrate_module, "SSHRunner", FakeSSHRunner)
 
     def _override_session() -> Generator[Session, Any, None]:
         with Session(engine) as request_session:

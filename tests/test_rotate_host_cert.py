@@ -22,7 +22,6 @@ behaviour.
 
 from __future__ import annotations
 
-import base64
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,12 +31,6 @@ from tests.conftest import FakeSSHRunner, promote_all_keys_to_ca
 from wg_manager.models import Server
 
 
-_SAMPLE_PEM = (
-    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-    "cp3-rotate-canary\n"
-    "-----END OPENSSH PRIVATE KEY-----\n"
-)
-_SAMPLE_PEM_B64 = base64.b64encode(_SAMPLE_PEM.encode("utf-8")).decode("ascii")
 _HOST_PUBKEY = (
     "ssh-ed25519 "
     "AAAAC3NzaC1lZDI1NTE5AAAAINcv8wY+y8d0KcKZ6t6S/n7JoYx7M3jzqu7K2YgQGvD7"
@@ -71,7 +64,7 @@ def _register_server(
     key_id = int(
         client.post(
             "/ssh-keys",
-            json={"name": "cp3-rot", "private_key_b64": _SAMPLE_PEM_B64},
+            json={"name": "cp3-rot"},
         ).json()["id"]
     )
     if ca_mode_session is not None:
@@ -134,27 +127,11 @@ class TestRotateHostCertEndpoint:
         resp = client.post("/servers/9999/rotate-host-cert")
         assert resp.status_code == 404, resp.text
 
-    def test_returns_409_in_legacy_mode(
-        self,
-        client: TestClient,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Rotating a host cert in legacy mode is a config-error 409.
-
-        Legacy mode has no host-cert column population at provisioning
-        time; trying to rotate one out of nothing would be a silent
-        no-op. 409 (Conflict) is the standard FastAPI shape for
-        "the resource exists but the requested state transition is
-        invalid".
-        """
-        monkeypatch.setenv("SSH_AUTH_MODE", "legacy")
-        host = "rot-legacy.example.com"
-        _register_host_pubkey(host)
-        server_id = _register_server(client, host)
-
-        resp = client.post(f"/servers/{server_id}/rotate-host-cert")
-        assert resp.status_code == 409, resp.text
-        assert "SSH_AUTH_MODE" in resp.text or "ca" in resp.text.lower()
+    # Phase 2c CP4.4 retired the legacy-mode rotation guard: every
+    # SSHKey row is CA-mode by construction now, so the "rotate in
+    # legacy mode" branch the original test pinned is no longer
+    # reachable. The 404-when-server-missing case above still holds
+    # and is the only remaining precondition.
 
 
 # ---------------------------------------------------------------------------

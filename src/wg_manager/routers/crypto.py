@@ -34,7 +34,7 @@ from sqlmodel import Session, select
 from wg_manager.crypto import CryptoBackend
 from wg_manager.db import get_session
 from wg_manager.deps import get_crypto_backend
-from wg_manager.models import Client, SSHKey
+from wg_manager.models import Client
 from wg_manager.schemas import CryptoStatusResponse
 
 router = APIRouter(prefix="/crypto", tags=["crypto"])
@@ -51,14 +51,6 @@ def get_crypto_status(
 
     Counting rules:
 
-    * **sshkey_encrypted** — ``SSHKey`` rows with ``private_key_ct``
-      populated. The normal state for every row created via the
-      FastAPI app post-Phase-2b.
-    * **sshkey_legacy** — ``SSHKey`` rows where ``private_key_ct`` is
-      ``NULL``. After Alembic 0005 dropped the plaintext columns the
-      only way to land in this bucket is a direct INSERT that bypassed
-      the encryption seam. Operators want this at zero; non-zero is a
-      flag to inspect.
     * **client_encrypted** — manual ``Client`` rows with
       ``private_key_ct`` populated.
     * **client_legacy** — manual ``Client`` rows (``is_manual=True``)
@@ -66,18 +58,15 @@ def get_crypto_status(
       legitimately carry no key material and are excluded from both
       buckets — they have nothing to encrypt.
 
+    Phase 2c CP4.4 dropped the sshkey ciphertext columns, so the
+    ``SSHKey`` table no longer contributes to either bucket — every
+    row is a name-and-mode label and SSH auth mints from the CA at
+    task time.
+
     The key-version probe goes through the live backend so a Transit
     rotation that happened outside wg-manager is immediately visible
     here. For ``LocalDevBackend`` the version is always ``1``.
     """
-    sshkey_encrypted = 0
-    sshkey_legacy = 0
-    for sshkey_row in session.exec(select(SSHKey)).all():
-        if sshkey_row.private_key_ct is not None:
-            sshkey_encrypted += 1
-        else:
-            sshkey_legacy += 1
-
     client_encrypted = 0
     client_legacy = 0
     for client_row in session.exec(select(Client)).all():
@@ -91,8 +80,6 @@ def get_crypto_status(
     return CryptoStatusResponse(
         backend=crypto.name,
         key_version=crypto.key_version,
-        sshkey_encrypted=sshkey_encrypted,
-        sshkey_legacy=sshkey_legacy,
         client_encrypted=client_encrypted,
         client_legacy=client_legacy,
     )

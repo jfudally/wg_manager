@@ -1,11 +1,14 @@
 """Tests for the ``wg-manager crypto …`` CLI subgroup.
 
-Post-Phase-2b the only command in the subgroup is ``crypto rewrap``:
-the earlier ``crypto migrate`` was removed alongside Alembic 0005's
-drop of the plaintext columns, since there is nothing legacy left to
-migrate. ``rewrap`` re-encrypts existing ciphertext under the active
-key version — useful after ``vault write -f transit/keys/wg-manager/
-rotate`` so every blob ends up on the same version.
+Phase 2c CP4.4 dropped the sshkey ciphertext columns — the row is now
+a name-and-mode label only — so the only remaining secret at rest is
+the manual-client WireGuard private key. ``crypto rewrap`` walks
+just the :class:`Client` table now (the prior ``SSHKey`` half was
+removed alongside the columns). The motivating Vault Transit key
+rotation workflow still applies for the manual-client side: after
+``vault write -f transit/keys/wg-manager/rotate`` ``rewrap`` walks
+every encrypted client row and re-encrypts under the active key
+version.
 
 These tests run against the in-memory SQLite engine provided by the
 existing ``engine`` fixture. We seed encrypted rows directly through
@@ -24,13 +27,10 @@ from typer.testing import CliRunner
 from wg_manager import cli
 from wg_manager.crypto import (
     encrypt_client_private_key,
-    encrypt_sshkey_secrets,
     make_backend,
     resolve_client_private_key,
-    resolve_sshkey_passphrase,
-    resolve_sshkey_private,
 )
-from wg_manager.models import Client, NodeStatus, SSHKey, Server
+from wg_manager.models import Client, NodeStatus, Server
 
 
 @pytest.fixture()
@@ -51,31 +51,6 @@ def patched_engine(
     """
     monkeypatch.setattr(cli, "_get_engine", lambda url=None: engine)
     return engine
-
-
-def _seed_encrypted_sshkey(
-    engine: Any,
-    *,
-    name: str = "lab",
-    private_key: str = "ENCRYPTED-PEM-BODY",
-    passphrase: str | None = None,
-) -> int:
-    """Insert an :class:`SSHKey` row already encrypted under the test backend."""
-    backend = make_backend()
-    with Session(engine) as s:
-        row = SSHKey(name=name)
-        s.add(row)
-        s.commit()
-        s.refresh(row)
-        encrypt_sshkey_secrets(
-            backend, row, private_key=private_key, passphrase=passphrase
-        )
-        s.add(row)
-        s.commit()
-        s.refresh(row)
-        assert row.private_key_ct is not None
-        assert row.id is not None
-        return int(row.id)
 
 
 def _seed_encrypted_manual_client(
@@ -126,62 +101,14 @@ def _invoke(runner: CliRunner, *args: str) -> Any:
 
 
 class TestCryptoRewrap:
-    """``wg-manager crypto rewrap`` re-encrypts existing ciphertext.
-
-    The motivating workflow is a Vault Transit key rotation: after
-    ``vault write -f transit/keys/wg-manager/rotate`` every existing
-    blob still decrypts (Transit retains old key versions), but new
-    writes use the new version. ``rewrap`` walks every row, decrypts
-    under the row's per-row context, and re-encrypts under the now-
-    current key. The visible effect is that the version embedded in
-    each blob (``vault:vN:…``) advances to match the active version.
-
-    For ``LocalDevBackend`` rewrap is mostly a no-op — Fernet is
-    randomised but unversioned, so the only observable change is that
-    each row's ciphertext body is rewritten (a fresh IV/nonce). The
-    command still walks the rows and reports counts so operators can
-    smoke-test the workflow against the local backend before pointing
-    it at production.
-    """
-
-    def test_rewraps_existing_sshkey_ciphertext(
-        self,
-        runner: CliRunner,
-        patched_engine: Any,
-    ) -> None:
-        """Encrypted rows are re-encrypted; plaintext still decrypts to
-        the same value after the rewrap so no data is lost."""
-        key_id = _seed_encrypted_sshkey(
-            patched_engine,
-            name="lab",
-            private_key="ORIGINAL-PEM-BODY",
-            passphrase="hunter2",
-        )
-        backend = make_backend()
-        with Session(patched_engine) as s:
-            row = s.get(SSHKey, key_id)
-            assert row is not None
-            original_pk_ct = row.private_key_ct
-            original_pp_ct = row.passphrase_ct
-
-        _invoke(runner, "crypto", "rewrap")
-
-        with Session(patched_engine) as s:
-            row = s.get(SSHKey, key_id)
-            assert row is not None
-            # Body changed — re-encryption produces fresh ciphertext.
-            assert row.private_key_ct != original_pk_ct
-            assert row.passphrase_ct != original_pp_ct
-            # …but it still decrypts to the original plaintext.
-            assert resolve_sshkey_private(backend, row) == "ORIGINAL-PEM-BODY"
-            assert resolve_sshkey_passphrase(backend, row) == "hunter2"
+    """``wg-manager crypto rewrap`` re-encrypts existing manual-client ciphertext."""
 
     def test_rewraps_manual_client_ciphertext(
         self,
         runner: CliRunner,
         patched_engine: Any,
     ) -> None:
-        """The manual-client private key path is rewrapped too."""
+        """Re-encryption produces fresh ciphertext that decrypts to the original."""
         client_id = _seed_encrypted_manual_client(
             patched_engine, private_key="ORIGINAL-WG-SECRET"
         )
@@ -199,28 +126,42 @@ class TestCryptoRewrap:
             assert row.private_key_ct != original_ct
             assert resolve_client_private_key(backend, row) == "ORIGINAL-WG-SECRET"
 
-    def test_skips_rows_without_ciphertext(
+    def test_skips_ssh_provisioned_clients(
         self,
         runner: CliRunner,
         patched_engine: Any,
     ) -> None:
-        """An ``SSHKey`` with no ciphertext at all is skipped, not crashed on.
-
-        Such a row shouldn't exist in normal operation post-0005 (the
-        create path always populates ciphertext), but the CLI must
-        tolerate the shape so operator-issued direct INSERTs don't
-        break the workflow."""
+        """SSH-provisioned clients have ``private_key_ct=None`` and are skipped."""
         with Session(patched_engine) as s:
-            row = SSHKey(name="orphan")
+            srv = Server(
+                hostname="hub.example.com",
+                ssh_username="ubuntu",
+                ssh_key_id=1,
+                endpoint_host="hub.example.com",
+                status=NodeStatus.ready,
+                public_key="HUBPUBKEY",
+            )
+            s.add(srv)
+            s.commit()
+            s.refresh(srv)
+            row = Client(
+                name="laptop",
+                server_id=srv.id,
+                address="10.9.0.7/32",
+                public_key="LAPTOP-PUB",
+                is_manual=False,
+                status=NodeStatus.ready,
+            )
             s.add(row)
             s.commit()
 
-        result = _invoke(runner, "crypto", "rewrap")
+        _invoke(runner, "crypto", "rewrap")
+        # SSH-provisioned clients are silently skipped (no private_key_ct
+        # to rewrap). The command exits cleanly without touching the row.
         with Session(patched_engine) as s:
-            row = s.exec(select(SSHKey)).first()
+            row = s.exec(select(Client)).first()
             assert row is not None
             assert row.private_key_ct is None
-        assert "skipped" in result.output.lower()
 
     def test_dry_run_does_not_persist(
         self,
@@ -228,28 +169,26 @@ class TestCryptoRewrap:
         patched_engine: Any,
     ) -> None:
         """``--dry-run`` reports what would change without writing."""
-        _seed_encrypted_sshkey(patched_engine, name="lab")
+        client_id = _seed_encrypted_manual_client(patched_engine)
         with Session(patched_engine) as s:
-            before = s.exec(select(SSHKey)).first().private_key_ct
+            before = s.get(Client, client_id).private_key_ct
 
         _invoke(runner, "crypto", "rewrap", "--dry-run")
 
         with Session(patched_engine) as s:
-            after = s.exec(select(SSHKey)).first().private_key_ct
+            after = s.get(Client, client_id).private_key_ct
         assert before == after, "--dry-run must not persist new ciphertext"
 
-    def test_summary_reports_counts(
+    def test_summary_reports_client_counts(
         self,
         runner: CliRunner,
         patched_engine: Any,
     ) -> None:
-        """End-of-run summary surfaces rewrap counts per table."""
-        _seed_encrypted_sshkey(patched_engine, name="lab")
+        """End-of-run summary surfaces rewrap counts for the manual-client table."""
         _seed_encrypted_manual_client(patched_engine)
 
         result = _invoke(runner, "crypto", "rewrap")
         out = result.output.lower()
-        assert "sshkey" in out
         assert "client" in out
         assert "rewrap" in out
 

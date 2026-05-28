@@ -16,7 +16,7 @@ _SAMPLE_PEM_B64 = base64.b64encode(_SAMPLE_PEM.encode("utf-8")).decode("ascii")
 def _register_key(client: TestClient) -> int:
     resp = client.post(
         "/ssh-keys",
-        json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+        json={"name": "lab"},
     )
     assert resp.status_code == 201
     return int(resp.json()["id"])
@@ -316,7 +316,7 @@ class TestServerUpdate:
         other_key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab2", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab2"},
             ).json()["id"]
         )
 

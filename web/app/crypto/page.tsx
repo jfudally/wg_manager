@@ -64,13 +64,15 @@ function CryptoStatusPanel({
   data: {
     backend: string;
     key_version: number;
-    sshkey_encrypted: number;
-    sshkey_legacy: number;
     client_encrypted: number;
     client_legacy: number;
   };
 }) {
-  const totalLegacy = data.sshkey_legacy + data.client_legacy;
+  // Phase 2c CP4.4 dropped the sshkey ciphertext columns — every row
+  // is a name-and-mode label now — so the only remaining secret at
+  // rest is the manual-client WireGuard private key, and the panel's
+  // "legacy" health rolls up to just that count.
+  const totalLegacy = data.client_legacy;
   const backendVariant: "success" | "info" =
     data.backend === "vault-transit" ? "success" : "info";
 
@@ -118,9 +120,11 @@ function CryptoStatusPanel({
           <CardTitle>Row counts</CardTitle>
           <CardDescription>
             Per-table breakdown of how many rows hold ciphertext.
-            SSH-provisioned clients keep their key on the device and are
-            excluded — only manual clients store a private key on the
-            control plane.
+            SSH-provisioned clients keep their key on the device and
+            are excluded — only manual clients store a private key on
+            the control plane. Phase 2c CP4.4 dropped the SSH key
+            ciphertext columns entirely; SSH roles are name-and-mode
+            labels now.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -133,19 +137,6 @@ function CryptoStatusPanel({
               </tr>
             </thead>
             <tbody>
-              <tr className="border-t border-border">
-                <td className="py-2 font-medium">SSH keys</td>
-                <td className="py-2">
-                  <Badge variant="success">{data.sshkey_encrypted}</Badge>
-                </td>
-                <td className="py-2">
-                  <Badge
-                    variant={data.sshkey_legacy === 0 ? "default" : "warn"}
-                  >
-                    {data.sshkey_legacy}
-                  </Badge>
-                </td>
-              </tr>
               <tr className="border-t border-border">
                 <td className="py-2 font-medium">Manual clients</td>
                 <td className="py-2">

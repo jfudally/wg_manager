@@ -9,33 +9,21 @@ that blob into every traceback. The blob itself is not plaintext, but
 it is a few hundred bytes of base64 noise that crowds out useful
 debug info; the override collapses it to ``<set>`` / ``None``.
 
-Post-Phase-2b the row no longer has plaintext columns at all, so
-there is no plaintext to redact. The override still matters because:
-
-* It keeps the repr short (one line, not 6 lines of base64).
-* It guards against a future regression that adds a new secret-bearing
-  column without a matching repr update.
+Phase 2c CP4.4 dropped the sshkey ciphertext columns entirely — the
+row is name-and-mode only — so the historical "SSH key repr scrub"
+suite collapses to a single shape check (no surprising state on the
+repr line). The manual-client side still carries
+:attr:`Client.private_key_ct`, so its scrub regressions are
+unchanged.
 """
 
 from __future__ import annotations
 
-import logging
-
 import pytest
 
-from wg_manager.crypto import (
-    LocalDevBackend,
-    encrypt_client_private_key,
-    encrypt_sshkey_secrets,
-)
+from wg_manager.crypto import LocalDevBackend, encrypt_client_private_key
 from wg_manager.models import Client, SSHKey
 
-
-_PEM = (
-    "-----BEGIN OPENSSH PRIVATE KEY-----\n"
-    "supersecret-body-bytes-that-should-never-appear-in-logs\n"
-    "-----END OPENSSH PRIVATE KEY-----\n"
-)
 
 _TEST_FERNET_KEY = b"6BR-12U4QDta_TTnZnieCyvMU5VzRSnUqbH6hA80Ihw="
 
@@ -46,52 +34,17 @@ def backend() -> LocalDevBackend:
 
 
 class TestSSHKeyRedaction:
-    def test_repr_collapses_ciphertext_columns(
-        self, backend: LocalDevBackend
-    ) -> None:
-        """The ciphertext column body must not flood the repr."""
+    def test_repr_is_short_and_includes_identifying_metadata(self) -> None:
+        """Post-CP4.4 the SSHKey repr should fit on one line and name the row."""
         row = SSHKey(id=1, name="lab")
-        encrypt_sshkey_secrets(
-            backend, row, private_key=_PEM, passphrase="hunter2"
-        )
         rendered = repr(row)
-        # The actual ciphertext body is base64 noise — repr must not
-        # dump it (the dashboard panel surfaces "encrypted" status more
-        # usefully). We check via the literal blob content.
-        assert row.private_key_ct is not None
-        assert row.private_key_ct not in rendered
-        assert row.passphrase_ct is not None
-        assert row.passphrase_ct not in rendered
-        # Identifying metadata is still helpful for debugging.
+        # No multi-line blob noise.
+        assert "\n" not in rendered
+        # The row's id and name should be visible — they're not secret.
         assert "lab" in rendered
-        # The collapsed marker shows whether the column is populated.
-        assert "<set>" in rendered
-
-    def test_repr_does_not_leak_plaintext_under_percent_r(
-        self,
-        backend: LocalDevBackend,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """``logger.error("…%r", row)`` is the most common leak vector."""
-        row = SSHKey(id=1, name="lab")
-        encrypt_sshkey_secrets(
-            backend, row, private_key=_PEM, passphrase="hunter2"
-        )
-        logger = logging.getLogger("wg_manager.test_repr")
-        with caplog.at_level(logging.DEBUG, logger="wg_manager.test_repr"):
-            logger.error("ssh key was %r", row)
-            logger.error("ssh key was %s", row)
-        captured = caplog.text
-        assert "supersecret-body-bytes" not in captured
-        assert "BEGIN OPENSSH" not in captured
-        assert "hunter2" not in captured
-
-    def test_repr_with_null_columns(self) -> None:
-        """A row with no ciphertext columns set still has a clean repr."""
-        row = SSHKey(id=1, name="lab")
-        rendered = repr(row)
-        assert "<set>" not in rendered
-        assert "None" in rendered
+        # Sanity: no leftover field references from the pre-CP4.4 schema.
+        assert "private_key_ct" not in rendered
+        assert "passphrase_ct" not in rendered
 
 
 class TestClientRedaction:

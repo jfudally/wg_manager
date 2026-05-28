@@ -80,13 +80,19 @@ class TestSSHKeyModeEnum:
 class TestSSHKeyModelFields:
     """A freshly-constructed :class:`SSHKey` defaults to ``mode='legacy'``."""
 
-    def test_mode_defaults_to_legacy_on_new_row(self) -> None:
-        """Phase 2b rows / new uploads behave exactly as before until migrated."""
+    def test_mode_defaults_to_ca_on_new_row(self) -> None:
+        """Phase 2c CP4.4 flipped the default from ``legacy`` to ``ca``.
+
+        Pre-CP4.4 a fresh row defaulted to legacy and stayed there
+        until ``wg-manager ssh migrate-to-ca`` flipped it. CP4.4
+        retired the legacy path entirely; the default now matches the
+        only mode the task layer can serve.
+        """
         row = SSHKey(name="lab")
-        assert row.mode == SSHKeyMode.legacy
+        assert row.mode == SSHKeyMode.ca
 
     def test_mode_accepts_ca(self) -> None:
-        """Setting the field to ``ca`` is the post-CP4.2 steady state."""
+        """Setting the field to ``ca`` is the post-CP4.4 steady state."""
         row = SSHKey(name="lab", mode=SSHKeyMode.ca)
         assert row.mode == SSHKeyMode.ca
 
@@ -180,6 +186,12 @@ class TestSSHKeyModeMigration:
         canonical legacy shape; CP4.1 must label them accordingly so
         the CP4.2 migration CLI (which scans for ``mode='legacy'``)
         can find them.
+
+        Pinned at ``0007_sshkey_mode`` rather than ``head`` because
+        CP4.4 (Alembic 0008) drops ``sshkey.private_key_ct`` once the
+        legacy rows have all been migrated to CA mode — running
+        ``head`` here would either trip 0008's legacy-row guard or
+        drop the column out from under the assertions below.
         """
         from alembic import command
 
@@ -198,7 +210,7 @@ class TestSSHKeyModeMigration:
                         "'2026-05-27 00:00:00')"
                     )
                 )
-            command.upgrade(cfg, "head")
+            command.upgrade(cfg, "0007_sshkey_mode")
             with engine.begin() as conn:
                 rows = list(
                     conn.execute(
@@ -273,6 +285,9 @@ class TestSSHKeyModeMigration:
         creations. The migration must consult each row's own
         ``private_key_ct`` rather than picking a single mode for the
         whole table.
+
+        Pinned at ``0007_sshkey_mode`` — see the legacy/CA backfill
+        test above for why ``head`` is now off-limits.
         """
         from alembic import command
 
@@ -289,7 +304,7 @@ class TestSSHKeyModeMigration:
                         "('ca-only', NULL, '2026-05-27 00:00:01')"
                     )
                 )
-            command.upgrade(cfg, "head")
+            command.upgrade(cfg, "0007_sshkey_mode")
             with engine.begin() as conn:
                 rows = {
                     name: mode
@@ -307,11 +322,16 @@ class TestSSHKeyModeMigration:
     def test_new_rows_default_to_legacy_after_upgrade(
         self, file_db_url: str
     ) -> None:
-        """The column carries a server-side default so plain INSERTs work."""
+        """The column carries a server-side default so plain INSERTs work.
+
+        Pinned at ``0007_sshkey_mode`` — the INSERT below references
+        ``private_key_ct``, which 0008 drops, so ``head`` is no longer
+        a valid target here.
+        """
         from alembic import command
 
         cfg = _alembic_config(file_db_url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0007_sshkey_mode")
         engine = create_engine(file_db_url)
         try:
             with engine.begin() as conn:
@@ -336,13 +356,21 @@ class TestSSHKeyModeMigration:
             engine.dispose()
 
     def test_downgrade_one_drops_mode_column(self, file_db_url: str) -> None:
-        """Rolling back 0007 drops the column and leaves everything else alone."""
+        """Rolling back 0007 drops the column and leaves everything else alone.
+
+        Pinned at ``0007_sshkey_mode`` rather than ``head`` because the
+        downgrade target is "one revision back from 0007", which is
+        ``0006_host_cert_columns``. From ``head`` (0008) the ``-1``
+        target is 0007 instead — which still has the mode column —
+        and the assertion below would fail. Explicitly stating the
+        upgrade target makes the test robust to future migrations.
+        """
         from alembic import command
 
         cfg = _alembic_config(file_db_url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0007_sshkey_mode")
         before = self._columns(file_db_url)
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, "0006_host_cert_columns")
         after = self._columns(file_db_url)
 
         assert before - after == {"mode"}, (
@@ -355,13 +383,17 @@ class TestSSHKeyModeMigration:
     def test_upgrade_then_downgrade_then_upgrade_is_idempotent(
         self, file_db_url: str
     ) -> None:
-        """Round-trip survives; the migration body has no one-shot side effects."""
+        """Round-trip survives; the migration body has no one-shot side effects.
+
+        Pinned at ``0007_sshkey_mode`` — same reason as
+        :meth:`test_downgrade_one_drops_mode_column`.
+        """
         from alembic import command
 
         cfg = _alembic_config(file_db_url)
-        command.upgrade(cfg, "head")
-        command.downgrade(cfg, "-1")
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, "0007_sshkey_mode")
+        command.downgrade(cfg, "0006_host_cert_columns")
+        command.upgrade(cfg, "0007_sshkey_mode")
         assert "mode" in self._columns(file_db_url)
 
 
@@ -373,57 +405,30 @@ class TestSSHKeyModeMigration:
 class TestSSHKeysAPIExposesMode:
     """The HTTP surface must surface ``mode`` so the dashboard can render it.
 
-    These tests use the existing ``client`` fixture from ``conftest.py``
-    (in-memory SQLite + the FastAPI app under test). They don't try to
-    flip a row to ``ca`` via the API yet — that's CP4.2's migration
-    CLI — but they do pin that ``mode`` is present on every read path
-    (``POST``, ``GET /{id}``, ``GET /``) and defaults to ``legacy`` for
-    freshly-created rows.
+    Phase 2c CP4.4 made ``ca`` the only mode any row can carry — the
+    POST/GET/list paths still surface the field (the dashboard hangs
+    onto it for the badge) and the value is always ``ca`` for a
+    freshly created row.
     """
 
-    def test_post_response_includes_mode_legacy(self, client) -> None:  # type: ignore[no-untyped-def]
-        import base64
-
-        pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----\n"
-        resp = client.post(
-            "/ssh-keys",
-            json={
-                "name": "cp4-1-post",
-                "private_key_b64": base64.b64encode(pem.encode()).decode(),
-            },
-        )
+    def test_post_response_includes_mode_ca(self, client) -> None:  # type: ignore[no-untyped-def]
+        resp = client.post("/ssh-keys", json={"name": "cp4-1-post"})
         assert resp.status_code == 201, resp.text
-        assert resp.json().get("mode") == "legacy", (
+        assert resp.json().get("mode") == "ca", (
             "POST /ssh-keys must surface the row's mode so the "
             "dashboard can render the badge without a second round trip"
         )
 
     def test_get_by_id_includes_mode(self, client) -> None:  # type: ignore[no-untyped-def]
-        import base64
-
-        pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ny\n-----END OPENSSH PRIVATE KEY-----\n"
         created = client.post(
-            "/ssh-keys",
-            json={
-                "name": "cp4-1-get",
-                "private_key_b64": base64.b64encode(pem.encode()).decode(),
-            },
+            "/ssh-keys", json={"name": "cp4-1-get"}
         ).json()
         resp = client.get(f"/ssh-keys/{created['id']}")
         assert resp.status_code == 200, resp.text
-        assert resp.json().get("mode") == "legacy"
+        assert resp.json().get("mode") == "ca"
 
     def test_list_includes_mode(self, client) -> None:  # type: ignore[no-untyped-def]
-        import base64
-
-        pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nz\n-----END OPENSSH PRIVATE KEY-----\n"
-        client.post(
-            "/ssh-keys",
-            json={
-                "name": "cp4-1-list",
-                "private_key_b64": base64.b64encode(pem.encode()).decode(),
-            },
-        )
+        client.post("/ssh-keys", json={"name": "cp4-1-list"})
         resp = client.get("/ssh-keys")
         assert resp.status_code == 200
         rows = resp.json()
@@ -431,167 +436,4 @@ class TestSSHKeysAPIExposesMode:
         assert all("mode" in r for r in rows), (
             "every row in GET /ssh-keys must surface its mode"
         )
-        assert all(r["mode"] == "legacy" for r in rows)
-
-
-# ---------------------------------------------------------------------------
-# CP4.1d — task-layer routing reads per-key mode
-# ---------------------------------------------------------------------------
-
-
-class TestTaskLayerRoutesPerKeyMode:
-    """The task layer's auth path is selected by ``SSHKey.mode``, not by env.
-
-    Phase 2c CP2 shipped a global ``SSH_AUTH_MODE`` setting that
-    routed every connection through the legacy path or the CA path
-    in lockstep. CP4 supersedes that: each ``SSHKey`` row carries its
-    own mode, so a fleet can migrate host-by-host. These tests pin
-    that contract by:
-
-    1. Forcing the global env var to one value, then asserting the
-       runner construction uses the *opposite* path because the row's
-       mode says so.
-    2. Mirror across both directions so neither side wins by accident.
-
-    The assertions are on ``FakeSSHRunner.CERTS_USED`` /
-    ``KEYS_USED``: the CP2 tests already proved cert vs. legacy
-    construction selects the right paramiko code paths — we just
-    check which one fires.
-    """
-
-    @staticmethod
-    def _flip_key_to_ca(session, key_id: int) -> None:  # type: ignore[no-untyped-def]
-        """Direct-DB write that flips an :class:`SSHKey` row to ``mode=ca``.
-
-        Stand-in for the CP4.2 ``wg-manager ssh migrate-to-ca`` CLI,
-        which hasn't shipped yet. Using a session write here keeps
-        these tests scoped to the routing seam rather than depending
-        on the next sub-checkpoint's HTTP/CLI surface.
-        """
-        from wg_manager.models import SSHKey as _SSHKey, SSHKeyMode
-
-        row = session.get(_SSHKey, key_id)
-        assert row is not None, f"SSHKey {key_id} not found"
-        row.mode = SSHKeyMode.ca
-        session.add(row)
-        session.commit()
-
-    def test_ca_mode_key_uses_cert_path_even_with_legacy_env(
-        self, client, session, monkeypatch  # type: ignore[no-untyped-def]
-    ) -> None:
-        """A ``mode='ca'`` row mints a per-session cert despite ``SSH_AUTH_MODE=legacy``."""
-        import base64
-
-        from tests.conftest import FakeSSHRunner
-
-        # Force the (now-deprecated) global to ``legacy`` so the test
-        # asserts the per-key mode wins, not "it accidentally agrees".
-        monkeypatch.setenv("SSH_AUTH_MODE", "legacy")
-        monkeypatch.setenv("SSH_CA_BACKEND", "local")
-        monkeypatch.delenv("SSH_CA_LOCAL_DEV_PEM", raising=False)
-        # CP3's host-cert install runs at the tail of CA-mode
-        # provisioning and probes for the host's pubkey. Register one
-        # so the task succeeds end-to-end.
-        FakeSSHRunner.OUTPUTS[
-            ("hub-ca.example.com", "ssh_host_ed25519_key.pub")
-        ] = (
-            "ssh-ed25519 "
-            "AAAAC3NzaC1lZDI1NTE5AAAAINcv8wY+y8d0KcKZ6t6S/n7JoYx7M3jzqu7K2YgQGvD7"
-            " root@hub-ca.example.com\n"
-        )
-
-        pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nx\n-----END OPENSSH PRIVATE KEY-----\n"
-        key_id = int(
-            client.post(
-                "/ssh-keys",
-                json={
-                    "name": "ca-mode-key",
-                    "private_key_b64": base64.b64encode(pem.encode()).decode(),
-                },
-            ).json()["id"]
-        )
-        # Flip the row into CA mode before provisioning so the task
-        # layer sees the new mode value.
-        self._flip_key_to_ca(session, key_id)
-
-        FakeSSHRunner.CERTS_USED.clear()
-        FakeSSHRunner.KEYS_USED.clear()
-
-        resp = client.post(
-            "/servers",
-            json={
-                "hostname": "hub-ca.example.com",
-                "ssh_username": "ubuntu",
-                "ssh_key_id": key_id,
-                "endpoint_host": "hub-ca.example.com",
-            },
-        )
-        assert resp.status_code == 202, resp.text
-
-        # Filter for non-empty cert_pem — FakeSSHRunner records *every*
-        # construction (legacy too), so cert_pem being populated is the
-        # actual signal that the CA branch fired.
-        cert_records = [
-            r
-            for r in FakeSSHRunner.CERTS_USED
-            if r[0] == "hub-ca.example.com" and r[1]
-        ]
-        assert cert_records, (
-            "task layer did not route through the CA path even though the "
-            "SSHKey row's mode is 'ca'; check _open_runner's mode resolution"
-        )
-
-    def test_legacy_mode_key_uses_stored_key_even_with_ca_env(
-        self, client, monkeypatch  # type: ignore[no-untyped-def]
-    ) -> None:
-        """A ``mode='legacy'`` row uses ``private_key_ct`` even when ``SSH_AUTH_MODE=ca``."""
-        import base64
-
-        from tests.conftest import FakeSSHRunner
-
-        monkeypatch.setenv("SSH_AUTH_MODE", "ca")
-        monkeypatch.setenv("SSH_CA_BACKEND", "local")
-        monkeypatch.delenv("SSH_CA_LOCAL_DEV_PEM", raising=False)
-
-        pem = "-----BEGIN OPENSSH PRIVATE KEY-----\ny\n-----END OPENSSH PRIVATE KEY-----\n"
-        key_id = int(
-            client.post(
-                "/ssh-keys",
-                json={
-                    "name": "legacy-mode-key",
-                    "private_key_b64": base64.b64encode(pem.encode()).decode(),
-                },
-            ).json()["id"]
-        )
-        # No flip: the row stays mode='legacy' (default after CP4.1).
-
-        FakeSSHRunner.CERTS_USED.clear()
-        FakeSSHRunner.KEYS_USED.clear()
-
-        resp = client.post(
-            "/servers",
-            json={
-                "hostname": "hub-legacy.example.com",
-                "ssh_username": "ubuntu",
-                "ssh_key_id": key_id,
-                "endpoint_host": "hub-legacy.example.com",
-            },
-        )
-        assert resp.status_code == 202, resp.text
-
-        cert_records = [
-            r
-            for r in FakeSSHRunner.CERTS_USED
-            if r[0] == "hub-legacy.example.com" and r[1]  # non-empty cert_pem
-        ]
-        assert not cert_records, (
-            "task layer routed a 'legacy' SSHKey through the CA path — "
-            "the per-key mode column must override the env var; got "
-            f"cert records {cert_records!r}"
-        )
-        key_records = [
-            r for r in FakeSSHRunner.KEYS_USED if r[0] == "hub-legacy.example.com"
-        ]
-        assert key_records, (
-            "task layer did not construct any runner for the legacy host"
-        )
+        assert all(r["mode"] == "ca" for r in rows)

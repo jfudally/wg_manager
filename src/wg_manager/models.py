@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import BigInteger, Column, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Column, UniqueConstraint
+from sqlalchemy import Text  # re-exported for the manual-client column below
 from sqlmodel import Field, SQLModel
 
 
@@ -59,54 +60,40 @@ def _utcnow() -> datetime:
 
 
 class SSHKey(SQLModel, table=True):
-    """Stored SSH credential used to provision nodes.
+    """Named SSH role used to provision nodes.
 
-    Phase 2b closed with Alembic revision 0005 dropping the legacy
-    plaintext columns; every secret on this row now lives only in the
-    ``_ct`` ciphertext columns and is wrapped via
-    :mod:`wg_manager.crypto`. Callers obtain the decrypted material
-    through :func:`wg_manager.crypto.resolve_sshkey_private` and
-    :func:`wg_manager.crypto.resolve_sshkey_passphrase`; the row itself
-    no longer carries any plaintext attribute.
+    Phase 2c closed with Alembic revision 0008 dropping the row's
+    ciphertext columns. The row is now a *name-and-mode label*: the
+    task layer mints a fresh user cert from the SSH CA at every
+    connection (see :mod:`wg_manager.ssh_ca`) and never reads a
+    persisted secret off the row. Operators register a row by name;
+    the binding to actual key material lives in Vault's SSH CA
+    configuration.
 
-    Phase 2c CP4.1 layers on :attr:`mode`, the per-row switch between
-    legacy stored-key auth and CA-minted user-cert auth. See
-    :class:`SSHKeyMode` for the semantics; the task layer reads this
-    field (not the global ``SSH_AUTH_MODE`` env var) to decide which
-    auth path to use for any given connection. ``ca`` rows have NULL
-    ciphertext columns once CP4.4 drops them; until then they remain
-    populated but ignored.
+    :attr:`mode` is kept around (rather than dropped wholesale) so a
+    future variant — e.g. a per-row Vault role override or a yet-to-
+    arrive third backend — has somewhere to land without another
+    Alembic revision. Every row created post-CP4.4 defaults to
+    :attr:`SSHKeyMode.ca`.
 
-    :ivar mode: ``legacy`` (default) or ``ca``. Flipped from ``legacy``
-        to ``ca`` by ``wg-manager ssh migrate-to-ca`` once the CA trust
-        anchor is installed on every server using the row.
+    :ivar mode: Always ``ca`` in the post-CP4.4 schema. ``legacy``
+        remains in the enum to preserve historical migration
+        readability; any attempt to create a new row with
+        ``mode='legacy'`` is rejected at the router layer.
     """
 
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(index=True, unique=True)
-    private_key_ct: str | None = Field(
-        default=None,
-        sa_column=Column(Text, nullable=True),
-    )
-    passphrase_ct: str | None = None
-    # Phase 2c CP4.1 — per-row auth mode. Defaults to ``legacy`` so any
-    # row created before this migration (or inserted via a Phase 2b
-    # codepath in mixed-deploy environments) behaves exactly as before
-    # until the operator runs ``wg-manager ssh migrate-to-ca``.
-    mode: SSHKeyMode = Field(default=SSHKeyMode.legacy)
+    # Phase 2c CP4.4 — every row is CA-mode now. The default flipped
+    # from ``legacy`` to ``ca`` once Alembic 0008 dropped the
+    # ciphertext columns that legacy mode depended on.
+    mode: SSHKeyMode = Field(default=SSHKeyMode.ca)
     created_at: datetime = Field(default_factory=_utcnow)
 
     def __repr__(self) -> str:
         return (
-            f"SSHKey(id={self.id!r}, name={self.name!r}, mode={self.mode!r}, "
-            # ``_ct`` columns are encrypted blobs and safe to log, but we
-            # still render them as "<set>" / "None" because the raw blob
-            # bodies are 200+ bytes of base64 noise that crowds out useful
-            # debug info. Whether the column is populated is the bit
-            # operators actually want to see at a glance.
-            f"private_key_ct={'<set>' if self.private_key_ct else None}, "
-            f"passphrase_ct={'<set>' if self.passphrase_ct else None}, "
-            f"created_at={self.created_at!r})"
+            f"SSHKey(id={self.id!r}, name={self.name!r}, "
+            f"mode={self.mode!r}, created_at={self.created_at!r})"
         )
 
     __str__ = __repr__

@@ -37,7 +37,7 @@ def _bootstrap_server(client: TestClient) -> int:
     key_id = int(
         client.post(
             "/ssh-keys",
-            json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+            json={"name": "lab"},
         ).json()["id"]
     )
     server_resp = client.post(
@@ -126,7 +126,7 @@ class TestDiscoverAllSurvivesPerHostFailure:
         key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab"},
             ).json()["id"]
         )
         ok_id = int(
@@ -195,7 +195,7 @@ class TestProvisionServerTimeout:
         key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab"},
             ).json()["id"]
         )
         with Session(engine) as session:  # type: ignore[arg-type]

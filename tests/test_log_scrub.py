@@ -84,8 +84,6 @@ class TestLogScrubHTTPFlows:
                 "/ssh-keys",
                 json={
                     "name": "scrub-lab",
-                    "private_key_b64": _SAMPLE_PEM_B64,
-                    "passphrase": _PASSPHRASE,
                 },
             )
             assert resp.status_code == 201, resp.text
@@ -94,16 +92,23 @@ class TestLogScrubHTTPFlows:
     def test_patch_ssh_key_does_not_log_pem(
         self, client: TestClient, caplog: pytest.LogCaptureFixture
     ) -> None:
+        """The PATCH endpoint accepts only rename post-CP4.4 — but a stray
+        secret-bearing field still must not bleed into log output even
+        when the schema rejects it. ``extra='forbid'`` produces a 422
+        and the offending value should never appear in the captured
+        logs (FastAPI validation errors echo field names, not values,
+        but we pin the contract).
+        """
         created = client.post(
             "/ssh-keys",
-            json={"name": "scrub-lab", "private_key_b64": _SAMPLE_PEM_B64},
+            json={"name": "scrub-lab"},
         ).json()
         with caplog.at_level(logging.DEBUG):
             resp = client.patch(
                 f"/ssh-keys/{created['id']}",
                 json={"passphrase": _PASSPHRASE},
             )
-            assert resp.status_code == 200, resp.text
+            assert resp.status_code == 422, resp.text
         _assert_no_leak(caplog.text)
 
     def test_register_manual_client_does_not_log_private_key(
@@ -117,7 +122,7 @@ class TestLogScrubHTTPFlows:
         key_id = int(
             client.post(
                 "/ssh-keys",
-                json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+                json={"name": "lab"},
             ).json()["id"]
         )
         server_resp = client.post(
@@ -199,7 +204,7 @@ class TestLogScrubTaskFlow:
 
         client.post(
             "/ssh-keys",
-            json={"name": "lab", "private_key_b64": _SAMPLE_PEM_B64},
+            json={"name": "lab"},
         )
 
         with caplog.at_level(logging.DEBUG):
@@ -250,8 +255,6 @@ class TestLogScrubCryptoRewrap:
             "/ssh-keys",
             json={
                 "name": "scrub-lab",
-                "private_key_b64": _SAMPLE_PEM_B64,
-                "passphrase": _PASSPHRASE,
             },
         )
 
