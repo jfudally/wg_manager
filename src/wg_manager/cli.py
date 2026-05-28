@@ -40,12 +40,17 @@ crypto_app = typer.Typer(
     help="Encryption-at-rest backfills and key rotation.",
     no_args_is_help=True,
 )
+ssh_app = typer.Typer(
+    help="SSH CA / host-cert migration helpers (Phase 2c).",
+    no_args_is_help=True,
+)
 app.add_typer(keys_app, name="keys")
 app.add_typer(servers_app, name="servers")
 app.add_typer(clients_app, name="clients")
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(db_app, name="db")
 app.add_typer(crypto_app, name="crypto")
+app.add_typer(ssh_app, name="ssh")
 
 
 def _make_http_client(api_url: str) -> httpx.Client:
@@ -861,6 +866,80 @@ def crypto_rewrap(
     typer.echo(
         f"  client: {client_rewrapped} rewrapped, {client_skipped} skipped"
     )
+
+
+# ---------------------------------------------------------------------------
+# ssh — Phase 2c CP4.2 SSH CA migration
+# ---------------------------------------------------------------------------
+
+
+@ssh_app.command("migrate-to-ca")
+def ssh_migrate_to_ca(
+    ctx: typer.Context,
+    key_id: int = typer.Argument(..., help="SSH key row id to migrate."),
+    key_file: Path = typer.Option(
+        ...,
+        "--key-file",
+        "-f",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help=(
+            "Path to a PEM-encoded SSH private key that every server "
+            "using this key currently trusts. One-shot: the body is "
+            "posted to the API for the bootstrap session and never "
+            "persisted on the server side."
+        ),
+    ),
+    passphrase: str | None = typer.Option(
+        None,
+        "--passphrase",
+        help="Passphrase that unlocks --key-file, if any.",
+    ),
+) -> None:
+    """Bootstrap every server using ``key_id`` and flip the row to CA mode.
+
+    Phase 2c CP4.2 — the migration path from legacy stored-key auth
+    to CA-minted cert auth. The CLI is a thin wrapper around
+    ``POST /ssh-keys/{id}/migrate-to-ca``:
+
+    1. Reads the PEM body from ``--key-file`` and base64-encodes it
+       for transport.
+    2. Posts to the migration endpoint with an optional passphrase.
+    3. Pretty-prints the per-server result envelope so the operator
+       sees each host's outcome at a glance.
+    4. Exits non-zero if any server failed — useful when driving the
+       CLI from a CI pipeline that should abort on partial failure.
+
+    Exit codes:
+
+    * ``0`` — every server succeeded; row is now ``mode=ca`` with
+      ciphertext columns NULLed.
+    * ``1`` — at least one server failed (row mode unchanged) or the
+      HTTP call itself returned a non-2xx (404 unknown key, 422
+      malformed key body, …). Re-run after fixing the failed host(s).
+    """
+    pem_bytes = key_file.read_bytes()
+    payload: dict[str, Any] = {
+        "private_key_b64": base64.b64encode(pem_bytes).decode("ascii"),
+    }
+    if passphrase is not None:
+        payload["passphrase"] = passphrase
+
+    with _client(ctx) as http:
+        data = _handle(http.post(f"/ssh-keys/{key_id}/migrate-to-ca", json=payload))
+    assert isinstance(data, dict)
+    _print_json(data)
+
+    failed = int(data.get("servers_failed", 0))
+    if failed > 0:
+        typer.secho(
+            f"{failed} server(s) failed to bootstrap; row mode left as "
+            f"{data.get('mode', '?')!r}. Fix the failed host(s) and re-run.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
 
 def main() -> None:  # pragma: no cover - thin entrypoint

@@ -411,6 +411,92 @@ Plus 8 CP2 / CP3 tests refactored to use the new
 on `SSH_AUTH_MODE=ca` to flip routing. Full suite 216/216 green in
 `local` mode; dashboard vitest 26/26.
 
+### Phase 2c checkpoint 4.2 — migrate-to-ca endpoint + CLI (2026-05-28)
+
+CP4.2 closes the chicken-and-egg gap CP4.1 left behind. A `mode=ca`
+row can't reach a host that hasn't been bootstrapped with a
+CA-signed cert (the client-side `KnownHostsCAPolicy` refuses to
+TOFU), but the cert install requires an SSH session in the first
+place. The migration takes a one-shot legacy SSH private key —
+typically the same key the operator used historically for the host
+— and uses it as the bridge.
+
+What CP4.2 ships:
+
+1. **`POST /ssh-keys/{id}/migrate-to-ca`** (router:
+   [`wg_manager.routers.ssh_keys`](../src/wg_manager/routers/ssh_keys.py)).
+   Body: `{private_key_b64, passphrase?}`. The private key is used
+   in-memory by the helper and never persisted. Always returns 200
+   on a well-formed call — partial failure is encoded in the
+   per-server result list, not the HTTP status, so the dashboard
+   and CLI render the per-host outcome table uniformly. 404 on
+   unknown key id; 422 on malformed `private_key_b64`.
+2. **`wg_manager.ssh_migrate.migrate_key_to_ca`** — HTTP-agnostic
+   helper that walks every `Server` row referencing the key,
+   constructs a *legacy* `SSHRunner` (no `cert_pem` / `ca_public_key`
+   — the whole point is to reach a not-yet-trusting host), drives
+   `host_ssh.install_host_cert` to push the CA trust anchor + signed
+   host cert, and persists the `host_cert_*` columns on each server.
+   After every server succeeds: flips the SSH key row to `mode=ca`
+   and NULLs `private_key_ct` + `passphrase_ct`. If *any* server
+   fails the row is left untouched so the operator has a clean
+   retry path.
+3. **`wg-manager ssh migrate-to-ca <id> --key-file PATH
+   [--passphrase ...]`** (CLI:
+   [`wg_manager.cli`](../src/wg_manager/cli.py)). Thin HTTP wrapper:
+   reads the PEM body from disk, base64-encodes it, posts, and
+   pretty-prints the per-server envelope. Exits non-zero if any
+   server failed — CI-friendly fail-fast behaviour while still
+   showing every host's outcome.
+
+```bash
+# Steady-state operator flow for migrating a legacy row to CA:
+wg-manager ssh migrate-to-ca 3 --key-file ~/.ssh/id_rsa
+# {
+#   "key_id": 3,
+#   "name": "azure_rsa.pem",
+#   "mode": "ca",
+#   "servers_total": 1,
+#   "servers_ok": 1,
+#   "servers_failed": 0,
+#   "results": [
+#     {"server_id": 4, "hostname": "65.52.211.113", "status": "ok",
+#      "cert_serial": 12345, "valid_before": "2026-05-29T21:07:02"}
+#   ]
+# }
+```
+
+```bash
+# Partial-failure path — one host unreachable, row stays mode=legacy:
+wg-manager ssh migrate-to-ca 3 --key-file ~/.ssh/id_rsa
+# {
+#   "key_id": 3, "mode": "legacy", "servers_failed": 1,
+#   "results": [
+#     {"server_id": 4, "status": "ok", ...},
+#     {"server_id": 7, "status": "ssh_failed",
+#      "error": "SSH connection to 10.0.0.99:22 failed: timed out"}
+#   ]
+# }
+# CLI exits 1; row mode stays "legacy" so the operator can re-run
+# after fixing 10.0.0.99 without losing the ok server's persisted
+# host cert (the bootstrap is idempotent on already-installed hosts).
+```
+
+The migration also covers the "labelled `ca` but never
+bootstrapped" shape that the 2026-05-27 smart-backfill fix labelled
+as `ca` based on NULL `private_key_ct`: pass the same one-shot key
+and the migration walks each host through the install, leaving the
+row's already-correct `ca` mode intact.
+
+Test snapshot (`pytest -q tests/test_ssh_migrate.py tests/test_cli_ssh_migrate.py`):
+
+```
+14 passed in ~0.4s
+```
+
+Full suite 254 passed in `local` mode (1 unrelated pre-existing
+crypto failure).
+
 ### Target-host setup (Phase 2c provisioning step)
 
 The managed host needs to trust the CA. Provisioning writes:

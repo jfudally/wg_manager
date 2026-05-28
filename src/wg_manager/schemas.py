@@ -91,6 +91,76 @@ class SSHKeyUpdate(BaseModel):
     private_key_b64: str | None = None
 
 
+class SSHKeyMigrateToCARequest(BaseModel):
+    """Body for ``POST /ssh-keys/{id}/migrate-to-ca`` (Phase 2c CP4.2).
+
+    The bootstrap step needs a one-shot SSH private key with which to
+    open a legacy session to every server using the row. The key is
+    used in-memory by the migration helper and never persisted:
+    successful migration leaves the row's ciphertext columns NULL.
+
+    :ivar private_key_b64: Base64-encoded PEM body of an SSH key that
+        each target host currently trusts (typically the same key
+        that was originally registered for the row before its
+        ciphertext was dropped). Same encoding contract as
+        :class:`SSHKeyCreate`. Invalid base64 returns 422.
+    :ivar passphrase: Optional passphrase that unlocks the key. Only
+        forwarded to paramiko in the bootstrap session; not stored.
+    """
+
+    private_key_b64: str
+    passphrase: str | None = None
+
+
+class SSHKeyMigrateToCAServerResult(BaseModel):
+    """Per-server outcome inside :class:`SSHKeyMigrateToCAResponse`.
+
+    The endpoint walks every server using the SSH key in turn; one of
+    these is appended for each host. ``ok`` means the host now trusts
+    the CA and presents its own CA-signed host cert; ``ssh_failed``
+    means the bootstrap session couldn't reach the host or the
+    install couldn't make forward progress, with ``error`` carrying
+    the operator-facing message.
+    """
+
+    server_id: int
+    hostname: str
+    status: str
+    cert_serial: int | None = None
+    valid_before: datetime | None = None
+    error: str | None = None
+
+
+class SSHKeyMigrateToCAResponse(BaseModel):
+    """200 response envelope for ``POST /ssh-keys/{id}/migrate-to-ca``.
+
+    Reports the row's final mode (``ca`` after a fully-successful
+    migration, ``legacy`` when any per-server step failed and the
+    operator can retry) plus a per-server outcome list. The endpoint
+    always returns 200 — partial failure is encoded in the per-server
+    results, not in the HTTP status, so the dashboard and CLI can
+    render the per-host outcome table uniformly.
+
+    :ivar key_id: The SSH key row id.
+    :ivar name: Friendly name of the key (echoed so the CLI doesn't
+        have to round-trip).
+    :ivar mode: Final mode of the row. ``ca`` iff every server
+        succeeded (or the key has no servers); ``legacy`` otherwise.
+    :ivar servers_total: Number of servers that reference the key.
+    :ivar servers_ok: Number of servers whose bootstrap succeeded.
+    :ivar servers_failed: Number of servers whose bootstrap failed.
+    :ivar results: Per-server outcomes; len matches ``servers_total``.
+    """
+
+    key_id: int
+    name: str
+    mode: SSHKeyMode
+    servers_total: int
+    servers_ok: int
+    servers_failed: int
+    results: list[SSHKeyMigrateToCAServerResult]
+
+
 class SSHKeyRead(BaseModel):
     """Public view of an SSH key — never exposes the private key body.
 

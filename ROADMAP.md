@@ -253,11 +253,29 @@ Transit key's data-key client-side for a short TTL (Vault's
     CA mode via env var. Full suite green in `local` mode (240
     passed; 1 unrelated pre-existing crypto failure), dashboard
     vitest 26/26.
-  - **CP4.2 `[ ]`** — `wg-manager ssh migrate-to-ca <id>` CLI +
-    `POST /ssh-keys/{id}/migrate-to-ca` endpoint. For each server
-    using the key: SSH in legacy, install CA trust + host cert via
-    the existing `host_ssh.install_host_cert`, then flip the row to
-    `mode=ca` and null out the ciphertext columns.
+  - **CP4.2 `[x]`** (2026-05-28) — `wg-manager ssh migrate-to-ca
+    <id>` CLI + `POST /ssh-keys/{id}/migrate-to-ca` endpoint. Closes
+    the chicken-and-egg gap CP4.1 left behind: a `mode=ca` row
+    cannot reach a host that hasn't yet been bootstrapped with a
+    CA-signed cert (KnownHostsCAPolicy refuses to TOFU), but the
+    cert install requires SSH. The migration takes a one-shot
+    legacy `private_key_b64` body, opens a TOFU-allowed session per
+    server, drives `host_ssh.install_host_cert` end-to-end, persists
+    the `host_cert_*` columns on each server row, and — iff every
+    server succeeded — flips the SSH key row to `mode=ca` and nulls
+    `private_key_ct` + `passphrase_ct`. Partial failure: the row's
+    mode is **not** flipped (so the operator has a clean retry
+    path); response still returns 200 with per-server outcomes for
+    uniform dashboard/CLI rendering. Zero-server case: row flips to
+    `ca` and ciphertext nulled (operator intent unambiguous).
+    Bootstrap session is always legacy (no cert / no CA pubkey),
+    independent of the row's stored mode — the whole point is to
+    reach a not-yet-trusting host. New module
+    `wg_manager.ssh_migrate`; new CLI subgroup `wg-manager ssh`.
+    Tests: 10 endpoint cases (shape / happy / reentrant /
+    partial-fail / zero-server) + 4 CLI cases (happy / unknown-key /
+    partial-fail exit code / passphrase round-trip). Full suite 254
+    passed (1 unrelated pre-existing crypto failure).
   - **CP4.3 `[ ]`** — Dashboard "SSH roles" reframe: per-row mode
     badge + "Migrate to CA" affordance wired to the CP4.2 endpoint.
   - **CP4.4 `[ ]`** — Alembic 0008 drops `sshkey.private_key_ct` +

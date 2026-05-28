@@ -234,6 +234,14 @@ def client(
 
     # Swap SSHRunner as used inside the Celery tasks (import-time binding).
     monkeypatch.setattr(tasks_module, "SSHRunner", FakeSSHRunner)
+    # Phase 2c CP4.2 — the migration helper opens its own bootstrap
+    # SSH session (legacy auth, regardless of the row's mode). Same
+    # import-time binding pattern, so we swap it here so the
+    # ``/ssh-keys/{id}/migrate-to-ca`` endpoint tests don't have to
+    # repeat the monkeypatch per-test.
+    import wg_manager.ssh_migrate as ssh_migrate_module
+
+    monkeypatch.setattr(ssh_migrate_module, "SSHRunner", FakeSSHRunner)
 
     def _override_session() -> Generator[Session, Any, None]:
         with Session(engine) as request_session:

@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session, select
 
+from wg_manager.config import Settings
 from wg_manager.crypto import (
     CryptoBackend,
     encrypt_sshkey_secrets,
@@ -18,7 +19,14 @@ from wg_manager.crypto import (
 from wg_manager.db import get_session
 from wg_manager.deps import get_crypto_backend
 from wg_manager.models import Client, SSHKey, Server
-from wg_manager.schemas import SSHKeyCreate, SSHKeyRead, SSHKeyUpdate
+from wg_manager.schemas import (
+    SSHKeyCreate,
+    SSHKeyMigrateToCARequest,
+    SSHKeyMigrateToCAResponse,
+    SSHKeyRead,
+    SSHKeyUpdate,
+)
+from wg_manager.ssh_migrate import migrate_key_to_ca
 
 router = APIRouter(prefix="/ssh-keys", tags=["ssh-keys"])
 
@@ -166,6 +174,72 @@ def update_ssh_key(
     session.commit()
     session.refresh(row)
     return row
+
+
+@router.post(
+    "/{key_id}/migrate-to-ca",
+    response_model=SSHKeyMigrateToCAResponse,
+    status_code=status.HTTP_200_OK,
+)
+def migrate_ssh_key_to_ca(
+    key_id: int,
+    payload: SSHKeyMigrateToCARequest,
+    session: _SessionDep,
+) -> SSHKeyMigrateToCAResponse:
+    """Bootstrap each server using ``key_id`` and flip the row to CA mode.
+
+    Phase 2c CP4.2 — closes the chicken-and-egg gap CP4.1 left behind.
+    The endpoint accepts a one-shot ``private_key_b64`` body, opens a
+    legacy SSH session to each server that references the key, installs
+    the CA trust anchor + signed host cert, and (iff every server
+    succeeded) flips the row to ``mode=ca`` and nulls the ciphertext
+    columns. See :func:`wg_manager.ssh_migrate.migrate_key_to_ca` for
+    the full mutation contract and partial-failure semantics.
+
+    Always returns 200 on a well-formed call — partial failure is
+    encoded in the per-server result list, not in the HTTP status, so
+    the dashboard and CLI render the per-host outcome table uniformly.
+
+    :raises HTTPException: 404 if ``key_id`` is unknown; 422 if
+        ``private_key_b64`` is not valid base64.
+    """
+    row = session.get(SSHKey, key_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="SSH key not found")
+
+    try:
+        pem_bytes = base64.b64decode(payload.private_key_b64, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"private_key_b64 is not valid base64: {exc}",
+        ) from exc
+    private_key_pem = pem_bytes.decode("utf-8")
+
+    results = migrate_key_to_ca(
+        session=session,
+        key=row,
+        private_key_pem=private_key_pem,
+        passphrase=payload.passphrase,
+        settings=Settings(),
+    )
+
+    ok = sum(1 for r in results if r.status == "ok")
+    failed = sum(1 for r in results if r.status != "ok")
+
+    # Re-read the row to surface the final mode (the helper may or may
+    # not have flipped it depending on per-server outcomes).
+    session.refresh(row)
+
+    return SSHKeyMigrateToCAResponse(
+        key_id=row.id or key_id,
+        name=row.name,
+        mode=row.mode,
+        servers_total=len(results),
+        servers_ok=ok,
+        servers_failed=failed,
+        results=results,
+    )
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
