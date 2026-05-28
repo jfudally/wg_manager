@@ -19,8 +19,17 @@ What this module pins down today (the red-bar slice for 4.1):
    to its value, not its name — important for the schema layer that
    CP4.1c surfaces next).
 3. Alembic 0007 adds the ``mode`` column with a server-default of
-   ``"legacy"`` and **backfills every existing row to ``"legacy"``**
-   — the migration is non-blocking on a populated Phase 2b/2c DB.
+   ``"legacy"`` and **backfills existing rows from their existing
+   data shape**: a row with populated ``private_key_ct`` becomes
+   ``"legacy"`` (it has a stored key, that is by definition the
+   legacy identity); a row with NULL ``private_key_ct`` becomes
+   ``"ca"`` (post-Alembic-0005 a non-NULL ciphertext is the *only*
+   way a legacy row can exist, so a NULL pk_ct row must have been
+   a CA-mode row whose pre-CP4.1 codepath never required the
+   column). This avoids the migration footgun where a pre-CP4.1
+   deployment running entirely on ``SSH_AUTH_MODE=ca`` got every
+   row backfilled as ``"legacy"`` and then crashed at task time
+   trying to read the (NULL) private key.
 4. The downgrade drops the column cleanly; round-trip
    upgrade/downgrade/upgrade is idempotent.
 
@@ -161,15 +170,16 @@ class TestSSHKeyModeMigration:
             "CP4.1 migration was not applied"
         )
 
-    def test_upgrade_backfills_existing_rows_to_legacy(
+    def test_upgrade_backfills_row_with_stored_key_to_legacy(
         self, file_db_url: str
     ) -> None:
-        """A Phase 2b/2c row that predates 0007 must come out as ``legacy``.
+        """A pre-CP4.1 row with a populated ``private_key_ct`` is ``legacy``.
 
-        The CP4.2 migration CLI relies on this: it scans for rows with
-        ``mode='legacy'`` and walks each to ``ca``. If the migration
-        leaves the column NULL instead of backfilling, every existing
-        row would be silently invisible to the migration CLI.
+        These are the rows that used the historical Phase 2b stored-key
+        auth path. Post-Alembic-0005 a populated ciphertext is the
+        canonical legacy shape; CP4.1 must label them accordingly so
+        the CP4.2 migration CLI (which scans for ``mode='legacy'``)
+        can find them.
         """
         from alembic import command
 
@@ -196,8 +206,100 @@ class TestSSHKeyModeMigration:
                     ).fetchall()
                 )
             assert rows == [("pre-cp4", "legacy")], (
-                "Existing rows must be backfilled to 'legacy' by "
-                f"the CP4.1 migration; got {rows!r}"
+                "Rows with a populated private_key_ct must be backfilled "
+                f"to 'legacy' by the CP4.1 migration; got {rows!r}"
+            )
+        finally:
+            engine.dispose()
+
+    def test_upgrade_backfills_row_with_null_pk_ct_to_ca(
+        self, file_db_url: str
+    ) -> None:
+        """A pre-CP4.1 row with NULL ``private_key_ct`` is backfilled to ``ca``.
+
+        Reproduces the migration footgun first hit on a real DB on
+        2026-05-27: a deployment running entirely on
+        ``SSH_AUTH_MODE=ca`` ended up with rows whose ``private_key_ct``
+        was never populated (the CA-mode codepath didn't need it).
+        Naive "every row → legacy" backfill then caused
+        ``discover_all_peers`` to crash with ``sshkey id=N has no
+        private_key_ct`` because the task layer routed those rows down
+        the legacy branch.
+
+        The smart backfill uses the row's own data shape as ground
+        truth: a NULL pk_ct row *cannot* be a valid legacy row
+        post-Alembic-0005 (which dropped the plaintext fallback), so
+        it must have been CA-mode. Labelling it ``ca`` lines the
+        column up with the deployment's actual behaviour.
+        """
+        from alembic import command
+
+        cfg = _alembic_config(file_db_url)
+        command.upgrade(cfg, "0006_host_cert_columns")
+        engine = create_engine(file_db_url)
+        try:
+            with engine.begin() as conn:
+                # NULL private_key_ct — the shape a CA-mode-only
+                # deployment leaves behind.
+                conn.execute(
+                    text(
+                        "INSERT INTO sshkey (name, private_key_ct, created_at) "
+                        "VALUES ('pre-cp4-ca', NULL, "
+                        "'2026-05-27 00:00:00')"
+                    )
+                )
+            command.upgrade(cfg, "head")
+            with engine.begin() as conn:
+                rows = list(
+                    conn.execute(
+                        text("SELECT name, mode FROM sshkey")
+                    ).fetchall()
+                )
+            assert rows == [("pre-cp4-ca", "ca")], (
+                "Rows with NULL private_key_ct must be backfilled to "
+                f"'ca' by the CP4.1 migration (they cannot be legacy "
+                f"post-0005); got {rows!r}"
+            )
+        finally:
+            engine.dispose()
+
+    def test_upgrade_backfills_mixed_rows_per_data_shape(
+        self, file_db_url: str
+    ) -> None:
+        """Mixed-shape table backfills each row independently.
+
+        The realistic post-2c-pre-CP4.1 DB has both shapes side-by-side
+        because an operator can flip ``SSH_AUTH_MODE`` between key
+        creations. The migration must consult each row's own
+        ``private_key_ct`` rather than picking a single mode for the
+        whole table.
+        """
+        from alembic import command
+
+        cfg = _alembic_config(file_db_url)
+        command.upgrade(cfg, "0006_host_cert_columns")
+        engine = create_engine(file_db_url)
+        try:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "INSERT INTO sshkey (name, private_key_ct, created_at) "
+                        "VALUES "
+                        "('stored', 'vault:v1:fake', '2026-05-27 00:00:00'), "
+                        "('ca-only', NULL, '2026-05-27 00:00:01')"
+                    )
+                )
+            command.upgrade(cfg, "head")
+            with engine.begin() as conn:
+                rows = {
+                    name: mode
+                    for name, mode in conn.execute(
+                        text("SELECT name, mode FROM sshkey")
+                    ).fetchall()
+                }
+            assert rows == {"stored": "legacy", "ca-only": "ca"}, (
+                "Mixed-shape backfill must label each row by its own "
+                f"private_key_ct; got {rows!r}"
             )
         finally:
             engine.dispose()

@@ -225,21 +225,34 @@ Transit key's data-key client-side for a short TTL (Vault's
 - **Checkpoint 4 `[~]`** — Dual-mode rollout in four steps.
   - **CP4.1 `[x]`** (2026-05-27) — `SSHKey.mode` (`legacy` / `ca`)
     lands as a `str` enum column on `sshkey` via Alembic 0007 (NOT
-    NULL, server-default `legacy`, explicit backfill for any row
-    inserted before the upgrade). `SSHKeyRead` surfaces `mode` to the
-    HTTP / dashboard layers; `web/lib/types.ts` mirrors the
-    `SSHKeyMode` literal. The task layer's `_open_runner` /
-    `_maybe_install_host_cert` / `rotate_host_cert_task` now route on
-    `ssh_key.mode` rather than the global `SSH_AUTH_MODE` env var —
-    per-key wins. `POST /servers/{id}/rotate-host-cert`'s 409
-    precondition flipped to read the row's key mode and tells the
-    operator the exact `wg-manager ssh migrate-to-ca <id>` command to
-    run. The env var stays in `Settings` for backwards compat but is
-    no longer consulted on any code path. Tests: 13 CP4.1 model /
-    migration / schema / routing assertions, plus `promote_all_keys_to_ca`
-    helper added to `conftest.py` and threaded through the 8 CP2 /
-    CP3 tests that previously enabled CA mode via env var. Full
-    suite 216/216 green in `local` mode, dashboard vitest 26/26.
+    NULL, server-default `legacy`). Backfill is *per-row from the
+    row's own data shape*: populated `private_key_ct` → `legacy`,
+    NULL `private_key_ct` → `ca` (post-Alembic-0005 a non-NULL
+    ciphertext is the only valid legacy shape, so a NULL pk_ct row
+    is conclusively a CA-mode row whose pre-CP4.1 codepath never
+    needed it). The smart backfill is a fix shipped on the same day
+    as the column: the first cut backfilled "every row → legacy"
+    and crashed `discover_all_peers` on a deployment that had been
+    running entirely on `SSH_AUTH_MODE=ca` (rows with NULL pk_ct
+    routed down the legacy branch and hit
+    `resolve_sshkey_private`'s post-0005 invariant). `SSHKeyRead`
+    surfaces `mode` to the HTTP / dashboard layers;
+    `web/lib/types.ts` mirrors the `SSHKeyMode` literal. The task
+    layer's `_open_runner` / `_maybe_install_host_cert` /
+    `rotate_host_cert_task` now route on `ssh_key.mode` rather than
+    the global `SSH_AUTH_MODE` env var — per-key wins. `POST
+    /servers/{id}/rotate-host-cert`'s 409 precondition flipped to
+    read the row's key mode and tells the operator the exact
+    `wg-manager ssh migrate-to-ca <id>` command to run. The env var
+    stays in `Settings` for backwards compat but is no longer
+    consulted on any code path. Tests: 16 CP4.1 model / migration /
+    schema / routing assertions (including 3 backfill cases:
+    stored-key → legacy, NULL pk → ca, mixed-shape table), plus
+    `promote_all_keys_to_ca` helper added to `conftest.py` and
+    threaded through the 8 CP2 / CP3 tests that previously enabled
+    CA mode via env var. Full suite green in `local` mode (240
+    passed; 1 unrelated pre-existing crypto failure), dashboard
+    vitest 26/26.
   - **CP4.2 `[ ]`** — `wg-manager ssh migrate-to-ca <id>` CLI +
     `POST /ssh-keys/{id}/migrate-to-ca` endpoint. For each server
     using the key: SSH in legacy, install CA trust + host cert via

@@ -14,9 +14,23 @@ have something to drive off.
 Schema delta (on ``sshkey``):
 
 * ``mode`` — VARCHAR(16), NOT NULL, server-default ``'legacy'``. The
-  column is backfilled to ``'legacy'`` on existing rows so a populated
-  Phase 2b/2c DB stays consistent without operator action — every
-  row that predates 0007 is by definition "still uses stored keys".
+  column is **backfilled per-row from the row's own data shape**:
+  rows with a populated ``private_key_ct`` become ``'legacy'`` (they
+  carry the stored-key material that *is* the legacy identity); rows
+  with a NULL ``private_key_ct`` become ``'ca'`` (post-Alembic-0005
+  a non-NULL ciphertext is the only way a row can be a valid legacy
+  row, so a NULL-pk row must be a CA-mode row whose pre-CP4.1
+  codepath never required the column).
+
+Why the smart backfill: a "every row → legacy" backfill (the first
+draft of 0007) creates a migration footgun for any operator who was
+running pre-CP4.1 entirely on ``SSH_AUTH_MODE=ca`` — those rows have
+NULL ``private_key_ct`` because the CA-mode codepath never wrote it,
+and labelling them ``legacy`` makes the post-CP4.1 task layer route
+through ``resolve_sshkey_private`` and crash with
+``sshkey id=N has no private_key_ct``. The data-shape backfill lines
+the column up with the deployment's actual behaviour at the moment
+the migration runs.
 
 NOT NULL with a server default is important: it lets the CP4.2 CLI
 ``WHERE mode = 'legacy'`` lookups treat the column as set-or-set-to-
@@ -58,16 +72,32 @@ depends_on: Union[str, Sequence[str], None] = None
 # value (e.g. ``"vault-issued"``) without a follow-up migration.
 _MODE_TYPE = sa.String(length=16)
 _LEGACY_DEFAULT = "legacy"
+_CA_VALUE = "ca"
 
 
 def upgrade() -> None:
-    """Add the ``mode`` column and backfill every existing row to ``legacy``.
+    """Add the ``mode`` column and backfill each existing row from its data shape.
 
     The server-default takes care of any row inserted *after* the
-    migration runs; the explicit ``UPDATE`` after the ``ADD COLUMN``
-    handles rows that already existed (some DB engines treat the
-    server-default as "default for inserts only", leaving pre-existing
-    rows with NULL despite the NOT NULL declaration).
+    migration runs; the explicit ``UPDATE`` pair after the ``ADD
+    COLUMN`` handles rows that already existed (some DB engines treat
+    the server-default as "default for inserts only", leaving
+    pre-existing rows with NULL despite the NOT NULL declaration).
+
+    The backfill is split into two statements that together cover
+    every row deterministically:
+
+    1. ``private_key_ct IS NOT NULL`` → ``'legacy'``. The row carries
+       stored-key material; legacy is the only mode that uses it.
+    2. ``private_key_ct IS NULL`` → ``'ca'``. Post-Alembic-0005 a
+       legacy row *must* have a populated ciphertext column, so a
+       NULL pk_ct row is conclusively a row that was used in CA mode
+       under the pre-CP4.1 global ``SSH_AUTH_MODE=ca`` codepath.
+
+    Both UPDATEs gate on ``mode = :default OR mode IS NULL`` so re-
+    running the migration body (e.g. via ``alembic stamp`` + re-up)
+    or running it after a manual repair never overwrites an
+    operator-set value.
     """
     with op.batch_alter_table("sshkey") as batch:
         batch.add_column(
@@ -78,14 +108,27 @@ def upgrade() -> None:
                 server_default=_LEGACY_DEFAULT,
             )
         )
-    # Belt-and-braces backfill. ``batch_alter_table`` already honours
-    # the server-default on engines that respect it for existing rows
-    # (Postgres, MySQL), but SQLite's ALTER TABLE semantics make this
-    # explicit set safer than relying on default propagation.
+    # Stored-key rows → legacy. Predicate guards against clobbering a
+    # value an operator may have set out-of-band before running the
+    # migration (rare in practice but cheap to defend against).
     op.execute(
-        sa.text("UPDATE sshkey SET mode = :v WHERE mode IS NULL").bindparams(
-            v=_LEGACY_DEFAULT
-        )
+        sa.text(
+            "UPDATE sshkey SET mode = :v "
+            "WHERE private_key_ct IS NOT NULL "
+            "AND (mode IS NULL OR mode = :v)"
+        ).bindparams(v=_LEGACY_DEFAULT)
+    )
+    # NULL-pk rows → ca. The server-default landed them as 'legacy';
+    # this UPDATE flips just that population to 'ca'. Restricting
+    # ``WHERE mode = :default`` keeps the statement idempotent: rerun
+    # after an operator manually fixed the rows and the predicate
+    # matches nothing.
+    op.execute(
+        sa.text(
+            "UPDATE sshkey SET mode = :ca "
+            "WHERE private_key_ct IS NULL "
+            "AND (mode IS NULL OR mode = :legacy)"
+        ).bindparams(ca=_CA_VALUE, legacy=_LEGACY_DEFAULT)
     )
 
 
