@@ -123,6 +123,68 @@ class Settings(BaseSettings):
     # ``<= max_ttl`` on the configured host role.
     ssh_host_cert_ttl_seconds: int = 86400
 
+    # ----- PKI (Phase 2d, see wg_manager.pki) -----
+    # Which X.509 backend :func:`wg_manager.pki.make_pki_backend`
+    # returns. One of ``"local"`` (in-process root + intermediate
+    # built on ``cryptography``, dev / tests only) or ``"vault"``
+    # (Vault PKI secrets engine, production). Defaults to ``"local"``
+    # so the test suite stays hermetic; the production deploy must
+    # set this to ``"vault"`` explicitly. Mirrors the Phase 2b /
+    # Phase 2c selector shapes.
+    pki_backend: str = "local"
+    # Optional PEM bodies for pinning the LocalDevPKI hierarchy across
+    # process restarts. Without these, each process generates a fresh
+    # root + intermediate; the API and the Celery worker therefore
+    # mistrust each other's certs. Pin all four (or none) — partial
+    # pins are rejected at backend construction. **Never set in
+    # production** — Phase 2d production is Vault.
+    pki_local_dev_root_pem: str | None = None
+    pki_local_dev_root_key_pem: str | None = None
+    pki_local_dev_int_pem: str | None = None
+    pki_local_dev_int_key_pem: str | None = None
+    # Vault PKI mount paths. The cookbook convention is ``pki`` for
+    # the root (10y) and ``pki_int`` for the intermediate (1y); the
+    # intermediate is the surface wg-manager issues leaves from so
+    # the root key can stay offline in production.
+    pki_vault_root_mount: str = "pki"
+    pki_vault_int_mount: str = "pki_int"
+    # Vault role names used when issuing leaf certs. The bootstrap
+    # creates two: one with ``serverAuth`` for the API + MySQL
+    # server cert, one with ``clientAuth`` for operator / CLI
+    # client certs. Both live on the intermediate mount.
+    pki_vault_server_role: str = "wg-manager-server"
+    pki_vault_client_role: str = "wg-manager-client"
+    # Comma-separated list of domains the Vault PKI roles accept.
+    # Empty (the default) is interpreted by :meth:`VaultPKI.bootstrap`
+    # as "any name" — appropriate for dev / IP-only fleets and the
+    # ``make pki-bootstrap`` first run. Production deployments should
+    # set this to the real domain list (e.g. ``"wg.local,vpn.example.com"``).
+    pki_vault_allowed_domains: str = ""
+
+    # ----- TLS / mTLS (Phase 2d CP2, see wg_manager.auth) -----
+    # When ``True``, :class:`wg_manager.auth.MTLSAuthMiddleware` demands a
+    # client certificate on every non-``OPTIONS`` request and 401s when
+    # one isn't on the ASGI scope. Defaults to ``False`` so the test
+    # suite (which uses :class:`starlette.testclient.TestClient` and
+    # never speaks TLS) stays hermetic; **production must set this to
+    # ``True``** — see ``.env.example``.
+    tls_required: bool = False
+    # PEM body path passed to uvicorn's ``--ssl-certfile``. Read by the
+    # ``make run`` target; the application doesn't open the file
+    # itself (uvicorn does at socket-bind time). ``None`` in dev /
+    # tests; required in production when ``tls_required=True``.
+    tls_cert_pem: str | None = None
+    # PEM body path passed to uvicorn's ``--ssl-keyfile``. Pair with
+    # :attr:`tls_cert_pem`; ``make run`` refuses to start without both.
+    tls_key_pem: str | None = None
+    # PEM body path passed to uvicorn's ``--ssl-ca-certs``. The trust
+    # anchor uvicorn uses to verify the *client* cert (matched with
+    # ``--ssl-cert-reqs 2``); usually the same bundle :class:`wg_manager.pki`
+    # advertises via :attr:`PKIBackend.ca_bundle_pem`. Required in
+    # production when ``tls_required=True`` so peers actually get
+    # validated rather than waved through.
+    tls_ca_bundle_pem: str | None = None
+
     @field_validator("default_subnet")
     @classmethod
     def _validate_default_subnet(cls, value: str) -> str:

@@ -526,35 +526,153 @@ client passes the CA pubkey to paramiko's host-key policy. Replaces TOFU.
 
 ## 4. PKI — internal TLS (Phase 2d)
 
+The X.509 layer wg-manager will use for the API listener (mTLS),
+operator/CLI client certs, and the MySQL boundary. CP1 lands the
+module + bootstrap; CP2+ wires it through.
+
+### Phase 2d checkpoint 1 — `wg_manager.pki` shipped (2026-05-29)
+
+The raw `hvac` calls below have been wrapped into
+[`wg_manager.pki`](../src/wg_manager/pki.py). Application code calls
+one of two backends instead of poking hvac directly:
+
+* `LocalDevPKI` — in-process root + intermediate built on
+  `cryptography`, selected by `PKI_BACKEND=local`. Used by the test
+  suite and by developers who don't want a Vault container in the
+  loop. The hierarchy regenerates on every restart unless the
+  operator pins all four PEMs via the `PKI_LOCAL_DEV_*` env vars
+  (the same shape Phase 2c's `SSH_CA_LOCAL_DEV_PEM` allows). Pinning
+  is required for multi-process dev because the API and Celery
+  worker each call `make_pki_backend()` at import time.
+* `VaultPKI` — wraps the real Vault PKI engine with a two-tier
+  root (10y) → intermediate (5y) hierarchy, selected by
+  `PKI_BACKEND=vault`. CA private keys never leave Vault.
+
+Both implement the same `PKIBackend` protocol:
+
 ```python
-client.sys.enable_secrets_engine(backend_type="pki", path="pki")
+backend.ca_bundle_pem                                              # trust anchors
+backend.issue_server_cert(common_name="api.wg.local",
+                          sans=["api.wg.local", "127.0.0.1"],
+                          ttl_seconds=300)                         # → Cert
+backend.issue_client_cert(common_name="ops@wg.local",
+                          sans=["ops@wg.local"], ttl_seconds=300)  # → Cert
+backend.revoke_cert(serial=<int>)
+backend.crl_pem()                                                  # PEM-encoded CRL
+```
+
+`Cert` is a frozen dataclass with `cert_pem`, `private_pem`,
+`chain_pem`, `serial`, `common_name`, `sans`, `not_before`,
+`not_after` — enough to feed straight into uvicorn's
+`--ssl-keyfile`/`--ssl-certfile`/`--ssl-ca-certs` (CP2) or a MySQL
+client connection-arg block (CP4).
+
+`VaultPKI.bootstrap(...)` and the `make pki-bootstrap` target run
+the idempotent setup against a configured Vault. Example output:
+
+```
+$ make pki-bootstrap
+[OK] PKI configured
+     root mount:         pki
+     intermediate mount: pki_int
+     server role:        wg-manager-server
+     client role:        wg-manager-client
+     allowed domains:    (any — dev default)
+     ca_bundle:
+       - CN=wg-manager PKI intermediate, NotAfter=2031-05-28T17:18:29+00:00
+       - CN=wg-manager PKI root, NotAfter=2036-05-26T17:18:29+00:00
+```
+
+The bootstrap also `tune_mount_configuration`s both mounts so the 10y
+root TTL isn't silently clipped by Vault's default 32-day system
+`max_lease_ttl` — without the tune, leaves issued under any role
+inherit the cap and the CA is effectively neutered.
+
+The `allowed_domains` list comes from `PKI_VAULT_ALLOWED_DOMAINS`;
+empty (the default) is treated as "any name" via `allow_any_name`
+on both roles — appropriate for dev / IP-only fleets. The server
+role enforces the list when set; the client role stays permissive
+so operator CNs like `ops@wg.local` work without per-operator role
+proliferation.
+
+Test snapshot (`make vault-up && pytest -q tests/test_pki.py`):
+
+```
+37 passed in ~3s   # full local + vault matrix
+```
+
+### Raw hvac flow (reference)
+
+Kept here so a reader can recognise what the wrapper is doing. New
+code should call `wg_manager.pki` instead.
+
+```python
+client.sys.enable_secrets_engine(
+    backend_type="pki",
+    path="pki",
+    config={"max_lease_ttl": "87600h"},  # 10y — otherwise capped to 768h
+)
+client.sys.tune_mount_configuration(path="pki", max_lease_ttl="87600h")
 client.secrets.pki.generate_root(
     type="internal",
-    common_name="wg-manager root",
-    extra_params={"ttl": "8760h"},  # 1 year — Phase 2d uses an intermediate.
-    mount_point="pki",
-)
-client.secrets.pki.create_or_update_role(
-    name="api-server",
-    extra_params={
-        "allowed_domains": ["wg.local"],
-        "allow_subdomains": True,
-        "max_ttl": "30d",
-    },
+    common_name="wg-manager PKI root",
+    extra_params={"ttl": "87600h"},
     mount_point="pki",
 )
 
+client.sys.enable_secrets_engine(
+    backend_type="pki",
+    path="pki_int",
+    config={"max_lease_ttl": "43800h"},  # 5y
+)
+client.sys.tune_mount_configuration(path="pki_int", max_lease_ttl="43800h")
+csr = client.secrets.pki.generate_intermediate(
+    type="internal",
+    common_name="wg-manager PKI intermediate",
+    extra_params={"key_type": "ec", "key_bits": 256},
+    mount_point="pki_int",
+)["data"]["csr"]
+signed = client.secrets.pki.sign_intermediate(
+    csr=csr, common_name="wg-manager PKI intermediate",
+    extra_params={"ttl": "43800h"}, mount_point="pki",
+)["data"]["certificate"]
+# Concatenate the root onto the signed intermediate so /ca_chain
+# returns the full path — without this, TLS clients trusting the
+# bundle can't build a chain from a leaf back to the trust anchor.
+root_pem = client.adapter.get("/v1/pki/ca/pem").text
+client.secrets.pki.set_signed_intermediate(
+    certificate=signed.rstrip() + "\n" + root_pem,
+    mount_point="pki_int",
+)
+
+client.secrets.pki.create_or_update_role(
+    name="wg-manager-server",
+    extra_params={
+        "allowed_domains": ["wg.local"],
+        "allow_subdomains": True,
+        "allow_bare_domains": True,   # so SAN=wg.local works
+        "allow_ip_sans": True,
+        "server_flag": True,
+        "client_flag": False,
+        "max_ttl": "8760h",
+    },
+    mount_point="pki_int",
+)
+
 cert = client.secrets.pki.generate_certificate(
-    name="api-server",
+    name="wg-manager-server",
     common_name="api.wg.local",
-    extra_params={"ttl": "7d"},
-    mount_point="pki",
+    extra_params={"ttl": "5m"},
+    mount_point="pki_int",
 )["data"]
 # cert keys: certificate, private_key, ca_chain, serial_number, expiration
 ```
 
-Phase 2d stands up a proper two-tier hierarchy (root → intermediate)
-and uses CRL endpoints (`/v1/pki/crl`) for revocation.
+CP2 wires the issued cert into uvicorn's ASGI server; CP3 adds an
+operator-facing `wg-manager certs issue --type ...` CLI on top of
+this surface; CP4 reuses the same intermediate for the MySQL boundary
+so renewal is one job, not three. CRL endpoints (`/v1/pki_int/crl`)
+back the CP5 revocation-rejection test.
 
 ## 5. Auth: AppRole (Phase 2b onward)
 

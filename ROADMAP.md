@@ -498,7 +498,92 @@ existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
 
 ---
 
-### Phase 2d — TLS / mTLS everywhere (Vault PKI) `[ ]`
+### Phase 2d — TLS / mTLS everywhere (Vault PKI) `[~]`
+
+**Status snapshot.**
+- **Checkpoint 1 `[x]`** (2026-05-29) — `wg_manager.pki` module
+  mirroring the Phase 2c CP1 shape: `PKIBackend` Protocol, frozen
+  `Cert` value object (cert_pem / private_pem / chain_pem / serial
+  / CN / SANs / NotBefore / NotAfter), `LocalDevPKI` (in-process
+  root + intermediate via `cryptography`, EC P-256, regenerates
+  per process unless `PKI_LOCAL_DEV_*` pins all four PEMs),
+  `VaultPKI` wrapping the Vault PKI engine with idempotent
+  `bootstrap()` (enables + tunes root/intermediate mounts so the
+  10y root TTL isn't capped at Vault's default 32-day system
+  `max_lease_ttl`; generates root, signs intermediate, concatenates
+  root onto signed-intermediate so `/ca_chain` returns the full
+  path; creates `wg-manager-server` + `wg-manager-client` roles
+  with `serverAuth` / `clientAuth` EKUs respectively and
+  `allow_bare_domains=true` so SAN=allowed-bare-domain isn't
+  silently dropped). `make_pki_backend()` factory memoises the
+  local backend per-process (cache key = pinned-PEM tuple) so the
+  API + Celery worker share one root. `scripts/pki_bootstrap.py`
+  + `make pki-bootstrap` target + new `Settings.pki_*` fields +
+  `.env.example` section. `tests/test_pki.py` parameterised
+  across both backends — 37 passed (24 shared contract × 2 +
+  local-only + vault-only + factory + value-object + bootstrap-
+  defaults). Full backend suite 262/262 green in `local` mode.
+  No FastAPI / MySQL / dashboard wiring — that lands in CP2+.
+- **Checkpoint 2 `[x]`** (2026-05-29) — uvicorn TLS + per-request
+  client-cert verification. New
+  [`wg_manager.auth`](../src/wg_manager/auth.py) module ships a
+  frozen `CertSubject` value object, a `parse_subject_from_pem`
+  pure helper, an `extract_subject_from_scope` ASGI adapter, and an
+  `MTLSAuthMiddleware` that 401s every non-OPTIONS request whose
+  scope is missing a cert chain when `TLS_REQUIRED=true`. OPTIONS
+  preflight bypasses enforcement so the dashboard's CORS
+  negotiation works on a TLS session that already carries the cert.
+  A `require_subject` FastAPI dependency exposes the stashed
+  subject to handler functions that opt into the strict shape
+  (CP3's audit-only endpoints will use it). `Settings` grew
+  `tls_required` + `tls_cert_pem` / `tls_key_pem` /
+  `tls_ca_bundle_pem`; the Makefile `run` target now refuses to
+  start without all three TLS paths and delegates to
+  [`python -m wg_manager`](../src/wg_manager/__main__.py), which is
+  the canonical entry point that hands off to `uvicorn.run` with
+  `ssl_cert_reqs=ssl.CERT_REQUIRED`. The previous
+  `uvicorn --reload` Makefile shape is gone — there is no longer a
+  sanctioned wg-manager command that serves plain HTTP, satisfying
+  the "plain-HTTP listener is removed" piece of the Phase 2d goal.
+  Side fix: uvicorn 0.44 doesn't ship the ASGI-TLS extension
+  natively (encode/uvicorn#1530), so a new
+  [`wg_manager._tls_uvicorn`](../src/wg_manager/_tls_uvicorn.py)
+  module wraps `RequestResponseCycle.__init__` (both h11 and
+  httptools) at module import time to backfill
+  `scope["extensions"]["tls"]["client_cert_chain"]` from
+  `transport.get_extra_info("ssl_object")`. The shim is small
+  (~50 LOC), idempotent, and tagged "delete this when upstream
+  catches up". Dev workflow: `make tls-issue-dev` writes the five
+  throwaway PEMs under `tls/` via
+  [`scripts/issue_dev_tls.py`](../scripts/issue_dev_tls.py) —
+  another CP2-only helper that will go when CP3 ships
+  `wg-manager certs issue`. Tests: 13 new auth tests (3 parser, 4
+  scope-extract, 6 middleware), 3 main-wiring tests, 8 uvicorn-shim
+  tests, plus the conftest TLS_REQUIRED=false pin so the existing
+  TestClient suite stays hermetic. Full backend `pytest` 288/288 in
+  `local` mode; manual mTLS smoke against a live `python -m wg_manager`
+  confirmed (200 with `--cert`, TLS handshake refused without,
+  plain HTTP refused).
+- **Checkpoint 3 `[ ]`** — `Operator` + `Certificate` registry
+  (Alembic 0009). `wg-manager certs issue --type {api,cli,dashboard,mysql} ...`
+  + `wg-manager certs revoke --serial ...` CLI. New `/certs`
+  endpoints (list, issue, revoke). Dashboard **Certificates** page
+  with serial / SANs / NotAfter / revoke button + a "Who am I?"
+  splash that surfaces the cert subject the API saw, so a freshly-
+  imported PKCS#12 visibly proves the mTLS handshake worked.
+- **Checkpoint 4 `[ ]`** — MySQL TLS. docker-compose mounts
+  Vault-issued server cert + CA; `require_secure_transport=ON`
+  server-side; SQLAlchemy URL grows `?ssl_ca=&ssl_cert=&ssl_key=`;
+  the app + worker each carry a Vault-issued client cert.
+  `wg-manager certs renew` walks every wg-manager-issued cert in
+  the same Vault PKI mount and is wired to a systemd-timer pattern
+  in the deploy story.
+- **Checkpoint 5 `[ ]`** — Acceptance suite: cert rotation under
+  load (script flips MySQL's cert mid-request; app reconnects with
+  no dropped requests), expired client cert → HTTP 401 + audit log
+  line, revoked cert → 401 after CRL re-pull, plain-HTTP
+  connection refused. README + SECURITY.md + THREAT_MODEL.md
+  sweep that flips T-7 / T-8 / T-9 to "Closed in Phase 2d".
 
 **Closes.** T-7, T-8, T-9.
 

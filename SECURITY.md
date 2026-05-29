@@ -32,12 +32,13 @@ The full STRIDE model lives at
   Phase 2c CP4.4 — the `sshkey` table dropped the ciphertext
   columns in Alembic 0008, and every worker connection mints a
   short-lived Vault-signed user cert in memory instead.
-- **Realistic attacker today.** Network attacker on the unencrypted
-  segments still open in Phase 2 (browser ↔ API, app ↔ MySQL).
-  Closes in Phase 2d (TLS / mTLS everywhere via Vault PKI).
-- **Highest residual risk today.** The API has no authentication;
-  the only thing keeping unauthenticated mutations out is the bind
-  to `127.0.0.1`. Closes in Phase 2d.
+- **Realistic attacker today.** Network attacker on the still-
+  plaintext app ↔ MySQL segment (Phase 2d CP2 closed the browser ↔
+  API segment with mTLS; CP4 closes the MySQL hop).
+- **Highest residual risk today.** App ↔ MySQL is still plaintext,
+  so a network attacker on that segment can read every write the
+  worker makes (including the manual-client ciphertext bound for
+  the encryption-at-rest table). Closes in Phase 2d CP4.
 
 ## Current posture
 
@@ -52,19 +53,30 @@ shipped for every row.
 | SSH private keys at rest         | Not stored — Vault SSH CA mints per session | **Phase 2c (shipped)** |
 | SSH host-key verification        | `KnownHostsCAPolicy` — host cert chain      | **Phase 2c (shipped)** |
 | Manual-client WireGuard keys at rest | Vault Transit envelope-encrypted        | **Phase 2b (shipped)** |
-| API authentication               | None (bound to `127.0.0.1` only)            | Phase 2d    |
-| App ↔ MySQL traffic              | Plaintext                                   | Phase 2d    |
+| API authentication               | mTLS — `MTLSAuthMiddleware` rejects no-cert | **Phase 2d CP2 (shipped)** |
+| Browser ↔ API traffic            | TLS terminated at uvicorn (CERT_REQUIRED)   | **Phase 2d CP2 (shipped)** |
+| Operator / API cert registry     | Not yet — issuance is `make tls-issue-dev`  | Phase 2d CP3 |
+| App ↔ MySQL traffic              | Plaintext                                   | Phase 2d CP4 |
 | Audit logging of API mutations   | None beyond app logs                        | Phase 2e    |
 | Supply-chain verification (SBOM, signed builds) | None                           | Phase 2e    |
 
 ## Hardening recommendations for current deployments
 
-Even with Phase 2b + 2c shipped, Phase 2d (auth + TLS) and 2e
-(supply chain + audit) are still ahead. If you must run today:
+Phase 2d CP2 closes the API-listener slice (mTLS, cert-subject
+extraction); CP3 (operator registry + cert-issuance CLI) and CP4
+(MySQL TLS) are still ahead, alongside Phase 2e (supply chain +
+audit). If you must run today:
 
-1. Keep the API bound to `127.0.0.1` and front it with `ssh -L` or a
-   tightly scoped reverse proxy with auth.
-2. Restrict the MySQL user to the smallest grant set that still works
+1. **Always set `TLS_REQUIRED=true`** — the default is `false` so the
+   test suite stays hermetic, but running without it leaves the API
+   unauthenticated. `make run` already refuses to start without the
+   `TLS_CERT_PEM` / `TLS_KEY_PEM` / `TLS_CA_BUNDLE_PEM` paths.
+2. Keep the API bound to `127.0.0.1` (or a tightly-scoped private
+   network) until CP3 ships the operator registry — a Vault-signed
+   cert chain that satisfies `KnownHostsCAPolicy` but carries an
+   unexpected CN is currently accepted as long as it validates
+   against the configured CA bundle.
+3. Restrict the MySQL user to the smallest grant set that still works
    (no `FILE`, no `SUPER`).
 3. Take encrypted MySQL backups (`mysqldump | age -r …`) and audit who
    can read them. A leaked backup no longer leaks SSH keys (Phase 2c)

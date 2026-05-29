@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap e2e-up e2e-down e2e-logs
+.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap tls-issue-dev e2e-up e2e-down e2e-logs
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -28,7 +28,8 @@ help:
 	@echo "  db-backup o=.. Dump all data to a JSON file (make db-backup o=backup.json)"
 	@echo "  db-restore i=. Restore data from a JSON backup (make db-restore i=backup.json)"
 	@echo "  ui-install     Install Next.js dashboard deps (npm install in web/)"
-	@echo "  ui-dev         Start the Next.js dashboard on http://127.0.0.1:3000"
+	@echo "  ui-dev         Start the Next.js dashboard on http://127.0.0.1:3100"
+	@echo "                 (reads BFF mTLS config from web/.env.local — see web/.env.example)"
 	@echo "  ui-run         Alias for ui-dev"
 	@echo "  ui-build       Production build of the Next.js dashboard"
 	@echo "  ui-test        Run dashboard unit tests (vitest)"
@@ -38,6 +39,8 @@ help:
 	@echo "  vault-logs     Tail the Vault container logs"
 	@echo "  vault-smoke    Run scripts/vault_smoke.py against the dev Vault"
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
+	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
+	@echo "  tls-issue-dev  Mint local-dev TLS server + client certs into tls/ (Phase 2d CP2)"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -54,7 +57,15 @@ test:
 	$(PYTEST) -q
 
 run:
-	$(UVICORN) wg_manager.main:app --host $(HOST) --port $(PORT) --reload
+	@if [ -z "$(TLS_CERT_PEM)" ] || [ -z "$(TLS_KEY_PEM)" ] || [ -z "$(TLS_CA_BUNDLE_PEM)" ]; then \
+		echo "ERROR: TLS_CERT_PEM, TLS_KEY_PEM, and TLS_CA_BUNDLE_PEM must all be set."; \
+		echo "       Quickest dev path:  make tls-issue-dev"; \
+		echo "                           export TLS_REQUIRED=true TLS_CERT_PEM=tls/server.crt TLS_KEY_PEM=tls/server.key TLS_CA_BUNDLE_PEM=tls/ca-bundle.crt"; \
+		echo "                           make run"; \
+		echo "       Production:         see README 'Running with TLS' and docs/vault-cookbook.md §4."; \
+		exit 2; \
+	fi
+	BIND_HOST=$(HOST) BIND_PORT=$(PORT) $(PYTHON) -m wg_manager
 
 worker:
 	$(CELERY) -A wg_manager.celery_app worker --loglevel=info
@@ -136,12 +147,28 @@ vault-smoke:
 		$(PYTHON) scripts/vault_smoke.py
 
 # ---------------------------------------------------------------------------
-# SSH CA (Phase 2c) — see docs/vault-cookbook.md §7
+# SSH CA (Phase 2c) — see docs/vault-cookbook.md §3
 # ---------------------------------------------------------------------------
 
 ssh-ca-bootstrap:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
 		$(PYTHON) scripts/ssh_ca_bootstrap.py
+
+# ---------------------------------------------------------------------------
+# PKI (Phase 2d) — see docs/vault-cookbook.md §4
+# ---------------------------------------------------------------------------
+
+pki-bootstrap:
+	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
+		$(PYTHON) scripts/pki_bootstrap.py
+
+# ---------------------------------------------------------------------------
+# TLS dev certs (Phase 2d CP2) — throwaway helper, deleted when CP3
+# ships the production `wg-manager certs issue` CLI.
+# ---------------------------------------------------------------------------
+
+tls-issue-dev:
+	$(PYTHON) scripts/issue_dev_tls.py
 
 # ---------------------------------------------------------------------------
 # Phase 2c CP5 — dockerised-sshd end-to-end suite

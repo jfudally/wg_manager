@@ -36,6 +36,10 @@ Thumbs.db
 *.key
 !.env.example
 
+# Dev TLS material written by `make tls-issue-dev` (Phase 2d CP2).
+# Throwaway certs/keys for the local API listener — never commit.
+tls/
+
 # --- Build artefacts --------------------------------------------------------
 *.log
 *.sqlite
