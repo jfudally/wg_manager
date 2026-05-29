@@ -10,30 +10,45 @@ make install         # editable install + dev deps
 cp .env.example .env
 make migrate         # apply Alembic migrations
 
-# In one terminal — the API:
-make run             # uvicorn on 127.0.0.1:8000
+# Mint a throwaway TLS cert set for the local API listener (Phase 2d CP2).
+# Production uses Vault PKI (see "Running with TLS" below).
+make tls-issue-dev   # writes tls/{server,client}.{crt,key} + tls/ca-bundle.crt
+export TLS_REQUIRED=true \
+       TLS_CERT_PEM=tls/server.crt \
+       TLS_KEY_PEM=tls/server.key \
+       TLS_CA_BUNDLE_PEM=tls/ca-bundle.crt
+
+# In one terminal — the API (uvicorn over mTLS on 127.0.0.1:8000):
+make run
 
 # In another terminal — the Celery worker that runs provisioning:
 make worker
 ```
 
-OpenAPI docs: http://127.0.0.1:8000/docs
+OpenAPI docs: https://127.0.0.1:8000/docs — see "Running with TLS"
+below for the client cert curl/browser needs.
 
 ## Dashboard
 
-A Next.js + Tailwind dashboard lives in [`web/`](web/). It talks to the
-same FastAPI control plane over HTTP and is the recommended way to
-manage SSH roles, register servers/clients, and trigger discovery
-interactively. See [`web/README.md`](web/README.md) for setup; quick
-start:
+A Next.js + Tailwind dashboard lives in [`web/`](web/). It talks to
+the FastAPI control plane through a **Backend-For-Frontend (BFF)
+proxy** that runs inside Next.js: the browser issues same-origin plain
+HTTP to `http://localhost:3100/api/proxy/...`, the Node runtime then
+presents the wg-manager client certificate to the (mTLS-required)
+FastAPI listener, and surfaces the response verbatim. The browser
+never participates in the mTLS handshake — see [`web/README.md`](web/README.md#how-the-dashboard-talks-to-the-api-bff-proxy)
+for the details. Quick start:
 
 ```bash
-make ui-install      # one-time
-make ui-dev          # http://127.0.0.1:3000
+make ui-install                                  # one-time
+make tls-issue-dev                               # mint throwaway certs
+cp web/.env.example web/.env.local               # wire BFF env vars
+make ui-dev                                      # http://127.0.0.1:3100
 ```
 
-CORS for the dashboard origin is configured via `CORS_ORIGINS` in
-`.env` (defaults to `http://localhost:3000`).
+The BFF makes the legacy `CORS_ORIGINS` setting moot for browser
+traffic (every request is same-origin), but the env still exists for
+non-browser clients that may call the API directly.
 
 ## Async provisioning
 
@@ -89,13 +104,26 @@ phones, tablets, IoT boxes, vendor appliances. For those, register a
 1. Generates a WireGuard X25519 keypair server-side.
 2. Allocates the next free address in the parent server's subnet
    (sharing the pool with SSH-provisioned clients).
-3. Stores a `Client` row in `ready` state with `is_manual=true`.
-4. Reconfigures the hub so the new peer is admitted.
+3. Stores a `Client` row in `ready` state with `is_manual=true` and
+   only the **public** key — the private key is dropped after the
+   response, because wg-manager has no operational use for the key
+   of a device it can't log into.
+4. Returns the rendered `wg0.conf` body (with the private key inline)
+   in the registration response as `wg_config`. This is the **only**
+   moment the body exists outside the device.
+5. Reconfigures the hub so the new peer is admitted.
 
-The operator then fetches the rendered `wg0.conf` and installs it on
-the device by hand (drop it at `/etc/wireguard/wg0.conf` on Linux, or
-import it into the WireGuard app on a phone — most apps accept the
-text body directly or render it as a QR code from a file).
+The operator then installs the rendered `wg0.conf` on the device by
+hand (drop it at `/etc/wireguard/wg0.conf` on Linux, or import it
+into the WireGuard app on a phone — most apps accept the text body
+directly or render it as a QR code from a file).
+
+> **Save the config on first sight.** Because the control plane does
+> not persist the private key, there is no way to re-render the
+> `wg0.conf` for an existing manual client. If you lose the body
+> before installing it, delete the row (`DELETE /clients/{id}`) and
+> register again — a fresh keypair is minted and the hub is
+> reconfigured to swap the public key.
 
 ```bash
 # Register a phone and write the rendered config straight to disk.
@@ -103,20 +131,19 @@ wg-manager clients add-manual \
     --name phone \
     --server-id 1 \
     --config-output ./phone.conf
-
-# Re-export the config later (handy if you lost it).
-wg-manager clients config 2 -o ./phone.conf
 ```
 
-The HTTP equivalents are `POST /clients/manual` (returns the row plus
-the hub-reconfigure `task_id`) and `GET /clients/{id}/config` (returns
-`text/plain` with the full config body, including the private key).
+The HTTP equivalent is `POST /clients/manual` — the response body is
+`{task_id, client, wg_config}` where `wg_config` is the full
+`wg0.conf` text (including the private key). There is no
+`GET /clients/{id}/config` to re-fetch from later (the route was
+retired in the manual-client redesign).
 
 Manual clients are deliberately excluded from `GET /clients/export/ssh-config`
 — wg-manager has no SSH credentials for them — and from
-`POST /clients/{id}/reprovision`, which would try to SSH in. Use the
-config-export endpoint to roll keys (delete the row, add a fresh
-manual client) instead.
+`POST /clients/{id}/reprovision`, which would try to SSH in. To roll a
+manual client's keypair, delete the row and register a fresh manual
+client.
 
 ## SSH config export
 
@@ -231,6 +258,59 @@ Bootstrap the Vault SSH engine + the two roles (idempotent):
 make ssh-ca-bootstrap
 ```
 
+## Running with TLS (Phase 2d CP2)
+
+The API listener requires mTLS in production. `make run` delegates to
+[`python -m wg_manager`](src/wg_manager/__main__.py), which refuses to
+start unless `TLS_CERT_PEM`, `TLS_KEY_PEM`, and `TLS_CA_BUNDLE_PEM`
+are all set; combined with `TLS_REQUIRED=true`, the
+[CP2 auth middleware](src/wg_manager/auth.py) 401s every non-OPTIONS
+request that arrives without a client certificate.
+
+**Dev path — throwaway local PKI:**
+
+```bash
+make tls-issue-dev   # writes tls/server.{crt,key}, tls/client.{crt,key},
+                     # tls/ca-bundle.crt — gitignored; delete any time
+export TLS_REQUIRED=true \
+       TLS_CERT_PEM=tls/server.crt \
+       TLS_KEY_PEM=tls/server.key \
+       TLS_CA_BUNDLE_PEM=tls/ca-bundle.crt
+make run
+
+# In another terminal:
+curl --cacert tls/ca-bundle.crt \
+     --cert tls/client.crt \
+     --key  tls/client.key \
+     https://127.0.0.1:8000/crypto/status
+```
+
+`scripts/issue_dev_tls.py` is a throwaway helper — delete it once CP3
+ships `wg-manager certs issue --type {api,cli,dashboard,mysql}`.
+
+**Production path — Vault PKI:**
+
+```bash
+make pki-bootstrap                           # one-time
+# Mint server + client certs from the Vault intermediate (CP3 CLI lands soon)
+export TLS_REQUIRED=true \
+       TLS_CERT_PEM=/etc/wg-manager/server.crt \
+       TLS_KEY_PEM=/etc/wg-manager/server.key \
+       TLS_CA_BUNDLE_PEM=/etc/wg-manager/ca-bundle.crt
+make run
+```
+
+Implementation notes:
+- uvicorn 0.44 doesn't ship the ASGI-TLS extension natively
+  (encode/uvicorn#1530), so
+  [`wg_manager._tls_uvicorn`](src/wg_manager/_tls_uvicorn.py)
+  backfills `scope["extensions"]["tls"]["client_cert_chain"]` from
+  the transport's SSL object at module import. Delete that module
+  once upstream catches up.
+- OPTIONS preflight bypasses the middleware enforcement so the
+  dashboard's CORS negotiation works on a TLS session that already
+  carries the cert.
+
 ## How to add a server
 
 The Phase 2c flow is **role-first**: register a role name, then
@@ -327,8 +407,13 @@ inner loop.
 - [`ROADMAP.md`](ROADMAP.md) lays out the phases. Phase 0 (spike),
   Phase 1 (MVP), Phase 2a (Vault spike), 2b (encryption at rest),
   and 2c (Vault SSH CA — no more stored SSH keys) are shipped.
-  Phase 2d (TLS / mTLS everywhere via Vault PKI) and 2e (supply
-  chain + audit) are the active work.
+  Phase 2d (TLS / mTLS everywhere via Vault PKI) is in progress;
+  CP1 lands the [`wg_manager.pki`](src/wg_manager/pki.py) module
+  with both backends (`LocalDevPKI` for dev/tests, `VaultPKI` for
+  production) and the `make pki-bootstrap` idempotent setup —
+  see [`docs/vault-cookbook.md`](docs/vault-cookbook.md#4-pki--internal-tls-phase-2d)
+  §4 for the full reference. Phase 2e (supply chain + audit) is
+  the next sub-phase.
 - [`SECURITY.md`](SECURITY.md) lists the current security posture,
   what wg-manager today explicitly does not defend against, and how
   to report a vulnerability.
