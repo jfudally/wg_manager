@@ -551,6 +551,68 @@ class TestManualClient:
         # The follow-up hub reconfigure task ID is returned for polling.
         assert "task_id" in body
 
+    def test_register_returns_wg_config_body_once(
+        self, client: TestClient
+    ) -> None:
+        """``POST /clients/manual`` must return the rendered ``wg0.conf``
+        body in the response so the operator can capture it at
+        registration time. Post-redesign the control plane does **not**
+        persist the private key, so this single response is the only
+        moment the body can be obtained — there is no separate
+        ``GET /clients/{id}/config`` to re-fetch it from later."""
+        _, server_id = _bootstrap_server(client)
+        resp = client.post(
+            "/clients/manual",
+            json={"name": "phone", "server_id": server_id},
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        # The wg_config field sits alongside ``task_id`` and ``client``.
+        assert "wg_config" in body, body
+        wg_config = body["wg_config"]
+        assert isinstance(wg_config, str)
+        # The body must look like a real WireGuard config — Interface +
+        # Peer sections, a non-empty PrivateKey, the assigned address,
+        # and the hub's pubkey / endpoint.
+        assert "[Interface]" in wg_config
+        assert "[Peer]" in wg_config
+        assert "PrivateKey = " in wg_config
+        # No placeholder leaked through — the renderer received a real key.
+        assert "PrivateKey = \n" not in wg_config
+        assert "Address = 10.9.0.2/32" in wg_config
+        assert "PublicKey = PUBKEY::hub.example.com" in wg_config
+        assert "Endpoint = hub.example.com:51820" in wg_config
+        assert "AllowedIPs = 10.9.0.0/24" in wg_config
+
+    def test_register_does_not_persist_private_key(
+        self, client: TestClient, engine: Any
+    ) -> None:
+        """The architectural pivot: the control plane has no operational
+        use for a manual client's private key once the operator has
+        captured the config, so we never persist it. This test pins
+        that invariant — touching the row directly after registration
+        proves the private key was generated, used in the response, and
+        immediately dropped (the row carries only the public key)."""
+        from wg_manager.models import Client
+
+        _, server_id = _bootstrap_server(client)
+        resp = client.post(
+            "/clients/manual",
+            json={"name": "phone", "server_id": server_id},
+        )
+        assert resp.status_code == 201, resp.text
+        client_id = int(resp.json()["client"]["id"])
+
+        with Session(engine) as s:
+            row = s.get(Client, client_id)
+            assert row is not None
+            # Public key is still pinned (the hub needs it).
+            assert row.public_key != ""
+            # Private key is **not** stored — neither via the legacy
+            # plaintext column (gone since Alembic 0005) nor the
+            # encrypt-at-rest column (gone since the redesign).
+            assert not hasattr(row, "private_key_ct") or row.private_key_ct is None
+
     def test_register_does_not_require_ssh_fields(self, client: TestClient) -> None:
         _, server_id = _bootstrap_server(client)
         # Only name + server_id are required. No hostname, ssh_username,
@@ -666,21 +728,19 @@ class TestManualClient:
         assert resp.status_code == 400, resp.text
 
 
-class TestManualClientConfigExport:
-    """GET /clients/{id}/config — render a ready-to-install wg .conf."""
+class TestRetiredConfigEndpoint:
+    """``GET /clients/{id}/config`` was retired in the manual-client
+    redesign — the wg0.conf body is now delivered exactly once on the
+    ``POST /clients/manual`` response, and the control plane no longer
+    stores anything that would let it re-render the config later. The
+    endpoint must be gone (FastAPI returns 404 for an unknown route).
 
-    def test_returns_text_plain(self, client: TestClient) -> None:
-        _, server_id = _bootstrap_server(client)
-        created = client.post(
-            "/clients/manual",
-            json={"name": "phone", "server_id": server_id},
-        ).json()["client"]
+    The two pre-existing legacy-broken rows (manual clients with
+    ``private_key_ct`` already NULL) land in the same end state as a
+    fresh manual client and need no special handling.
+    """
 
-        resp = client.get(f"/clients/{created['id']}/config")
-        assert resp.status_code == 200, resp.text
-        assert resp.headers["content-type"].startswith("text/plain")
-
-    def test_config_contains_keypair_and_endpoint(
+    def test_config_endpoint_is_gone_for_manual_client(
         self, client: TestClient
     ) -> None:
         _, server_id = _bootstrap_server(client)
@@ -689,98 +749,16 @@ class TestManualClientConfigExport:
             json={"name": "phone", "server_id": server_id},
         ).json()["client"]
 
-        body = client.get(f"/clients/{created['id']}/config").text
-        # [Interface] block — Address with /32 and the private key
-        # (server-generated, not a placeholder).
-        assert "[Interface]" in body
-        assert "Address = 10.9.0.2/32" in body
-        assert "PrivateKey = " in body
-        assert "$(cat" not in body  # no shell substitution leak
-        # [Peer] block — server pubkey, public endpoint, subnet AllowedIPs
-        assert "[Peer]" in body
-        assert "PublicKey = PUBKEY::hub.example.com" in body
-        assert "Endpoint = hub.example.com:51820" in body
-        assert "AllowedIPs = 10.9.0.0/24" in body
+        # The route was deleted, so FastAPI 404s regardless of whether
+        # the client_id is valid.
+        resp = client.get(f"/clients/{created['id']}/config")
+        assert resp.status_code == 404, resp.text
 
-    def test_config_rejects_managed_client(self, client: TestClient) -> None:
-        """A managed (SSH-provisioned) client's private key lives on the
-        remote host — wg-manager never sees it. Asking for the config of
-        such a row must return 400, not a config with an empty PrivateKey
-        the user would then have to fill in by hand."""
+    def test_config_endpoint_is_gone_for_managed_client(
+        self, client: TestClient
+    ) -> None:
         key_id, server_id = _bootstrap_server(client)
         created = _register_managed_client(client, key_id, server_id, "alpha")
 
         resp = client.get(f"/clients/{created['id']}/config")
-        assert resp.status_code == 400, resp.text
-
-    def test_config_unknown_client_returns_404(self, client: TestClient) -> None:
-        resp = client.get("/clients/999/config")
-        assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# Phase 2b: manual-client private key is encrypted at rest
-# ---------------------------------------------------------------------------
-
-
-class TestManualClientEncryptionAtRest:
-    """Manual clients hold a server-generated WireGuard private key in the
-    DB so the operator can re-export the config. Phase 2b wraps that key
-    via the crypto backend on write and unwraps it on render."""
-
-    def test_register_populates_private_key_ct(
-        self, client: TestClient, engine: Any
-    ) -> None:
-        from wg_manager.crypto import (
-            make_backend,
-            resolve_client_private_key,
-        )
-        from wg_manager.models import Client
-
-        _, server_id = _bootstrap_server(client)
-        resp = client.post(
-            "/clients/manual",
-            json={"name": "phone", "server_id": server_id},
-        )
-        assert resp.status_code == 201, resp.text
-        client_id = int(resp.json()["client"]["id"])
-
-        backend = make_backend()
-        with Session(engine) as s:
-            row = s.get(Client, client_id)
-            assert row is not None
-            assert row.is_manual is True
-            assert row.private_key_ct is not None
-            assert row.private_key_ct.startswith(backend.blob_prefix)
-            # Ciphertext decrypts back to a 32-byte base64 wg key.
-            decrypted = resolve_client_private_key(backend, row)
-            assert decrypted is not None
-            assert len(decrypted) == 44  # base64(32) length
-
-    def test_config_render_uses_decrypted_private_key(
-        self, client: TestClient, engine: Any
-    ) -> None:
-        """The rendered ``wg0.conf`` still contains the device's private
-        key. The row carries only ciphertext post-0005, so the renderer
-        must go through the decrypt seam — we verify the body matches
-        a fresh fetch (re-rendered from the same ciphertext)."""
-        from wg_manager.models import Client
-
-        _, server_id = _bootstrap_server(client)
-        created = client.post(
-            "/clients/manual",
-            json={"name": "phone", "server_id": server_id},
-        ).json()["client"]
-
-        # The row has only ciphertext (no plaintext column exists);
-        # two back-to-back renders go through resolve_client_private_key
-        # and must produce identical bodies.
-        with Session(engine) as s:
-            row = s.get(Client, created["id"])
-            assert row is not None
-            assert row.private_key_ct is not None
-
-        baseline = client.get(f"/clients/{created['id']}/config").text
-        again = client.get(f"/clients/{created['id']}/config").text
-        assert "PrivateKey = " in baseline
-        assert again == baseline
+        assert resp.status_code == 404, resp.text

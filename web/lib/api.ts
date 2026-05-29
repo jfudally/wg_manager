@@ -30,12 +30,18 @@ import type {
 } from "./types";
 
 /**
- * Resolved at module load. We support a default of localhost:8000 so the
- * dashboard works out-of-the-box against `make run`; override via
- * `NEXT_PUBLIC_WG_MANAGER_API` for staging / prod.
+ * Resolved at module load. Defaults to the same-origin BFF path
+ * ``/api/proxy`` so the browser issues plain-HTTP same-origin requests
+ * and the Next.js Node runtime (see
+ * :file:`app/api/proxy/[...path]/route.ts`) presents the mTLS client
+ * cert to the FastAPI control plane. Set
+ * ``NEXT_PUBLIC_WG_MANAGER_API`` to bypass the proxy (e.g. when
+ * pointing at a non-mTLS staging host), but the default is the right
+ * choice for any dev/prod where the API listener requires mTLS — which
+ * is the Phase 2d CP2 contract.
  */
 export const API_BASE =
-  process.env.NEXT_PUBLIC_WG_MANAGER_API ?? "http://127.0.0.1:8000";
+  process.env.NEXT_PUBLIC_WG_MANAGER_API ?? "/api/proxy";
 
 /** Thrown when the API returns a non-2xx response. */
 export class ApiError extends Error {
@@ -232,10 +238,17 @@ export const api = {
    * Register a client we won't SSH into — phones, IoT, anything where
    * wg-manager can't push a config over SSH. The control plane
    * generates a WireGuard keypair, allocates an IP, persists the row
-   * in ``ready`` state with ``is_manual=true``, and dispatches a hub
-   * reconfigure (returned task_id) so the new peer is admitted. Fetch
-   * the rendered ``wg0.conf`` via {@link api.getClientConfig} to
-   * install it on the device by hand.
+   * in ``ready`` state with ``is_manual=true``, dispatches a hub
+   * reconfigure (returned task_id) so the new peer is admitted, and
+   * returns the rendered ``wg0.conf`` body inline as
+   * ``wg_config``.
+   *
+   * Post-redesign the control plane does **not** persist the
+   * device's private key — this response is the only moment the
+   * ``wg_config`` body can be captured. If the operator dismisses
+   * the UI before saving it, the only recovery is to delete the row
+   * and re-register (which mints a fresh keypair and reconfigures
+   * the hub).
    */
   registerManualClient: (payload: ClientManualCreate) =>
     request<ClientManualRegisterResponse>("/clients/manual", {
@@ -246,16 +259,6 @@ export const api = {
     request<ClientRegisterResponse>(`/clients/${id}/reprovision`, {
       method: "POST",
     }),
-  /**
-   * Fetch the rendered ``wg0.conf`` body for a manual client. The
-   * response is plain text (full config including the private key)
-   * intended to be saved as ``/etc/wireguard/wg0.conf`` or imported
-   * into a phone's WireGuard app. Returns ``ApiError`` with status
-   * 400 for SSH-provisioned clients — those keep their private key on
-   * the device, so there's nothing meaningful to render here.
-   */
-  getClientConfig: (id: number) =>
-    requestText(`/clients/${id}/config`),
   /** Partial-update a client. Only the supplied fields are PATCHed. */
   updateClient: (id: number, payload: ClientUpdate) =>
     request<Client>(`/clients/${id}`, { method: "PATCH", body: payload }),

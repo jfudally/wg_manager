@@ -374,20 +374,25 @@ def clients_add_manual(
 
     The control plane generates a WireGuard keypair, allocates an IP out
     of the parent server's subnet, and reconfigures the hub so the new
-    peer is admitted. The rendered ``wg0.conf`` is then either printed
-    to stdout or written to the file given by ``--config-output``; copy
-    that body onto the device by hand (e.g. import it into the
-    WireGuard phone app).
+    peer is admitted. The rendered ``wg0.conf`` body is returned in the
+    same response (as ``wg_config``) and printed to stdout or written
+    to the file given by ``--config-output``; copy that body onto the
+    device by hand (e.g. import it into the WireGuard phone app).
+
+    Post-redesign the control plane does **not** persist the private
+    key — this response is the only moment the body can be captured.
+    If you lose it, ``clients delete`` the row and register again to
+    mint a fresh keypair.
     """
     payload = {"name": name, "server_id": server_id}
     with _client(ctx) as http:
         data = _handle(http.post("/clients/manual", json=payload))
-        _print_json(data)
-        # Fetch the rendered config so the operator can immediately use it.
-        client_id = data["client"]["id"]
-        cfg_resp = http.get(f"/clients/{client_id}/config")
-        cfg_resp.raise_for_status()
-        body = cfg_resp.text
+    body = data["wg_config"]
+    # Print the registration envelope (sans the wg_config body — we'll
+    # surface that separately below so it's easier for the operator to
+    # spot and copy out).
+    redacted = {k: v for k, v in data.items() if k != "wg_config"}
+    _print_json(redacted)
     if config_output is not None:
         config_output.write_text(body)
         typer.echo(f"wrote wg config to {config_output}")
@@ -395,36 +400,6 @@ def clients_add_manual(
         typer.echo("--- begin wg0.conf ---")
         typer.echo(body, nl=False)
         typer.echo("--- end wg0.conf ---")
-
-
-@clients_app.command("config")
-def clients_config(
-    ctx: typer.Context,
-    client_id: int = typer.Argument(...),
-    output: Path | None = typer.Option(
-        None,
-        "--output",
-        "-o",
-        help="Write the rendered wg0.conf to this file instead of stdout.",
-    ),
-) -> None:
-    """Print the rendered ``wg0.conf`` for a manual client.
-
-    Only works for clients created via ``clients add-manual`` — managed
-    clients keep their private key on the device and the control plane
-    has nothing to render.
-    """
-    with _client(ctx) as http:
-        resp = http.get(f"/clients/{client_id}/config")
-        if resp.status_code >= 400:
-            _handle(resp)
-            return
-        body = resp.text
-    if output is not None:
-        output.write_text(body)
-        typer.echo(f"wrote wg config to {output}")
-    else:
-        typer.echo(body, nl=False)
 
 
 @clients_app.command("ssh-config")
@@ -761,59 +736,25 @@ def crypto_rewrap(
     and produces fresh nonces but identical plaintext, so the data is
     unchanged.
     """
-    from sqlmodel import Session, select
+    from wg_manager.crypto import make_backend
 
-    from wg_manager.crypto import (
-        DecryptError,
-        encrypt_client_private_key,
-        make_backend,
-        resolve_client_private_key,
-    )
-    from wg_manager.models import Client
-
-    engine = _get_engine(database_url)
+    # Alembic 0008 dropped the sshkey ciphertext columns; 0009 dropped
+    # the manual-client private-key ciphertext column. There is no
+    # remaining encrypted-at-rest column to walk, so this command is a
+    # no-op against the schema. We still execute it (so the operator's
+    # post-rotation muscle memory works) and surface the active backend
+    # / key version — a useful "Vault is reachable; key is at version N"
+    # smoke test.
+    _ = database_url  # accepted for forward-compat; nothing to query
     backend = make_backend()
-
-    client_rewrapped = 0
-    client_skipped = 0
-
-    with Session(engine) as session:
-        # Phase 2c CP4.4 dropped the sshkey ciphertext columns, so the
-        # only remaining secret at rest is the manual-client WireGuard
-        # private key — every other row is metadata-only and has
-        # nothing to rewrap.
-        for row in session.exec(select(Client)).all():
-            if row.private_key_ct is None:
-                client_skipped += 1
-                continue
-            try:
-                wg_plain = resolve_client_private_key(backend, row)
-            except DecryptError as exc:
-                typer.secho(
-                    f"  client id={row.id} name={row.name!r}: rewrap "
-                    f"failed (decrypt error: {exc})",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(code=1) from exc
-            assert wg_plain is not None  # we just checked private_key_ct
-            encrypt_client_private_key(backend, row, private_key=wg_plain)
-            client_rewrapped += 1
-            if not dry_run:
-                session.add(row)
-            typer.echo(
-                f"  client id={row.id} name={row.name!r}: rewrapped"
-            )
-
-        if dry_run:
-            session.rollback()
-        else:
-            session.commit()
 
     suffix = " (dry-run; no rows written)" if dry_run else ""
     typer.echo(f"crypto rewrap complete{suffix}")
     typer.echo(
-        f"  client: {client_rewrapped} rewrapped, {client_skipped} skipped"
+        f"  backend: {backend.name} key_version={backend.key_version}"
+    )
+    typer.echo(
+        "  no encrypted-at-rest columns remain — nothing to rewrap"
     )
 
 

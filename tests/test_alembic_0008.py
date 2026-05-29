@@ -293,7 +293,17 @@ class TestAlembic0008Guard:
 
 
 class TestAlembic0008Downgrade:
-    """Reversing 0008 re-adds the two columns as nullable TEXT."""
+    """Reversing 0008 re-adds the two columns as nullable TEXT.
+
+    These tests pin to revision ``0008_drop_sshkey_ciphertext`` explicitly
+    rather than relying on ``downgrade -1`` because subsequent revisions
+    (0009 dropped ``client.private_key_ct``) have shifted what "one
+    step down from head" means. Anchoring on the revision id keeps the
+    test pointed at 0008's behaviour regardless of how the head moves.
+    """
+
+    _TARGET_BEFORE_0008 = "0007_sshkey_mode"
+    _TARGET_AT_0008 = "0008_drop_sshkey_ciphertext"
 
     def test_downgrade_one_re_adds_both_ciphertext_columns(
         self, file_db_url: str
@@ -301,12 +311,12 @@ class TestAlembic0008Downgrade:
         from alembic import command
 
         cfg = _alembic_config(file_db_url)
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, self._TARGET_AT_0008)
         before = _columns(file_db_url, "sshkey")
-        assert "private_key_ct" not in before  # sanity: at head
+        assert "private_key_ct" not in before  # sanity: at 0008
         assert "passphrase_ct" not in before
 
-        command.downgrade(cfg, "-1")
+        command.downgrade(cfg, self._TARGET_BEFORE_0008)
 
         after = _columns(file_db_url, "sshkey")
         assert "private_key_ct" in after, (
@@ -322,9 +332,9 @@ class TestAlembic0008Downgrade:
         from alembic import command
 
         cfg = _alembic_config(file_db_url)
-        command.upgrade(cfg, "head")
-        command.downgrade(cfg, "-1")
-        command.upgrade(cfg, "head")
+        command.upgrade(cfg, self._TARGET_AT_0008)
+        command.downgrade(cfg, self._TARGET_BEFORE_0008)
+        command.upgrade(cfg, self._TARGET_AT_0008)
         cols = _columns(file_db_url, "sshkey")
         assert "private_key_ct" not in cols
         assert "passphrase_ct" not in cols

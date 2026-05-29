@@ -47,10 +47,17 @@ export default function ClientsPage() {
   // is in progress. Stored as the full row so the form pre-populates
   // without a re-fetch.
   const [editingClient, setEditingClient] = useState<Client | null>(null);
-  // When a manual client's config panel is open, hold the client whose
-  // wg0.conf body is being shown. Driven by the "Show config" action in
-  // the table and the post-register inline panel.
-  const [configClient, setConfigClient] = useState<Client | null>(null);
+  // When a manual client's config panel is open, hold both the client
+  // row and the rendered wg0.conf body. Set after a successful
+  // POST /clients/manual — the body comes back exactly once on that
+  // response (the control plane no longer persists the private key),
+  // so the panel is purely a one-shot display surface driven by the
+  // register flow. There is no path that re-fetches the body for an
+  // existing row.
+  const [configClient, setConfigClient] = useState<{
+    client: Client;
+    body: string;
+  } | null>(null);
   const [activeTasks, setActiveTasks] = useState<
     Array<{ key: string; taskId: string; label: string }>
   >([]);
@@ -125,12 +132,13 @@ export default function ClientsPage() {
 
       {showManualForm ? (
         <RegisterManualClientForm
-          onRegistered={(client, taskId) => {
+          onRegistered={(client, taskId, wgConfig) => {
             setShowManualForm(false);
             qc.invalidateQueries({ queryKey: ["clients"] });
-            // Surface the rendered config immediately so the operator can
-            // copy/download it before navigating away.
-            setConfigClient(client);
+            // Surface the rendered config immediately so the operator
+            // can copy / download it before navigating away — this is
+            // the only moment the body exists outside the response.
+            setConfigClient({ client, body: wgConfig });
             setActiveTasks((t) => [
               ...t,
               {
@@ -145,7 +153,8 @@ export default function ClientsPage() {
 
       {configClient ? (
         <ManualClientConfigPanel
-          client={configClient}
+          client={configClient.client}
+          body={configClient.body}
           onClose={() => setConfigClient(null)}
         />
       ) : null}
@@ -207,7 +216,6 @@ export default function ClientsPage() {
             ])
           }
           onEdit={(c) => setEditingClient(c)}
-          onShowConfig={(c) => setConfigClient(c)}
           onDeleted={() =>
             qc.invalidateQueries({ queryKey: ["clients"] })
           }
@@ -221,13 +229,11 @@ function ClientTable({
   clients,
   onTaskDispatched,
   onEdit,
-  onShowConfig,
   onDeleted,
 }: {
   clients: Client[];
   onTaskDispatched: (taskId: string, label: string) => void;
   onEdit: (client: Client) => void;
-  onShowConfig: (client: Client) => void;
   onDeleted: () => void;
 }) {
   const reprovision = useMutation({
@@ -331,18 +337,17 @@ function ClientTable({
               </TableCell>
               <TableCell className="flex justify-end gap-2">
                 {c.is_manual ? (
-                  // Manual rows: no SSH credentials, so reprovision (which
-                  // SSHes in) can't reach the device. Show "Get config"
-                  // instead so the operator can re-export the wg0.conf
-                  // body for hand-install.
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => onShowConfig(c)}
-                    title="Re-export the WireGuard config for hand-install"
+                  // Manual rows: no SSH credentials (so Reprovision
+                  // can't reach the device) and the wg0.conf body is
+                  // not retrievable any more — it was delivered once
+                  // at registration. The only recovery action is
+                  // Delete + register a fresh manual client.
+                  <span
+                    className="text-xs text-muted-foreground"
+                    title="Manual clients receive their wg0.conf once at registration. Delete and re-register to mint a new keypair."
                   >
-                    Get config
-                  </Button>
+                    Manual
+                  </span>
                 ) : (
                   <Button
                     variant="outline"
@@ -879,7 +884,7 @@ function EditClientForm({
 function RegisterManualClientForm({
   onRegistered,
 }: {
-  onRegistered: (client: Client, taskId: string) => void;
+  onRegistered: (client: Client, taskId: string, wgConfig: string) => void;
 }) {
   const serversQuery = useQuery({
     queryKey: ["servers"],
@@ -906,7 +911,7 @@ function RegisterManualClientForm({
     },
     onSuccess: (data) => {
       setName("");
-      onRegistered(data.client, data.task_id);
+      onRegistered(data.client, data.task_id, data.wg_config);
     },
   });
 
@@ -917,8 +922,12 @@ function RegisterManualClientForm({
         <CardDescription>
           For devices wg-manager can&apos;t SSH into — phones, IoT, locked-
           down embedded boxes. The keypair is generated server-side and
-          the rendered <code>wg0.conf</code> will be shown after
-          registration so you can install it on the device by hand.
+          the rendered <code>wg0.conf</code> is shown <strong>once</strong>{" "}
+          on the next screen so you can install it on the device by hand.
+          The private key is <strong>not</strong> kept on the control
+          plane afterward — if you dismiss the panel before saving the
+          body, you&apos;ll need to delete the row and re-register to
+          mint a new keypair.
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -983,27 +992,27 @@ function RegisterManualClientForm({
 }
 
 /**
- * Inline panel that fetches and displays the rendered ``wg0.conf`` for
- * a manual client. Mirrors :func:`SshConfigExport` — copy to clipboard
- * or download as a file — but renders only one client's body and only
- * works against ``GET /clients/{id}/config`` (manual rows only).
+ * One-shot inline panel that displays the rendered ``wg0.conf`` body
+ * for a freshly-registered manual client. The body is supplied as a
+ * prop because the control plane no longer persists the private key —
+ * the body comes back exactly once on the ``POST /clients/manual``
+ * response, the parent caches it in component state, and this panel
+ * gives the operator copy / download affordances before the state is
+ * discarded.
  *
- * The rendered body includes the device's private key, so treat the
- * download / clipboard contents accordingly.
+ * There is no re-fetch path: closing the panel without saving the
+ * body means delete + re-register is the only way to get it back
+ * (which mints a fresh keypair).
  */
 function ManualClientConfigPanel({
   client,
+  body,
   onClose,
 }: {
   client: Client;
+  body: string;
   onClose: () => void;
 }) {
-  const configQuery = useQuery({
-    queryKey: ["clients", client.id, "config"],
-    queryFn: () => api.getClientConfig(client.id),
-    // Only attempt to fetch for manual rows — managed clients 400 here.
-    enabled: client.is_manual,
-  });
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">(
     "idle",
   );
@@ -1046,8 +1055,6 @@ function ManualClientConfigPanel({
     URL.revokeObjectURL(url);
   }
 
-  const body = configQuery.data ?? "";
-
   return (
     <Card>
       <CardHeader>
@@ -1058,31 +1065,19 @@ function ManualClientConfigPanel({
           Install this body on the device as{" "}
           <code>/etc/wireguard/wg0.conf</code> (Linux) or import it into
           the WireGuard app (phones / desktops). It contains the
-          device&apos;s private key — handle the copy / download
-          accordingly.
+          device&apos;s private key. <strong>Save it now</strong> — the
+          control plane doesn&apos;t keep a copy, so closing this panel
+          without copying / downloading the body means delete + re-
+          register is the only way to mint a new one.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {!client.is_manual ? (
-          <Alert variant="warning">
-            This client was provisioned over SSH; wg-manager doesn&apos;t
-            have its private key. Re-export is only available for manual
-            clients.
-          </Alert>
-        ) : configQuery.isLoading ? (
-          <p className="text-sm text-muted-foreground">Generating…</p>
-        ) : configQuery.isError ? (
-          <Alert variant="error" title="Couldn't render config">
-            {(configQuery.error as Error).message}
-          </Alert>
-        ) : (
-          <pre
-            data-testid="manual-client-config-body"
-            className="max-h-96 overflow-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs"
-          >
-            {body}
-          </pre>
-        )}
+        <pre
+          data-testid="manual-client-config-body"
+          className="max-h-96 overflow-auto rounded-md border border-border bg-muted/40 p-3 font-mono text-xs"
+        >
+          {body}
+        </pre>
       </CardContent>
       <CardFooter className="flex gap-2">
         <Button

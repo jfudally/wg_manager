@@ -233,10 +233,20 @@ export interface ClientRegisterResponse {
  * 201 response from `POST /clients/manual`. The row is already in
  * `ready` state — `task_id` belongs to the follow-up hub reconfigure
  * that adds the new peer to the server's running `wg0.conf`.
+ *
+ * `wg_config` is the rendered `wg0.conf` body (with the
+ * server-generated private key inline). Post-redesign the control
+ * plane does not persist that private key, so this response is the
+ * only moment the body can be captured. The dashboard must surface
+ * it prominently with copy/download affordances; if the operator
+ * dismisses the success state before saving the body, the only
+ * recovery is to delete the row and register a fresh manual client
+ * (which mints a new keypair and reconfigures the hub).
  */
 export interface ClientManualRegisterResponse {
   task_id: string;
   client: Client;
+  wg_config: string;
 }
 
 export interface DiscoverResponse {
@@ -266,15 +276,15 @@ export interface TaskStatus {
 
 /**
  * Response from `GET /crypto/status`. Powers the "Crypto status" panel
- * on the dashboard — shows which backend is wrapping secrets at rest,
- * the current key version, and per-table counts of encrypted vs.
- * legacy manual-client rows. Operators use the legacy count to
- * decide whether to run `wg-manager crypto rewrap`.
+ * on the dashboard — reports the active encryption-at-rest backend
+ * identity and current key version.
  *
- * Phase 2c CP4.4 dropped the SSHKey ciphertext columns entirely
- * (the row is now a name-and-mode label), so the `sshkey_*` half of
- * the response is gone. The remaining shape is what the dashboard
- * panel renders.
+ * After Alembic 0008 (sshkey ciphertext columns gone) and 0009
+ * (manual-client private-key ciphertext column gone), no wg-manager
+ * row holds persisted secret material. The response shrinks to just
+ * the backend identity and current key version — the two facts the
+ * operator still cares about ("is Vault healthy?"; "did my Transit
+ * rotation land?").
  *
  * Keep in sync with `CryptoStatusResponse` in
  * `src/wg_manager/schemas.py` — the backend pins this shape with a
@@ -283,6 +293,4 @@ export interface TaskStatus {
 export interface CryptoStatus {
   backend: string;
   key_version: number;
-  client_encrypted: number;
-  client_legacy: number;
 }

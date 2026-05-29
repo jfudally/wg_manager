@@ -101,9 +101,10 @@ def render_manual_client_config(
     Unlike :func:`provision_client`, the private key is baked into the
     rendered text because wg-manager has no way to push it to the device
     over SSH. The caller is responsible for ``client.is_manual is True``
-    and for supplying the *decrypted* private key — the row itself no
-    longer carries plaintext (Phase 2b's drop-plaintext migration
-    removed the ``client.private_key`` column).
+    and for supplying the freshly-generated private key — the row never
+    persists it (post-Alembic-0009 the row carries only the public
+    key), so the caller must thread the plaintext through from the
+    keypair generation site.
 
     :param client: The manual :class:`wg_manager.models.Client` row.
     :type client: Client
@@ -112,10 +113,12 @@ def render_manual_client_config(
         ``endpoint_port`` and ``subnet`` fields are interpolated into
         the rendered config.
     :type server: Server
-    :param private_key: Decrypted WireGuard private key to render into
-        the ``[Interface]`` block. Use
-        :func:`wg_manager.crypto.resolve_client_private_key` to obtain
-        it from the row's ciphertext column.
+    :param private_key: WireGuard private key (44-char base64) to render
+        into the ``[Interface]`` block. Obtain it from
+        :func:`generate_wireguard_keypair` at the same call site that
+        creates the row, then thread it directly into this function —
+        there is no retrieval path because the control plane does not
+        store it.
     :type private_key: str
     :return: The body of the WireGuard config file as text.
     :rtype: str

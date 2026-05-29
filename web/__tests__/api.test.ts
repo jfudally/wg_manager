@@ -240,7 +240,16 @@ describe("endpoint paths", () => {
     expect(result).toBe("");
   });
 
-  it("registerManualClient POSTs to /clients/manual with name+server_id", async () => {
+  it("registerManualClient POSTs to /clients/manual and returns wg_config", async () => {
+    // Post-redesign: the rendered wg0.conf body is returned inline as
+    // `wg_config` on the response. The dashboard surfaces it once via
+    // ManualClientConfigPanel; the control plane no longer persists the
+    // private key, so there is no GET /clients/{id}/config to re-fetch
+    // from later.
+    const wgConfig =
+      "[Interface]\nPrivateKey = SECRET-WG-KEY=\nAddress = 10.9.0.4/32\n\n" +
+      "[Peer]\nPublicKey = SRV=\nEndpoint = hub.example.com:51820\n" +
+      "AllowedIPs = 10.9.0.0/24\nPersistentKeepalive = 25\n";
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
       makeResponse(201, {
         task_id: "reconf-abc",
@@ -258,6 +267,7 @@ describe("endpoint paths", () => {
           status: "ready",
           created_at: "2026-05-27T00:00:00Z",
         },
+        wg_config: wgConfig,
       }),
     );
     const result = await api.registerManualClient({
@@ -266,6 +276,7 @@ describe("endpoint paths", () => {
     });
     expect(result.client.is_manual).toBe(true);
     expect(result.client.hostname).toBeNull();
+    expect(result.wg_config).toBe(wgConfig);
     expect(fetchSpy).toHaveBeenCalledWith(
       "http://test.local/clients/manual",
       expect.objectContaining({
@@ -275,51 +286,19 @@ describe("endpoint paths", () => {
     );
   });
 
-  it("getClientConfig GETs /clients/{id}/config and returns the raw body", async () => {
-    const body =
-      "[Interface]\nPrivateKey = abc=\nAddress = 10.9.0.4/32\n\n" +
-      "[Peer]\nPublicKey = SRV=\nEndpoint = hub.example.com:51820\n" +
-      "AllowedIPs = 10.9.0.0/24\nPersistentKeepalive = 25\n";
-    const fetchSpy = vi
-      .spyOn(global, "fetch")
-      .mockResolvedValue(makeResponse(200, body));
-    const result = await api.getClientConfig(9);
-    expect(result).toBe(body);
-    expect(fetchSpy).toHaveBeenCalledWith(
-      "http://test.local/clients/9/config",
-      expect.objectContaining({ method: "GET" }),
-    );
-  });
-
-  it("getClientConfig surfaces 400 from the API as ApiError", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValue(
-      makeResponse(
-        400,
-        {
-          detail:
-            "Config export is only available for manual clients; SSH-provisioned clients keep their private key on the device",
-        },
-        false,
-      ),
-    );
-    await expect(api.getClientConfig(3)).rejects.toMatchObject({
-      status: 400,
-    });
-  });
-
   it("cryptoStatus GETs /crypto/status and returns the panel payload", async () => {
+    // Post-Alembic-0009 the response shape is just {backend, key_version} —
+    // no row carries ciphertext any more, so the per-table counters are
+    // gone.
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
       makeResponse(200, {
         backend: "local-dev",
         key_version: 1,
-        client_encrypted: 1,
-        client_legacy: 0,
       }),
     );
     const result = await api.cryptoStatus();
     expect(result.backend).toBe("local-dev");
     expect(result.key_version).toBe(1);
-    expect(result.client_encrypted).toBe(1);
     expect(fetchSpy).toHaveBeenCalledWith(
       "http://test.local/crypto/status",
       expect.objectContaining({ method: "GET" }),

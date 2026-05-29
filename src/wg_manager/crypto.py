@@ -42,7 +42,7 @@ commit so this module can be reviewed in isolation.
 from __future__ import annotations
 
 import base64
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import hvac
 from cryptography.fernet import Fernet, InvalidToken
@@ -50,9 +50,6 @@ from hvac.exceptions import InvalidRequest as HvacInvalidRequest
 from hvac.exceptions import VaultError as HvacVaultError
 
 from wg_manager.config import Settings
-
-if TYPE_CHECKING:
-    from wg_manager.models import Client, SSHKey
 
 
 # ---------------------------------------------------------------------------
@@ -351,80 +348,23 @@ def make_backend(settings: Settings | None = None) -> CryptoBackend:
 
 
 # ---------------------------------------------------------------------------
-# Row-level helpers — the bridge between :class:`CryptoBackend` and the ORM.
+# Row-level helpers — historical
 # ---------------------------------------------------------------------------
 #
-# Every helper takes an already-flushed row (i.e. ``row.id is not None``)
-# because the context binding embeds the primary key. Calling these on a
-# fresh, un-flushed row would either bind to ``None`` (defeating the
-# row-swap defence) or, more usefully, blow up loudly — we choose the
-# latter via the ``_require_id`` check.
+# Earlier phases ran two row-level seams through this module:
 #
-# Context strings follow the convention ``f"{table}:{id}:{field}"`` so
-# every blob is bound uniquely to the (row, field) pair. Two fields on
-# the same row use distinct contexts so an attacker who can swap blobs
-# *within* a row (e.g. into the wrong column) also fails decryption.
-
-
-def _require_id(row: object, table: str) -> int:
-    """Return ``row.id`` or raise if it's still ``None``.
-
-    Helpers that mutate ``row.*_ct`` need a stable context. The ID is
-    the only field guaranteed unique and immutable for the row's
-    lifetime, so we refuse to encrypt before the row has been flushed.
-    """
-    row_id = getattr(row, "id", None)
-    if row_id is None:
-        raise ValueError(
-            f"cannot encrypt {table} secrets before the row is flushed — "
-            f"row.id is None and the context binding requires it"
-        )
-    return int(row_id)
-
-
-def _client_context(row_id: int, field: str) -> str:
-    return f"client:{row_id}:{field}"
-
-
-def encrypt_client_private_key(
-    backend: CryptoBackend,
-    row: "Client",
-    *,
-    private_key: str,
-) -> None:
-    """Encrypt the supplied manual-client WireGuard private key.
-
-    SSH-provisioned clients never call this — they don't hold a
-    private key on the control plane at all. Manual clients call this
-    once at creation time with the freshly-generated PEM, and again
-    inside ``crypto rewrap`` to refresh under a rotated Transit key.
-
-    :raises ValueError: If ``row.id`` is ``None``.
-    """
-    row_id = _require_id(row, "client")
-    row.private_key_ct = backend.encrypt(
-        private_key.encode("utf-8"),
-        context=_client_context(row_id, "private_key"),
-    )
-
-
-def resolve_client_private_key(
-    backend: CryptoBackend, row: "Client"
-) -> str | None:
-    """Return the manual client's WireGuard private key, or ``None``.
-
-    SSH-provisioned clients land in the DB with
-    ``row.private_key_ct is None`` — they never had a key to encrypt —
-    and this helper returns ``None`` for them. Manual clients always
-    carry ciphertext post-Phase-2b.
-    """
-    if row.private_key_ct is None:
-        return None
-    row_id = _require_id(row, "client")
-    return backend.decrypt(
-        row.private_key_ct,
-        context=_client_context(row_id, "private_key"),
-    ).decode("utf-8")
+# * the SSH-key ciphertext helpers — retired in Alembic 0008 when the
+#   row became a name-and-mode label and SSH auth started minting from
+#   the CA at task time;
+# * the manual-client WireGuard private-key helpers — retired in
+#   Alembic 0009 because wg-manager has no operational use for the
+#   private key of a device it can't log into, so persisting it was
+#   pure liability.
+#
+# No row in the current schema carries encrypted secret material, so
+# there is no row-level helper to expose. The :class:`CryptoBackend`
+# infrastructure stays in place because the Vault Transit binding is
+# the canonical substrate for any future encrypted-at-rest column.
 
 
 __all__ = [
@@ -433,7 +373,5 @@ __all__ = [
     "DecryptError",
     "LocalDevBackend",
     "VaultTransitBackend",
-    "encrypt_client_private_key",
     "make_backend",
-    "resolve_client_private_key",
 ]

@@ -25,7 +25,6 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
 from typer.testing import CliRunner
 
 from wg_manager import cli
@@ -114,10 +113,11 @@ class TestLogScrubHTTPFlows:
     def test_register_manual_client_does_not_log_private_key(
         self, client: TestClient, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """Manual clients embed a server-generated WireGuard private
-        key into the rendered config. The key body is per-test and
-        unpredictable, so we read it back from the response and add it
-        to the forbidden list dynamically."""
+        """Manual-client registration generates a WireGuard private
+        key on the control plane and ships it back to the operator
+        exactly once via the ``wg_config`` field on the response. The
+        key body is per-test and unpredictable, so we read it back from
+        the response and assert it didn't slip into the captured logs."""
         # Bootstrap a server.
         key_id = int(
             client.post(
@@ -143,40 +143,24 @@ class TestLogScrubHTTPFlows:
                 json={"name": "phone", "server_id": server_id},
             )
             assert resp.status_code == 201, resp.text
-            # The render endpoint embeds the private key — exercise it
-            # under the captured logger too.
-            cfg = client.get(f"/clients/{resp.json()['client']['id']}/config")
-            assert cfg.status_code == 200, cfg.text
 
         # Static PEM canaries.
         _assert_no_leak(caplog.text)
-        # Plus the just-generated WG key body (44-char base64 string
-        # rendered into the config response). We can't blanket the
-        # whole config (the response purposefully *contains* the key),
-        # so we only assert it doesn't appear in the *captured logs*.
-        from wg_manager.models import Client as ClientModel
 
-        # Pull the row to learn the actual private key (decrypted via
-        # the resolver) and assert it isn't in caplog.
-        from wg_manager.crypto import (
-            make_backend,
-            resolve_client_private_key,
+        # Recover the freshly-generated private key from the response
+        # body. The body is a real ``wg0.conf`` so the PrivateKey line
+        # is "PrivateKey = <44-char base64>\n".
+        wg_config = resp.json()["wg_config"]
+        wg_secret: str | None = None
+        for line in wg_config.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("PrivateKey ="):
+                wg_secret = stripped.split("=", 1)[1].strip()
+                break
+
+        assert wg_secret, (
+            f"could not parse PrivateKey out of wg_config: {wg_config!r}"
         )
-
-        # We have to round-trip via the engine fixture, which means
-        # this test needs ``engine`` too.
-
-        # Use a fresh local lookup: the row was just written, the
-        # in-memory engine is exposed via wg_manager.db.engine after
-        # the conftest swap.
-        from wg_manager import db as db_module
-
-        with Session(db_module.engine) as s:
-            row = s.get(ClientModel, resp.json()["client"]["id"])
-            assert row is not None
-            wg_secret = resolve_client_private_key(make_backend(), row)
-
-        assert wg_secret is not None
         assert wg_secret not in caplog.text, (
             "manual client WireGuard private key leaked into logs"
         )

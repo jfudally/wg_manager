@@ -13,19 +13,22 @@ import {
 } from "@/components/ui/card";
 
 /**
- * Crypto status page — Phase 2b checkpoint 3.
+ * Crypto status page.
  *
- * Surfaces the encryption-at-rest layer:
+ * After Alembic 0008 dropped the sshkey ciphertext columns and 0009
+ * dropped the manual-client private-key ciphertext column, no wg-
+ * manager table holds persisted secret material at rest. The page
+ * shrinks to reporting only the active backend identity and key
+ * version — the two facts the operator still cares about:
  *
- * - Which backend is wrapping secrets (`local-dev` or `vault-transit`).
- * - The active key version. Bumps after a Vault Transit rotation;
- *   operators should run `wg-manager crypto rewrap` after the bump so
- *   every row lands on the same version.
- * - Per-table counts of rows with ciphertext vs. rows that bypassed the
- *   encryption seam (the "legacy" buckets). Post-Alembic-0005 those
- *   numbers should be zero in steady state — non-zero means a row was
- *   inserted via a path that did not encrypt and needs to be rewrapped
- *   (or, on a pre-0005 schema, run `wg-manager crypto migrate` first).
+ * - Which backend is bootstrapped (`local-dev` or `vault-transit`)
+ *   and whether Vault is healthy enough to answer.
+ * - The current key version. Bumps after a Vault Transit rotation;
+ *   nothing on disk needs rewrapping (no row carries ciphertext),
+ *   but the bump is a useful "rotation landed" smoke signal.
+ *
+ * The Vault Transit binding stays because it is the canonical
+ * substrate for any future encrypted-at-rest column.
  */
 export default function CryptoPage() {
   const status = useQuery({
@@ -38,8 +41,7 @@ export default function CryptoPage() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Crypto Status</h1>
         <p className="text-sm text-muted-foreground">
-          Encryption-at-rest state for SSH keys, passphrases, and manual
-          client WireGuard keys.
+          Encryption-at-rest backend identity and current key version.
         </p>
       </header>
 
@@ -64,15 +66,8 @@ function CryptoStatusPanel({
   data: {
     backend: string;
     key_version: number;
-    client_encrypted: number;
-    client_legacy: number;
   };
 }) {
-  // Phase 2c CP4.4 dropped the sshkey ciphertext columns — every row
-  // is a name-and-mode label now — so the only remaining secret at
-  // rest is the manual-client WireGuard private key, and the panel's
-  // "legacy" health rolls up to just that count.
-  const totalLegacy = data.client_legacy;
   const backendVariant: "success" | "info" =
     data.backend === "vault-transit" ? "success" : "info";
 
@@ -83,6 +78,10 @@ function CryptoStatusPanel({
           <CardTitle>Backend</CardTitle>
           <CardDescription>
             Which wg-manager component is wrapping persisted secrets.
+            Currently no row carries ciphertext (Alembic 0008 dropped
+            the SSH key columns; 0009 dropped the manual-client column);
+            the backend stays bootstrapped as the substrate for any
+            future encrypted-at-rest column.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-3">
@@ -98,60 +97,19 @@ function CryptoStatusPanel({
 
       <Card>
         <CardHeader>
-          <CardTitle>Health</CardTitle>
+          <CardTitle>Storage</CardTitle>
           <CardDescription>
-            Legacy rows are operator-visible flags. In steady state both
-            counts should be zero.
+            What persisted secret material the schema currently holds.
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {totalLegacy === 0 ? (
-            <Badge variant="success">All rows encrypted</Badge>
-          ) : (
-            <Badge variant="warn">
-              {totalLegacy} legacy row{totalLegacy === 1 ? "" : "s"}
-            </Badge>
-          )}
-        </CardContent>
-      </Card>
-
-      <Card className="lg:col-span-2">
-        <CardHeader>
-          <CardTitle>Row counts</CardTitle>
-          <CardDescription>
-            Per-table breakdown of how many rows hold ciphertext.
-            SSH-provisioned clients keep their key on the device and
-            are excluded — only manual clients store a private key on
-            the control plane. Phase 2c CP4.4 dropped the SSH key
-            ciphertext columns entirely; SSH roles are name-and-mode
-            labels now.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <table className="w-full text-sm">
-            <thead className="text-left text-muted-foreground">
-              <tr>
-                <th className="pb-2">Table</th>
-                <th className="pb-2">Encrypted</th>
-                <th className="pb-2">Legacy</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr className="border-t border-border">
-                <td className="py-2 font-medium">Manual clients</td>
-                <td className="py-2">
-                  <Badge variant="success">{data.client_encrypted}</Badge>
-                </td>
-                <td className="py-2">
-                  <Badge
-                    variant={data.client_legacy === 0 ? "default" : "warn"}
-                  >
-                    {data.client_legacy}
-                  </Badge>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+          <Badge variant="success">No encrypted columns</Badge>
+          <p className="mt-2 text-xs text-muted-foreground">
+            SSH auth mints from the CA at task time; manual-client
+            wg0.conf bodies are delivered exactly once at registration
+            and never persisted. Nothing on disk needs rewrapping after
+            a Vault Transit rotation.
+          </p>
         </CardContent>
       </Card>
 
@@ -166,20 +124,22 @@ function CryptoStatusPanel({
             <code className="rounded bg-muted px-1 py-0.5 text-xs">
               vault write -f transit/keys/wg-manager/rotate
             </code>{" "}
-            then{" "}
+            — the key version above should bump on the next page load.{" "}
             <code className="rounded bg-muted px-1 py-0.5 text-xs">
               wg-manager crypto rewrap
             </code>{" "}
-            so every row lands on the new version.
+            is a no-op against the current schema (no encrypted columns
+            to walk) but stays available for forward-compat and as a
+            backend-reachability smoke test.
           </p>
           <p>
-            <strong className="text-foreground">Legacy rows.</strong> If the
-            Legacy column is non-zero, inspect those rows and rewrap them.
-            The cookbook documents the recovery path —{" "}
+            <strong className="text-foreground">Adding a new secret column.</strong>{" "}
+            Use the CryptoBackend seam — see{" "}
             <code className="rounded bg-muted px-1 py-0.5 text-xs">
               docs/vault-cookbook.md
             </code>{" "}
-            §3.
+            for the per-row context binding convention and the
+            row-swap defence pattern the prior encrypted columns used.
           </p>
         </CardContent>
       </Card>

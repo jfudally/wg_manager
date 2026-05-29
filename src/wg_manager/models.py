@@ -180,21 +180,25 @@ class Client(SQLModel, table=True):
 
     * **Manual.** For devices wg-manager cannot reach over SSH (phones,
       IoT, locked-down embedded boxes). The keypair is generated
-      server-side and stored on the row so the operator can re-export
-      the rendered ``wg0.conf`` (see ``GET /clients/{id}/config``). The
-      SSH connection fields are unused and may be ``NULL``.
+      server-side; the wg0.conf body (with the private key inline) is
+      returned to the operator **exactly once** on the
+      ``POST /clients/manual`` response and the private key is then
+      dropped — the row carries only the public key. The SSH
+      connection fields are unused and may be ``NULL``.
       ``is_manual`` is ``True``.
 
     Both kinds count against the same IPAM pool — see
     :func:`wg_manager.ipam.allocate_client_ip`.
 
+    The ``private_key_ct`` column that held the encrypt-at-rest
+    ciphertext of the manual-client private key was dropped in Alembic
+    0009: wg-manager has no operational use for a manual device's
+    private key once the operator has captured the config (we can't
+    log into the device), so persisting it was pure liability.
+
     :ivar is_manual: ``True`` when the row was created via the manual
         registration flow. Manual rows skip provisioning and instead
         ship their config to the operator for hand-install.
-    :ivar private_key_ct: Ciphertext of the manual client's WireGuard
-        private key (post-Phase-2b; the plaintext column was dropped
-        in Alembic 0005). ``NULL`` for SSH-provisioned clients —
-        their key never leaves the device.
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -206,10 +210,6 @@ class Client(SQLModel, table=True):
     server_id: int = Field(foreign_key="server.id")
     address: str = ""
     public_key: str = ""
-    private_key_ct: str | None = Field(
-        default=None,
-        sa_column=Column(Text, nullable=True),
-    )
     is_manual: bool = Field(default=False)
     status: NodeStatus = Field(default=NodeStatus.pending)
     created_at: datetime = Field(default_factory=_utcnow)
@@ -219,7 +219,6 @@ class Client(SQLModel, table=True):
             f"Client(id={self.id!r}, name={self.name!r}, "
             f"hostname={self.hostname!r}, server_id={self.server_id!r}, "
             f"address={self.address!r}, public_key={self.public_key!r}, "
-            f"private_key_ct={'<set>' if self.private_key_ct else None}, "
             f"is_manual={self.is_manual!r}, status={self.status!r}, "
             f"created_at={self.created_at!r})"
         )

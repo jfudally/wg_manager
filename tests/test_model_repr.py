@@ -9,33 +9,22 @@ that blob into every traceback. The blob itself is not plaintext, but
 it is a few hundred bytes of base64 noise that crowds out useful
 debug info; the override collapses it to ``<set>`` / ``None``.
 
-Phase 2c CP4.4 dropped the sshkey ciphertext columns entirely — the
-row is name-and-mode only — so the historical "SSH key repr scrub"
-suite collapses to a single shape check (no surprising state on the
-repr line). The manual-client side still carries
-:attr:`Client.private_key_ct`, so its scrub regressions are
-unchanged.
+After Alembic 0008 (sshkey ciphertext columns gone) and 0009
+(manual-client private-key ciphertext column gone), no wg-manager row
+carries persisted secret material. These tests still pin the
+"repr stays short and identifies the row" shape so a future regression
+that re-adds ciphertext can't silently start leaking it through
+tracebacks.
 """
 
 from __future__ import annotations
 
-import pytest
-
-from wg_manager.crypto import LocalDevBackend, encrypt_client_private_key
 from wg_manager.models import Client, SSHKey
-
-
-_TEST_FERNET_KEY = b"6BR-12U4QDta_TTnZnieCyvMU5VzRSnUqbH6hA80Ihw="
-
-
-@pytest.fixture()
-def backend() -> LocalDevBackend:
-    return LocalDevBackend(_TEST_FERNET_KEY)
 
 
 class TestSSHKeyRedaction:
     def test_repr_is_short_and_includes_identifying_metadata(self) -> None:
-        """Post-CP4.4 the SSHKey repr should fit on one line and name the row."""
+        """The SSHKey repr should fit on one line and name the row."""
         row = SSHKey(id=1, name="lab")
         rendered = repr(row)
         # No multi-line blob noise.
@@ -48,9 +37,11 @@ class TestSSHKeyRedaction:
 
 
 class TestClientRedaction:
-    def test_manual_client_repr_collapses_ciphertext(
-        self, backend: LocalDevBackend
-    ) -> None:
+    def test_manual_client_repr_is_short_and_identifies_row(self) -> None:
+        """Post-Alembic-0009 manual clients carry no secret material;
+        the repr names the row and shows its public key (safe to log)
+        without any ciphertext placeholders that would imply otherwise.
+        """
         row = Client(
             id=1,
             name="phone",
@@ -59,20 +50,19 @@ class TestClientRedaction:
             public_key="PUBLIC-KEY-OK-TO-LOG",
             is_manual=True,
         )
-        encrypt_client_private_key(
-            backend, row, private_key="MANUAL-CLIENT-WG-SECRET"
-        )
         rendered = repr(row)
-        assert "MANUAL-CLIENT-WG-SECRET" not in rendered
-        assert row.private_key_ct is not None
-        assert row.private_key_ct not in rendered
-        # Public key and identifiers are fine to log — they're not secret.
+        # One-line repr; identifies the row.
+        assert "\n" not in rendered
         assert "phone" in rendered
         assert "PUBLIC-KEY-OK-TO-LOG" in rendered
-        assert "<set>" in rendered
+        # No leftover references to the dropped ciphertext column —
+        # neither in plaintext nor a placeholder like "<set>".
+        assert "private_key_ct" not in rendered
+        assert "<set>" not in rendered
 
-    def test_ssh_provisioned_client_repr_handles_null(self) -> None:
-        """SSH-provisioned clients have ``private_key_ct=None`` — repr must not crash."""
+    def test_ssh_provisioned_client_repr_is_short(self) -> None:
+        """SSH-provisioned clients have always lacked stored secret
+        material; the repr should still be short and identify the row."""
         row = Client(
             id=1,
             name="laptop",
@@ -82,5 +72,6 @@ class TestClientRedaction:
             is_manual=False,
         )
         rendered = repr(row)
+        assert "\n" not in rendered
         assert "laptop" in rendered
-        assert "<set>" not in rendered
+        assert "private_key_ct" not in rendered

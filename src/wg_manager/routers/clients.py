@@ -9,13 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import PlainTextResponse
 from sqlmodel import Session, select
 
-from wg_manager.crypto import (
-    CryptoBackend,
-    encrypt_client_private_key,
-    resolve_client_private_key,
-)
 from wg_manager.db import get_session
-from wg_manager.deps import get_crypto_backend
 from wg_manager.ipam import IPPoolExhausted, allocate_client_ip
 from wg_manager.models import Client, NodeStatus, SSHKey, Server
 from wg_manager.schemas import (
@@ -36,7 +30,6 @@ from wg_manager.wireguard import (
 router = APIRouter(prefix="/clients", tags=["clients"])
 
 _SessionDep = Annotated[Session, Depends(get_session)]
-_CryptoDep = Annotated[CryptoBackend, Depends(get_crypto_backend)]
 
 
 @router.post(
@@ -104,7 +97,6 @@ def register_client(payload: ClientCreate, session: _SessionDep) -> ClientRegist
 def register_manual_client(
     payload: ClientManualCreate,
     session: _SessionDep,
-    crypto: _CryptoDep,
 ) -> ClientManualRegisterResponse:
     """Register a client we will install by hand instead of over SSH.
 
@@ -116,12 +108,20 @@ def register_manual_client(
     2. Allocate the next free host address out of the parent server's
        subnet, sharing the IPAM pool with SSH-provisioned clients.
     3. Persist a :class:`Client` row in ``ready`` state with the
-       generated keys and ``is_manual=True``.
-    4. Dispatch :func:`wg_manager.tasks.reconfigure_server_task` so the
+       **public** key and ``is_manual=True``. The private key is
+       returned to the caller in this response and is never stored —
+       wg-manager has no operational use for it (the device is one we
+       can't log into), so persisting it would be pure liability.
+    4. Render the WireGuard config (with the private key inline) and
+       return it as ``wg_config`` on the response.
+    5. Dispatch :func:`wg_manager.tasks.reconfigure_server_task` so the
        hub's ``wg0.conf`` is rewritten to admit the new peer.
 
-    The operator then fetches the rendered ``wg0.conf`` via
-    ``GET /clients/{id}/config`` and installs it on the device by hand.
+    Because the private key is dropped after this call, the operator
+    **must** capture ``wg_config`` from this response — there is no
+    way to re-render it later. Losing the config means deleting the
+    row and re-registering (which generates a fresh keypair and
+    reconfigures the hub).
 
     :raises HTTPException: 409 if ``name`` collides with an existing
         client; 404 if ``server_id`` does not exist; 400 if the parent
@@ -167,14 +167,14 @@ def register_manual_client(
     session.add(row)
     session.commit()
     session.refresh(row)
-    # The row now has an ID; bind the per-row context and encrypt the
-    # freshly-generated WireGuard private key straight into the
-    # ciphertext column. The plaintext lives only in the local variable
-    # ``private_key`` and is dropped when this function returns.
-    encrypt_client_private_key(crypto, row, private_key=private_key)
-    session.add(row)
-    session.commit()
-    session.refresh(row)
+
+    # Render the wg0.conf body with the freshly-generated private key
+    # inline. The plaintext lives only in the local ``private_key``
+    # and the response payload — both vanish when this function returns
+    # and the response is serialized over the wire.
+    wg_config = render_manual_client_config(
+        row, server, private_key=private_key
+    )
 
     # Push the new peer into the hub's running config so the device can
     # actually connect once the operator installs the rendered .conf.
@@ -182,6 +182,7 @@ def register_manual_client(
     return ClientManualRegisterResponse(
         task_id=async_result.id,
         client=ClientRead.model_validate(row),
+        wg_config=wg_config,
     )
 
 
@@ -211,7 +212,10 @@ def reprovision_client(client_id: int, session: _SessionDep) -> ClientRegisterRe
         # blow up later with a confusing "no SSH key" stack trace.
         raise HTTPException(
             status_code=400,
-            detail="Cannot reprovision a manual client — re-export the config instead",
+            detail=(
+                "Cannot reprovision a manual client — delete and re-register "
+                "to mint a fresh keypair and config"
+            ),
         )
 
     row.status = NodeStatus.pending
@@ -296,54 +300,6 @@ def export_ssh_config(session: _SessionDep) -> str:
             f"    IdentityFile ~/.ssh/{identity}\n"
         )
     return "\n".join(blocks)
-
-
-@router.get(
-    "/{client_id}/config",
-    response_class=PlainTextResponse,
-    responses={200: {"content": {"text/plain": {}}}},
-)
-def export_client_config(
-    client_id: int, session: _SessionDep, crypto: _CryptoDep
-) -> str:
-    """Render a manual client's ``wg0.conf`` so the operator can install it.
-
-    Only valid for clients created via ``POST /clients/manual`` — the
-    SSH-provisioned flow leaves the private key on the device and the
-    control plane never sees it, so there's nothing meaningful to render
-    here for managed rows.
-
-    The output is the full body of a WireGuard config file, including
-    the device's private key. Save it as ``/etc/wireguard/wg0.conf`` on
-    Linux, or import it into the WireGuard app on phones / desktops.
-
-    :raises HTTPException: 404 if the client does not exist; 400 if the
-        row is an SSH-provisioned client (no server-side private key to
-        render).
-    """
-    row = session.get(Client, client_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Client not found")
-    if not row.is_manual:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Config export is only available for manual clients; "
-                "SSH-provisioned clients keep their private key on the device"
-            ),
-        )
-
-    server = session.get(Server, row.server_id)
-    if server is None:
-        # Defensive: the FK guarantees this normally, but if the parent
-        # server was somehow deleted the config can't be rendered.
-        raise HTTPException(status_code=404, detail="Parent server not found")
-
-    # Decrypt-at-render — pulls from ``private_key_ct`` if populated,
-    # falls back to the legacy plaintext column otherwise. The actual
-    # render function stays oblivious to the storage layer.
-    private_key = resolve_client_private_key(crypto, row)
-    return render_manual_client_config(row, server, private_key=private_key)
 
 
 @router.get("/{client_id}", response_model=ClientRead)

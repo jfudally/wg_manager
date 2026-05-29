@@ -371,59 +371,22 @@ class TestClientsCLI:
         assert "[Interface]" in body
         assert "Address = 10.9.0.2/32" in body
 
-    def test_config_command_renders_manual_client(
+    def test_config_command_is_retired(
         self,
         runner: CliRunner,
         cli_env: None,  # noqa: ARG002
         key_file: Path,
     ) -> None:
-        """``clients config <id>`` re-exports the rendered wg config for a
-        previously-registered manual client."""
+        """``clients config <id>`` was removed alongside the
+        ``GET /clients/{id}/config`` API endpoint. The wg0.conf body is
+        now delivered exactly once on ``clients add-manual`` and the
+        control plane no longer persists the private key required to
+        re-render it. Typer should refuse the unknown subcommand."""
         self._bootstrap(runner, key_file)
-        # Register a manual client first (id will be 1 — first client row).
-        _invoke(
-            runner,
-            "clients",
-            "add-manual",
-            "--name",
-            "phone",
-            "--server-id",
-            "1",
-        )
-
-        result = _invoke(runner, "clients", "config", "1")
-        assert "[Interface]" in result.output
-        assert "Endpoint = hub.example.com:51820" in result.output
-
-    def test_config_command_rejects_managed_client(
-        self,
-        runner: CliRunner,
-        cli_env: None,  # noqa: ARG002
-        key_file: Path,
-    ) -> None:
-        """Managed clients have no server-side private key — ``clients
-        config`` must exit non-zero with the API's 400 message."""
-        self._bootstrap(runner, key_file)
-        _invoke(
-            runner,
-            "clients",
-            "register",
-            "--name",
-            "alpha",
-            "--hostname",
-            "alpha.example.com",
-            "--ssh-user",
-            "ubuntu",
-            "--key-id",
-            "1",
-            "--server-id",
-            "1",
-        )
-
         result = runner.invoke(cli.app, ["clients", "config", "1"])
-        assert result.exit_code == 1, result.output
-        combined = result.output + (result.stderr or "")
-        assert "error 400" in combined
+        assert result.exit_code != 0, result.output
+        out = (result.output + (result.stderr or "")).lower()
+        assert "no such command" in out or "no such" in out
 
     def test_ssh_config_writes_to_output_file(
         self,

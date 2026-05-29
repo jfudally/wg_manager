@@ -363,12 +363,28 @@ class ClientManualRegisterResponse(BaseModel):
     rewrite the hub's ``wg0.conf`` so the new peer is admitted. The
     returned ``task_id`` belongs to that reconfigure task.
 
+    Post-redesign the rendered ``wg0.conf`` body — including the
+    freshly-generated private key — is returned **once** as
+    ``wg_config``. The control plane intentionally does not persist
+    the private key (manual clients are devices wg-manager cannot
+    log into, so the server has no operational use for it), so this
+    response is the only moment the body can be captured. If the
+    operator loses it before installing on the device, the only
+    recovery is to ``DELETE`` the row and register a fresh manual
+    client. See the retirement of the former
+    ``GET /clients/{id}/config`` route for context.
+
     :ivar task_id: Celery task ID of the hub-reconfigure follow-up.
     :ivar client: The persisted manual client row.
+    :ivar wg_config: Full body of the rendered ``wg0.conf``,
+        suitable for hand-install (e.g. via the WireGuard app's
+        "import from file" flow on phones, or
+        ``/etc/wireguard/wg0.conf`` on Linux).
     """
 
     task_id: str
     client: ClientRead
+    wg_config: str
 
 
 class ClientDeleteResponse(BaseModel):
@@ -411,15 +427,16 @@ class TaskStatusResponse(BaseModel):
 
 
 class CryptoStatusResponse(BaseModel):
-    """Snapshot of encryption-at-rest state for the dashboard panel.
+    """Snapshot of the encryption-at-rest backend for the dashboard panel.
 
-    Returned by ``GET /crypto/status``. Phase 2c CP4.4 dropped the
-    sshkey ciphertext columns — every ``SSHKey`` row is now a
-    name-and-mode label — so the only persisted secret left is the
-    manual-client WireGuard private key, and the response shape
-    shrinks accordingly. SSH-provisioned clients have no key
-    material the control plane stores and are counted in neither
-    bucket.
+    Returned by ``GET /crypto/status``. After Alembic 0008 (sshkey
+    ciphertext columns gone) and 0009 (manual-client private-key
+    ciphertext column gone), there is no row-level secret material
+    persisted on any wg-manager table. The CryptoBackend itself stays
+    bootstrapped because it is the canonical substrate for any future
+    encrypted-at-rest column — this endpoint reports its identity and
+    current key version so the dashboard can show whether Vault is
+    healthy and whether a rotation has happened.
 
     The Next.js dashboard renders these fields verbatim; the contract
     test in ``tests/test_crypto_status_api.py`` pins the keys.
@@ -429,15 +446,10 @@ class CryptoStatusResponse(BaseModel):
         :attr:`wg_manager.crypto.CryptoBackend.name`.
     :ivar key_version: Currently-active key version. ``1`` for local-dev
         (no rotation); Transit ``latest_version`` for vault. After a
-        rotation the value bumps and the operator should run
-        ``wg-manager crypto rewrap`` to migrate older ciphertext.
-    :ivar client_encrypted: Manual-client rows whose
-        ``private_key_ct`` is populated.
-    :ivar client_legacy: Manual-client rows still on plaintext only
-        (NULL ciphertext). Operators want this at zero.
+        Transit rotation the value bumps — nothing on disk needs
+        rewrapping today (no row carries ciphertext), but the bump is
+        still a useful operator signal that the rotation landed.
     """
 
     backend: str
     key_version: int
-    client_encrypted: int
-    client_legacy: int
