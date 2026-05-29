@@ -59,8 +59,7 @@ export function NavSidebar() {
         <p>
           API:{" "}
           <code className="rounded bg-muted px-1 py-0.5 text-[10px]">
-            {process.env.NEXT_PUBLIC_WG_MANAGER_API ??
-              "http://127.0.0.1:8000"}
+            {process.env.NEXT_PUBLIC_WG_MANAGER_API ?? "/api/proxy (BFF → mTLS)"}
           </code>
         </p>
       </div>

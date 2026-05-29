@@ -4,9 +4,9 @@
   "private": true,
   "description": "Next.js dashboard for the wg-manager control plane.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1 -p 3100",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1 -p 3100",
     "lint": "next lint",
     "test": "vitest run",
     "test:watch": "vitest"

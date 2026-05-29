@@ -9,26 +9,47 @@ mirrored in `lib/types.ts` in the same commit.
 ```bash
 # from the repo root
 make ui-install            # npm install inside web/
-make run                   # the API on 127.0.0.1:8000 (in another terminal)
+make tls-issue-dev         # mint throwaway TLS certs (once, gitignored)
+make run                   # the API on 127.0.0.1:8000 — needs TLS_* env;
+                           # see root README "Running with TLS"
 make worker                # the Celery worker (in another terminal)
 
-cp web/.env.example web/.env.local   # optional — defaults to localhost:8000
-make ui-dev                # next dev on 127.0.0.1:3000
+cp web/.env.example web/.env.local   # configure the BFF proxy
+make ui-dev                # next dev on 127.0.0.1:3100
 ```
 
-Open <http://127.0.0.1:3000>. The sidebar covers every resource the
+Open <http://127.0.0.1:3100>. The sidebar covers every resource the
 control plane exposes; each page provides inline forms plus the
 mutating actions (register, reprovision, discover).
+
+## How the dashboard talks to the API (BFF proxy)
+
+The API listener requires **mTLS** (Phase 2d CP2 — plain HTTP is no
+longer served). Browsers can't easily present a client certificate, so
+the dashboard ships a **Backend-For-Frontend proxy**: a Node-runtime
+Route Handler at `app/api/proxy/[...path]/route.ts` that runs *inside
+Next.js*, holds the client cert/key on the server side only, and
+forwards every dashboard call over mTLS to the upstream FastAPI. The
+browser only ever speaks plain HTTP to `localhost:3100` and never sees
+a client certificate.
+
+Configure the four `WG_MANAGER_API_*` vars in `web/.env.local` (see
+`web/.env.example` for defaults pointing at `make tls-issue-dev`
+outputs). Set `NEXT_PUBLIC_WG_MANAGER_API` only when you want to
+bypass the BFF — e.g. against a non-mTLS staging host.
 
 ## Layout
 
 ```
 web/
 ├── app/              # App-Router pages — one folder per route
+│   └── api/proxy/    # BFF mTLS proxy — see "How the dashboard talks
+│                     # to the API" above
 ├── components/       # Reusable UI (forms, tables, sidebar, task poller)
 │   └── ui/           # shadcn-style primitives (Button, Card, Input, …)
 ├── lib/
 │   ├── api.ts        # Typed fetch wrapper. Single source of truth for HTTP.
+│   ├── proxy.ts      # BFF proxy core — request forwarding + mTLS fetcher
 │   ├── types.ts      # TS shapes mirroring backend pydantic schemas.
 │   └── utils.ts      # cn() + small formatters.
 └── __tests__/        # Vitest unit tests
