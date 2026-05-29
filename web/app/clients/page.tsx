@@ -427,7 +427,7 @@ function RegisterClientForm({
   const mutation = useMutation({
     mutationFn: () => {
       if (sshKeyId === "" || serverId === "") {
-        throw new Error("SSH key and server are required");
+        throw new Error("SSH role and server are required");
       }
       return api.registerClient({
         name: name.trim(),
@@ -503,7 +503,7 @@ function RegisterClientForm({
             />
           </div>
           <div className="flex flex-col gap-1">
-            <Label htmlFor="cli-key">SSH key</Label>
+            <Label htmlFor="cli-key">SSH role</Label>
             <select
               id="cli-key"
               className="h-9 rounded-md border border-border bg-background px-2 text-sm"
@@ -514,7 +514,7 @@ function RegisterClientForm({
               required
             >
               <option value="" disabled>
-                {keysQuery.data?.length ? "Pick an SSH key…" : "No SSH keys"}
+                {keysQuery.data?.length ? "Pick an SSH role…" : "No SSH roles"}
               </option>
               {keysQuery.data?.map((k) => (
                 <option key={k.id} value={k.id}>
@@ -808,7 +808,7 @@ function EditClientForm({
             />
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
-            <Label htmlFor="edit-cli-key">SSH key</Label>
+            <Label htmlFor="edit-cli-key">SSH role</Label>
             <select
               id="edit-cli-key"
               className="h-9 rounded-md border border-border bg-background px-2 text-sm"
@@ -822,7 +822,7 @@ function EditClientForm({
             >
               {/* Manual clients are allowed to leave this unset — keep the
                   empty option available so the operator can save other
-                  edits without being forced to bind an SSH key. */}
+                  edits without being forced to bind an SSH role. */}
               {client.is_manual ? (
                 <option value="">
                   (none — manual client)

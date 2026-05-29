@@ -177,7 +177,7 @@ Transit key's data-key client-side for a short TTL (Vault's
 
 ---
 
-### Phase 2c — Eliminate stored SSH keys (Vault SSH CA) `[~]`
+### Phase 2c — Eliminate stored SSH keys (Vault SSH CA) `[x]` (shipped 2026-05-29)
 
 **Status snapshot.**
 - **Checkpoint 1 `[x]`** (2026-05-27) — `wg_manager.ssh_ca` module with
@@ -405,6 +405,36 @@ Transit key's data-key client-side for a short TTL (Vault's
   with the container warm. Docs sweep (README + dashboard "how to
   add a server" rewrite around roles) is the only piece left for
   Phase 2c — tracked as CP5.1 follow-up.
+- **Checkpoint 5.1 `[x]`** (2026-05-29) — Docs sweep around roles.
+  README's SSH CA section reframed from "in progress" to "shipped"
+  with an explicit "How to add a server" walkthrough that names
+  the role-first workflow (`make ssh-ca-bootstrap`; SSH Roles →
+  Add; Servers → Register; the CA-trust precondition on the
+  target host) and points at
+  [`docs/migrations/2c-ssh-ca.md`](docs/migrations/2c-ssh-ca.md).
+  The Encryption-at-rest section narrows its persisted-secret
+  list (manual-client WireGuard keys only — the SSH key columns
+  are gone) and drops the stale per-row "encrypted badge" bullet
+  on the SSH Keys table. SSH config export documentation
+  clarifies `IdentityFile ~/.ssh/<role-name>` is a *naming
+  convention* (the operator's own key, not a wg-manager-managed
+  one). Tests section now points at `make test-e2e` for the CP5
+  acceptance suite. SECURITY.md's "Current posture" table flips
+  the SSH-at-rest + host-key rows to "Phase 2c shipped" and
+  reframes "Highest residual risk" around the still-open Phase 2d
+  surface (no API auth, plaintext browser↔API and app↔MySQL).
+  THREAT_MODEL.md marks T-1 / T-2 / T-4 / T-5 / T-6 closed in
+  CP4.4 and T-3 closed in Phase 2b; the system-overview diagram
+  swaps "SSH (key)" for "SSH cert" and annotates the still-
+  plaintext segments. Dashboard sweep: NavSidebar label
+  "SSH Keys" → "SSH Roles" to match the page title; every form
+  label (`Pick an SSH key…`, `Register form select label`, edit-
+  form select label, validation error string, the rotate-cert
+  tooltip on `web/app/servers/page.tsx`) renamed to "SSH role"
+  so the dashboard wording matches the schema reality. Backend
+  API field `ssh_key_id` left unchanged — that's a wire contract;
+  only the human-facing copy moved. vitest 25/25 green after the
+  sweep. Phase 2c header flipped `[x]`.
 
 **Closes.** T-5, T-6 (and a stronger form of T-1: there's nothing left to
 steal).

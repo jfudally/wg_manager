@@ -26,46 +26,60 @@ so in your first email and I will provision a key.
 The full STRIDE model lives at
 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). The short version:
 
-- **Highest-impact asset.** SSH private keys used to provision managed
-  hosts. Compromise = root on every node under management.
-- **Realistic attacker.** Read-only access to the MySQL state store
-  (leaked backup, SQLi, rogue insider).
-- **Highest residual risk today.** wg-manager v1 stores SSH private keys
-  as plaintext PEM in MySQL. Phase 2b of [`ROADMAP.md`](ROADMAP.md)
-  replaces this with Vault Transit envelope encryption; Phase 2c
-  eliminates the storage of SSH keys altogether by switching to
-  Vault-signed short-lived certificates.
+- **Highest-impact asset historically.** SSH private keys used to
+  provision managed hosts. Compromise = root on every node under
+  management. wg-manager *no longer stores SSH private keys* as of
+  Phase 2c CP4.4 — the `sshkey` table dropped the ciphertext
+  columns in Alembic 0008, and every worker connection mints a
+  short-lived Vault-signed user cert in memory instead.
+- **Realistic attacker today.** Network attacker on the unencrypted
+  segments still open in Phase 2 (browser ↔ API, app ↔ MySQL).
+  Closes in Phase 2d (TLS / mTLS everywhere via Vault PKI).
+- **Highest residual risk today.** The API has no authentication;
+  the only thing keeping unauthenticated mutations out is the bind
+  to `127.0.0.1`. Closes in Phase 2d.
 
-## Current posture (v1)
+## Current posture
 
-These are the things you should know before deploying wg-manager today.
-They are not bugs — they are the explicit limits of what v1 set out to
-build — but you should not run v1 against anything you care about.
+These are the things you should know before deploying wg-manager
+today. They are not bugs — they are the explicit limits of what the
+current phase set out to build — but you should not run wg-manager
+against anything you care about until the *Closed in* column has
+shipped for every row.
 
-| Concern                          | v1 state                                   | Closed in   |
-| -------------------------------- | ------------------------------------------ | ----------- |
-| SSH private keys at rest         | Plaintext PEM in `sshkey.private_key`      | Phase 2b/2c |
-| SSH host-key verification        | TOFU (`paramiko.AutoAddPolicy`)            | Phase 2c    |
-| API authentication               | None (bound to `127.0.0.1` only)           | Phase 2d    |
-| App ↔ MySQL traffic              | Plaintext                                  | Phase 2d    |
-| Audit logging of API mutations   | None beyond app logs                       | Phase 2e    |
-| Supply-chain verification (SBOM, signed builds) | None                          | Phase 2e    |
+| Concern                          | State                                       | Closed in   |
+| -------------------------------- | ------------------------------------------- | ----------- |
+| SSH private keys at rest         | Not stored — Vault SSH CA mints per session | **Phase 2c (shipped)** |
+| SSH host-key verification        | `KnownHostsCAPolicy` — host cert chain      | **Phase 2c (shipped)** |
+| Manual-client WireGuard keys at rest | Vault Transit envelope-encrypted        | **Phase 2b (shipped)** |
+| API authentication               | None (bound to `127.0.0.1` only)            | Phase 2d    |
+| App ↔ MySQL traffic              | Plaintext                                   | Phase 2d    |
+| Audit logging of API mutations   | None beyond app logs                        | Phase 2e    |
+| Supply-chain verification (SBOM, signed builds) | None                           | Phase 2e    |
 
-## Hardening recommendations for v1 deployments
+## Hardening recommendations for current deployments
 
-If you must run v1 before Phase 2 lands:
+Even with Phase 2b + 2c shipped, Phase 2d (auth + TLS) and 2e
+(supply chain + audit) are still ahead. If you must run today:
 
 1. Keep the API bound to `127.0.0.1` and front it with `ssh -L` or a
    tightly scoped reverse proxy with auth.
 2. Restrict the MySQL user to the smallest grant set that still works
    (no `FILE`, no `SUPER`).
 3. Take encrypted MySQL backups (`mysqldump | age -r …`) and audit who
-   can read them. A leaked backup is equivalent to a host compromise.
-4. Use a **dedicated** SSH key per managed fleet so blast radius is
-   bounded if the DB does leak.
-5. Set passphrases on the SSH private keys even though the passphrase is
-   stored next to them — it stops `cat sshkey.private_key | ssh -i -`
-   trivial use. (Not real protection; Phase 2b fixes this properly.)
+   can read them. A leaked backup no longer leaks SSH keys (Phase 2c)
+   but still exposes manual-client WireGuard key ciphertext + every
+   server/peer endpoint — bad enough.
+4. Run a **production** Vault, not the dev container — the dev
+   container is in-memory and wipes on restart. See
+   [`docs/vault-cookbook.md`](docs/vault-cookbook.md) for the
+   production-Vault story (file/raft storage, auto-unseal, audit
+   log shipping).
+5. Tighten the SSH CA roles' `allowed_users` and `allowed_domains`
+   from their dev-friendly defaults to the specific accounts and
+   FQDNs in use. The defaults cover cloud-image accounts (`ubuntu`,
+   `ec2-user`, `azureuser`, …) for first-boot convenience; that's
+   wider than a production deployment should accept.
 
 ## Hall of thanks
 

@@ -311,7 +311,7 @@ function ServerTable({
                   size="sm"
                   onClick={() => rotateHostCert.mutate(s.id)}
                   disabled={rotateHostCert.isPending}
-                  title="Re-mint and install this server's SSH host cert (requires the server's SSH key to be in CA mode — see the SSH keys page)"
+                  title="Re-mint and install this server's SSH host cert from the Vault SSH CA"
                 >
                   Rotate cert
                 </Button>
@@ -421,7 +421,7 @@ function RegisterServerForm({
 
   const mutation = useMutation({
     mutationFn: () => {
-      if (sshKeyId === "") throw new Error("Pick an SSH key first");
+      if (sshKeyId === "") throw new Error("Pick an SSH role first");
       const trimmedSubnet = subnet.trim();
       return api.registerServer({
         hostname: hostname.trim(),
@@ -536,7 +536,7 @@ function RegisterServerForm({
             />
           </div>
           <div className="flex flex-col gap-1 md:col-span-2">
-            <Label htmlFor="srv-key">SSH key</Label>
+            <Label htmlFor="srv-key">SSH role</Label>
             <select
               id="srv-key"
               className="h-9 rounded-md border border-border bg-background px-2 text-sm"
@@ -548,8 +548,8 @@ function RegisterServerForm({
             >
               <option value="" disabled>
                 {keysQuery.data?.length
-                  ? "Pick an SSH key…"
-                  : "No SSH keys registered — add one first"}
+                  ? "Pick an SSH role…"
+                  : "No SSH roles registered — add one first"}
               </option>
               {keysQuery.data?.map((k) => (
                 <option key={k.id} value={k.id}>
@@ -696,7 +696,7 @@ function EditServerForm({
             />
           </div>
           <div className="flex flex-col gap-1">
-            <Label htmlFor="edit-key">SSH key</Label>
+            <Label htmlFor="edit-key">SSH role</Label>
             <select
               id="edit-key"
               className="h-9 rounded-md border border-border bg-background px-2 text-sm"

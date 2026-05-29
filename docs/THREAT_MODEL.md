@@ -12,39 +12,46 @@ API, persists state in MySQL, runs provisioning jobs in Celery workers
 backed by Valkey, and ships a Next.js dashboard.
 
 ```
-┌──────────────┐  HTTPS    ┌──────────────┐  SQL/TLS   ┌─────────┐
+┌──────────────┐  HTTP*    ┌──────────────┐  SQL*      ┌─────────┐
 │  Operator    │──────────►│  FastAPI     │───────────►│ MySQL   │
 │  (browser /  │           │  API +       │            └─────────┘
-│   CLI)       │           │  Celery      │  SSH (key)  ┌─────────┐
+│   CLI)       │           │  Celery      │  SSH cert   ┌─────────┐
 └──────────────┘           │  worker      │────────────►│ managed │
                            └──────┬───────┘             │ host    │
                                   │                     └─────────┘
-                                  │ AppRole / mTLS
+                                  │ token (today)
+                                  │ AppRole / mTLS (Phase 2e)
                                   ▼
                            ┌──────────────┐
-                           │ HashiCorp    │
-                           │ Vault        │
+                           │ HashiCorp    │ ←── SSH CA + Transit
+                           │ Vault        │     (Phase 2b + 2c)
                            └──────────────┘
+
+* still plaintext; Phase 2d wraps both in TLS / mTLS via Vault PKI.
 ```
+
+The worker → managed-host arrow no longer carries a stored SSH key:
+Phase 2c mints a short-lived Vault-signed user cert per session and
+validates the host cert chain via
+[`KnownHostsCAPolicy`](../src/wg_manager/ssh.py) (no TOFU).
 
 ## 2. Assets (ranked by impact if compromised)
 
 | ID  | Asset                                             | Impact of disclosure                          |
 | --- | ------------------------------------------------- | --------------------------------------------- |
-| A-1 | SSH private keys used to provision managed hosts  | Root on every managed node                    |
+| A-1 | SSH access path to managed hosts                  | Root on every managed node. *Asset shape changed in Phase 2c:* no longer a stored key — now the Vault SSH CA + the per-session minted cert. |
 | A-2 | WireGuard private keys (server + manual clients)  | Decrypt of traffic; impersonation of peer     |
 | A-3 | API itself (any unauthenticated mutation)         | Add rogue peers, harvest configs              |
-| A-4 | Vault unseal keys / root token (when introduced)  | Total compromise of all of the above          |
-| A-5 | MySQL backups                                     | Same as DB read access (today: == A-1 + A-2)  |
+| A-4 | Vault unseal keys / root token                    | Total compromise of all of the above          |
+| A-5 | MySQL backups                                     | Manual-client WireGuard key ciphertext + every endpoint; Phase 2c removed SSH keys from this surface |
 | A-6 | Operator workstation / browser session            | API access at operator's privilege            |
 
 ## 3. Trust boundaries
 
-- **B-1.** Browser ↔ FastAPI (today plain HTTP on 127.0.0.1; planned mTLS).
-- **B-2.** FastAPI ↔ MySQL (today plain TCP; planned TLS + cert auth).
-- **B-3.** FastAPI / worker ↔ Vault (planned mTLS + AppRole).
-- **B-4.** Worker ↔ managed host (SSH; today TOFU host keys, planned host
-  certificates).
+- **B-1.** Browser ↔ FastAPI (today plain HTTP on 127.0.0.1; planned mTLS in Phase 2d).
+- **B-2.** FastAPI ↔ MySQL (today plain TCP; planned TLS + cert auth in Phase 2d).
+- **B-3.** FastAPI / worker ↔ Vault (today token-auth over plain HTTP; planned mTLS + AppRole in Phase 2e).
+- **B-4.** Worker ↔ managed host (SSH; **Phase 2c shipped**: Vault-signed short-lived user certs in both directions, host cert chain enforced via `KnownHostsCAPolicy`, no TOFU).
 - **B-5.** Operator ↔ managed host (post-provision; out of scope — wg-manager
   ends at writing `wg0.conf`).
 
@@ -67,18 +74,18 @@ actors who can mount it, and the roadmap phase that closes it. See
 
 | ID   | STRIDE | Description                                                                         | Assets         | Actor      | Closed by  |
 | ---- | ------ | ----------------------------------------------------------------------------------- | -------------- | ---------- | ---------- |
-| T-1  | I      | SSH private keys readable from a MySQL dump or read-only DB access                  | A-1            | U-3        | Phase 2b   |
-| T-2  | I      | SSH passphrase stored next to the key it protects (defeats the passphrase entirely) | A-1            | U-3        | Phase 2b   |
-| T-3  | I      | WireGuard private keys for manual clients readable from DB                          | A-2            | U-3        | Phase 2b   |
-| T-4  | I      | SSH key material leaks through error messages or logs                               | A-1            | U-3, U-4   | Phase 2b   |
-| T-5  | T      | TOFU host-key acceptance (`AutoAddPolicy`) — MITM at first registration silently owns the channel | A-1, A-2 | U-2 | Phase 2c   |
-| T-6  | I      | Long-lived SSH keys remain valid forever even when no longer needed                 | A-1            | U-3        | Phase 2c   |
+| T-1  | I      | SSH private keys readable from a MySQL dump or read-only DB access                  | A-1            | U-3        | **Closed in Phase 2c CP4.4** — `sshkey.private_key_ct` dropped (Alembic 0008); per-session minted certs replaced stored keys entirely. |
+| T-2  | I      | SSH passphrase stored next to the key it protects (defeats the passphrase entirely) | A-1            | U-3        | **Closed in Phase 2c CP4.4** — `sshkey.passphrase_ct` dropped together with the key column. |
+| T-3  | I      | WireGuard private keys for manual clients readable from DB                          | A-2            | U-3        | **Closed in Phase 2b** — Vault Transit envelope-encrypted; ciphertext-only at rest. |
+| T-4  | I      | SSH key material leaks through error messages or logs                               | A-1            | U-3, U-4   | **Closed in Phase 2c CP4.4** — no SSH key material to leak. |
+| T-5  | T      | TOFU host-key acceptance (`AutoAddPolicy`) — MITM at first registration silently owns the channel | A-1, A-2 | U-2 | **Closed in Phase 2c CP4.4** — `KnownHostsCAPolicy` enforces that every host cert chain back to the Vault CA the worker minted its user cert against. |
+| T-6  | I      | Long-lived SSH keys remain valid forever even when no longer needed                 | A-1            | U-3        | **Closed in Phase 2c CP4.4** — user certs default to 5-minute TTL; the long-lived asset doesn't exist. |
 | T-7  | S, E   | API has no auth — anyone with network access can register peers, rotate keys        | A-3            | U-2        | Phase 2d   |
-| T-8  | I      | Browser ↔ API traffic in cleartext (cookies, tokens, config bodies)                 | A-1, A-2, A-3  | U-2        | Phase 2d   |
-| T-9  | I      | App ↔ MySQL traffic in cleartext on the host network                                | A-1, A-2       | U-2        | Phase 2d   |
+| T-8  | I      | Browser ↔ API traffic in cleartext (cookies, tokens, config bodies)                 | A-2, A-3       | U-2        | Phase 2d   |
+| T-9  | I      | App ↔ MySQL traffic in cleartext on the host network                                | A-2            | U-2        | Phase 2d   |
 | T-10 | T      | Malicious dependency pulled at build time (paramiko, hvac, …)                       | All            | U-5        | Phase 2e   |
 | T-11 | R      | Operator actions are not audit-logged — no forensic trail after an incident         | —              | U-1        | Phase 2e   |
-| T-12 | D      | A single dead host on `discover-all` could hang every worker                        | Service uptime | U-4        | Already closed in v1 (fail-soft discovery, `connect_timeout`) |
+| T-12 | D      | A single dead host on `discover-all` could hang every worker                        | Service uptime | U-4        | Closed in Phase 1 (fail-soft discovery, `connect_timeout`) |
 
 ## 6. Out of scope
 

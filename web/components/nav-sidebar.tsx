@@ -11,7 +11,7 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Overview" },
-  { href: "/ssh-keys", label: "SSH Keys" },
+  { href: "/ssh-keys", label: "SSH Roles" },
   { href: "/servers", label: "Servers" },
   { href: "/clients", label: "Clients" },
   { href: "/discovered-peers", label: "Discovered Peers" },
