@@ -216,11 +216,18 @@ class TestMakeBackend:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Refuse to construct a LocalDevBackend with no key — a Fernet with
-        an implicit/random key would silently lose every blob across restart."""
+        an implicit/random key would silently lose every blob across restart.
+
+        Constructs ``Settings`` with ``_env_file=None`` so pydantic-settings
+        skips the project ``.env`` fallback; otherwise a developer's local
+        ``CRYPTO_LOCAL_DEV_KEY=…`` line silently re-supplies the key after
+        :meth:`monkeypatch.delenv` removes it from ``os.environ``, masking
+        the guard this test exists to pin.
+        """
         monkeypatch.setenv("CRYPTO_BACKEND", "local")
         monkeypatch.delenv("CRYPTO_LOCAL_DEV_KEY", raising=False)
         with pytest.raises(ValueError, match="CRYPTO_LOCAL_DEV_KEY"):
-            make_backend(Settings())
+            make_backend(Settings(_env_file=None))
 
 
 # ---------------------------------------------------------------------------
