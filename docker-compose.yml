@@ -49,6 +49,28 @@ services:
       retries: 10
       start_period: 5s
 
+  # Phase 2c CP5 — dockerised sshd that the ``tests/e2e/`` suite
+  # provisions against. Gated behind the ``e2e`` compose profile so
+  # ``make db-up`` doesn't pull it in; ``make e2e-up`` (or pytest's
+  # auto-fixture) brings it up explicitly. The bind-mounted volume
+  # at ``/wg-manager-e2e/`` carries the per-session CA pubkey + host
+  # cert that the test fixture writes after Vault bootstraps; see
+  # ``tests/e2e/Dockerfile`` for the layout.
+  sshd-e2e:
+    build:
+      context: ./tests/e2e
+      dockerfile: Dockerfile
+    image: wg-manager/sshd-e2e:latest
+    container_name: wg_manager_sshd_e2e
+    profiles: ["e2e"]
+    ports:
+      # Host port 2222 → container 22. Keeps it out of the way of the
+      # operator's own sshd on macOS (port 22).
+      - "2222:22"
+    volumes:
+      - wg_manager_sshd_e2e_state:/wg-manager-e2e
+
 volumes:
   wg_manager_mysql_data:
   wg_manager_valkey_data:
+  wg_manager_sshd_e2e_state:

@@ -370,8 +370,41 @@ Transit key's data-key client-side for a short TTL (Vault's
     224/225 green (1 unrelated pre-existing crypto failure carried
     forward from CP4.3); dashboard `vitest` 25/25 green;
     `tsc --noEmit` clean.
-- **Checkpoint 5 `[ ]`** — Acceptance: end-to-end provision against a
-  dockerised sshd using only Vault-signed certs.
+- **Checkpoint 5 `[x]`** (2026-05-29) — Acceptance: dockerised
+  sshd suite under `tests/e2e/` proves the cert-based SSH path
+  works against a real OpenSSH server using only Vault-signed
+  certs. Five tests pin the contract:
+  - `test_happy_path.py` (2 cases) — mints a user cert against the
+    Vault e2e CA, installs a Vault-signed host cert on the
+    container, opens a real `SSHRunner` session, and round-trips
+    both `run("echo …")` and `sudo("id -u")` (proves the sudo
+    surface the production task layer relies on works against a
+    real sshd).
+  - `test_cert_ttl.py` — 5-second-TTL role, mint, connect (passes),
+    sleep 7s, reconnect → `SSHConnectionError` at auth time.
+  - `test_principal_mismatch.py` — Vault signs a cert with
+    `principals=[otheruser]` via the auxiliary multi-user role;
+    sshd rejects on the `wguser` connection because the cert's
+    `valid_principals` doesn't list it.
+  - `test_attacker_ca.py` — `LocalDevSSHCA.generate()` stands in
+    for an attacker CA, signs a fresh host cert against the
+    container's host pubkey, fixture installs it; client trusts
+    only the Vault CA so `KnownHostsCAPolicy` rejects pre-auth.
+  Infrastructure: `tests/e2e/Dockerfile` (debian-slim + openssh +
+  passwordless-sudo `wguser`, entrypoint regenerates host keys and
+  primes the bind-mounted cert placeholders); `sshd-e2e` compose
+  service under `profiles: [e2e]` so `make db-up` doesn't pull it
+  in; `make e2e-up` / `make e2e-down` / `make test-e2e` Make
+  targets; `e2e` pytest marker auto-applied via the
+  `tests/e2e/conftest.py` collection hook; `pyproject.toml`
+  `addopts = "-m 'not e2e'"` keeps the fast `make test` invocation
+  hermetic. Acceptance for Phase 2c's "grep for persisted-key
+  paramiko usage in src/ returns nothing" criterion re-verified
+  (`grep -rn 'Ed25519Key.from_private_key\|RSAKey.from_private_key'
+  src/` exits 1). Fast suite still 225/225; e2e suite 5/5 in ~13s
+  with the container warm. Docs sweep (README + dashboard "how to
+  add a server" rewrite around roles) is the only piece left for
+  Phase 2c — tracked as CP5.1 follow-up.
 
 **Closes.** T-5, T-6 (and a stronger form of T-1: there's nothing left to
 steal).

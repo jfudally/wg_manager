@@ -42,3 +42,14 @@ packages = ["src/wg_manager"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Phase 2c CP5 introduces the ``e2e`` marker for the dockerised-sshd
+# acceptance suite under ``tests/e2e/``. The default invocation
+# (``make test``) deselects ``e2e`` so the fast suite stays hermetic
+# and free of docker / Vault dependencies; ``make test-e2e`` opts in
+# explicitly. Tests in the e2e bucket get the marker auto-applied via
+# the ``tests/e2e/conftest.py`` hook so individual test files don't
+# need to repeat ``@pytest.mark.e2e`` on every function.
+markers = [
+    "e2e: end-to-end acceptance tests that require a live dockerised sshd + Vault dev (Phase 2c CP5)",
+]
+addopts = "-m 'not e2e'"

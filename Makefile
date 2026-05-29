@@ -1,4 +1,4 @@
-.PHONY: help install test run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap
+.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap e2e-up e2e-down e2e-logs
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -12,7 +12,11 @@ PORT ?= 8000
 help:
 	@echo "Targets:"
 	@echo "  install        Install project + dev dependencies into .venv"
-	@echo "  test           Run pytest"
+	@echo "  test           Run pytest (fast suite — e2e bucket excluded by default)"
+	@echo "  test-e2e       Run the Phase 2c CP5 e2e suite against docker sshd + Vault"
+	@echo "  e2e-up         Build + start the e2e sshd container (host port 2222)"
+	@echo "  e2e-down       Stop the e2e sshd container and drop its volume"
+	@echo "  e2e-logs       Tail the e2e sshd container logs"
 	@echo "  run            Start the FastAPI app with uvicorn (HOST=$(HOST) PORT=$(PORT))"
 	@echo "  worker         Start a Celery worker for the provisioning queue"
 	@echo "  db-up          Start MySQL + Valkey via docker compose"
@@ -138,3 +142,26 @@ vault-smoke:
 ssh-ca-bootstrap:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
 		$(PYTHON) scripts/ssh_ca_bootstrap.py
+
+# ---------------------------------------------------------------------------
+# Phase 2c CP5 — dockerised-sshd end-to-end suite
+# ---------------------------------------------------------------------------
+#
+# The e2e suite needs both Vault dev (``make vault-up``) and the
+# dedicated sshd container (``make e2e-up``) running. ``make
+# test-e2e`` brings the sshd container up itself via the conftest
+# fixture, but Vault must already be running. The fast suite (``make
+# test``) stays hermetic and excludes the bucket via the ``-m 'not
+# e2e'`` ``addopts`` in ``pyproject.toml``.
+
+test-e2e:
+	$(PYTEST) tests/e2e -m e2e --override-ini="addopts="
+
+e2e-up:
+	docker compose --profile e2e up -d --build sshd-e2e
+
+e2e-down:
+	docker compose --profile e2e down -v sshd-e2e
+
+e2e-logs:
+	docker compose --profile e2e logs -f sshd-e2e
