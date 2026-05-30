@@ -10,6 +10,77 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2d CP3.4 — `/certs` HTTP surface + dashboard page.** New
+  `wg_manager.routers.certs` exposes four endpoints over the CP3.3
+  audit registry: `GET /certs/whoami` (any operator) returns the
+  cert subject the API actually saw on the live TLS scope plus the
+  resolved `Operator` row — a 200 here is the visible proof a
+  freshly-imported PKCS#12 was accepted by the mTLS listener and
+  matched against an active operator row; `GET /certs` (admin or
+  auditor) lists every audit row, live + revoked; `POST /certs`
+  (admin) mints a new leaf via the configured `PKIBackend` and
+  records the row in the same transaction — the private key is
+  surfaced exactly once in the response body and `dashboard` certs
+  additionally carry a base64 PKCS#12 the browser saves as a single
+  import file; `POST /certs/{id}/revoke` (admin) flips the row and
+  tells the backend CRL, idempotent so a dashboard retry after a
+  flaky network is safe. The `certs_password` / `operator_cn` /
+  default-SAN logic mirrors `wg-manager certs issue` byte-for-byte so
+  the CLI and the API produce identical leafs. Role gating uses
+  router-local `_RequireAdmin` / `_RequireAdminOrAuditor` deps
+  composed on a single `_get_operator` reader for testability.
+  Dashboard: new `/certificates` page with a "Who am I?" splash,
+  an inventory table (live/revoked badges, per-row Revoke action
+  visible only to admins), an Issue form (cert type → CN → SANs →
+  TTL → operator CN → optional PKCS#12 password), and a post-issue
+  artefact-download panel (cert / key / chain / PKCS#12 buttons).
+  New nav entry "Certificates". Tests: 18 router tests
+  (`tests/test_certs_api.py` — whoami × 2, list × 3, issue × 7,
+  revoke × 6) covering each endpoint's happy path, role gating, and
+  failure modes; 6 vitest specs
+  (`web/__tests__/certificates.test.tsx`) covering the splash, the
+  inventory + revoke wiring, and the admin-vs-auditor affordance
+  surfaces. Backend `pytest` 348/348 green; vitest 35/35.
+- **Phase 2d CP3.3 — `certificate` table + `wg-manager certs` CLI.**
+  Alembic 0011 adds a metadata-only audit registry keyed on the
+  cert's decimal-string serial (BigInteger / SQLite INT64 overflow
+  on the 160-bit X.509 serial drove the switch from BigInteger). New
+  `wg-manager certs issue --type {api,cli,dashboard,mysql}` wraps
+  `wg_manager.pki`: writes the leaf PEM + private key + chain to
+  operator-supplied paths (`0o600` on the key), records the audit
+  row in the same transaction, and refuses to issue `cli`/`dashboard`
+  certs for a CN that isn't a registered `Operator`. `dashboard` mints
+  a browser-importable PKCS#12 archive via `--out-pkcs12`. New
+  `wg-manager certs revoke --serial` calls
+  `PKIBackend.revoke_cert` and flips the row's `revoked` / `revoked_at`
+  flags atomically; `wg-manager certs list` prints the table as
+  JSON. New `wg-manager operators add/list` is the direct-DB
+  bootstrap glue that closes the chicken-and-egg between cert
+  issuance (which needs an Operator row) and the API (which needs a
+  registered client cert) without going through the CP3.2 env
+  bootstrap. Retires `scripts/issue_dev_tls.py` + `make tls-issue-dev`;
+  README + `.env.example` + `web/.env.example` + `__main__.py` error
+  message rewritten around the new flow.
+- **Phase 2d CP3.2 — operator-registry middleware tightening.**
+  `wg_manager.auth.MTLSAuthMiddleware` now reads the CP3.1
+  `operator` table on every cert-bearing request: unknown CN → 401
+  `operator not registered`; `status='disabled'` → 401 `operator
+  disabled`; `active` → admission with the resolved (detached)
+  `Operator` snapshot stashed on `request.state.operator` alongside
+  `cert_subject`. New `AUTH_BOOTSTRAP_OPERATOR_CN` / `_ROLE` env
+  knobs let the very first cert self-register so an empty registry
+  doesn't lock the operator out. New `require_role(*OperatorRole)`
+  FastAPI dep returns 403 `role not permitted` when the row's role
+  isn't in the allow-list; empty allow-list raises `ValueError` at
+  factory build so a typo can't silently turn the gate into a
+  passthrough.
+- **Phase 2d CP3.1 — `operator` table.** Alembic 0010 adds the
+  CP3.2 mTLS allow-list registry with a unique-CN index, a
+  three-tier `OperatorRole` enum (admin / operator / auditor —
+  defaults to `operator` for principle-of-least-privilege), and an
+  `OperatorStatus` enum (active / disabled — disabling preserves the
+  audit-log linkage).
+
 - **Phase 2d checkpoint 1 — `wg_manager.pki` module.** Internal X.509
   substrate behind a `PKIBackend` Protocol with `LocalDevPKI` (in-
   process EC P-256 hierarchy via the `cryptography` library, for
@@ -23,11 +94,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   arriving without a Vault-signed client certificate when
   `TLS_REQUIRED=true`. `python -m wg_manager` is the canonical entry
   point and refuses to start without all three of `TLS_CERT_PEM` /
-  `TLS_KEY_PEM` / `TLS_CA_BUNDLE_PEM`. `make tls-issue-dev` mints
-  throwaway dev PEMs under `tls/` (gitignored) — production uses
-  certs issued from the Vault PKI above. The previous
-  `uvicorn --reload` shape is removed; there is no longer a
-  sanctioned wg-manager command that serves plain HTTP.
+  `TLS_KEY_PEM` / `TLS_CA_BUNDLE_PEM`. The throwaway
+  `make tls-issue-dev` helper that originally shipped with CP2 has
+  been retired — Phase 2d CP3.3's `wg-manager certs issue` is the
+  production-shaped replacement (it also records the issuance in the
+  `certificate` audit table). The previous `uvicorn --reload` shape
+  is removed; there is no longer a sanctioned wg-manager command
+  that serves plain HTTP.
 - **Dashboard BFF mTLS proxy.** A Node-runtime catch-all Route
   Handler at `web/app/api/proxy/[...path]/route.ts` forwards every
   dashboard call to the (now mTLS-only) API. The client cert/key

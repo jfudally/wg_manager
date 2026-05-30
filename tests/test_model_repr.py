@@ -19,7 +19,17 @@ tracebacks.
 
 from __future__ import annotations
 
-from wg_manager.models import Client, SSHKey
+from datetime import datetime, timezone
+
+from wg_manager.models import (
+    Certificate,
+    CertificateType,
+    Client,
+    Operator,
+    OperatorRole,
+    OperatorStatus,
+    SSHKey,
+)
 
 
 class TestSSHKeyRedaction:
@@ -75,3 +85,71 @@ class TestClientRedaction:
         assert "\n" not in rendered
         assert "laptop" in rendered
         assert "private_key_ct" not in rendered
+
+
+class TestOperatorRedaction:
+    """Operator rows carry no secret material, but the repr discipline still
+    applies: it should fit on one line and identify the row by CN + role +
+    status. CN is the identifier the audit log keys on, so the repr being
+    grep-able for it is the property we want to pin."""
+
+    def test_repr_is_short_and_names_the_row(self) -> None:
+        row = Operator(
+            id=1,
+            cn="ops@wg.local",
+            display_name="Ops Team",
+            role=OperatorRole.admin,
+            status=OperatorStatus.active,
+        )
+        rendered = repr(row)
+        assert "\n" not in rendered
+        assert "ops@wg.local" in rendered
+        assert "admin" in rendered
+        assert "active" in rendered
+
+    def test_repr_handles_optional_display_name(self) -> None:
+        """``display_name`` is nullable; repr must not crash when it's None."""
+        row = Operator(id=2, cn="auditor@wg.local", role=OperatorRole.auditor)
+        rendered = repr(row)
+        assert "\n" not in rendered
+        assert "auditor@wg.local" in rendered
+
+
+class TestCertificateRedaction:
+    """Certificate rows carry metadata only — no cert PEM, no private key
+    — so there is no secret to redact. The repr discipline still applies:
+    one line, identifies the row by serial + type + CN, and surfaces the
+    expiry + revocation flag so a debugger watch window tells the
+    operator at a glance whether the cert is live.
+    """
+
+    def test_repr_is_short_and_names_the_row(self) -> None:
+        row = Certificate(
+            id=1,
+            serial="4242",
+            cert_type=CertificateType.api,
+            common_name="127.0.0.1",
+            sans="127.0.0.1,localhost",
+            not_before=datetime.now(timezone.utc),
+            not_after=datetime.now(timezone.utc),
+        )
+        rendered = repr(row)
+        assert "\n" not in rendered
+        assert "4242" in rendered
+        assert "127.0.0.1" in rendered
+        # api is the cert_type; the enum's value form should land in the repr.
+        assert "api" in rendered
+
+    def test_repr_handles_nullable_operator_id(self) -> None:
+        """Service certs have ``operator_id=None``; repr must not crash."""
+        row = Certificate(
+            id=2,
+            serial="7",
+            cert_type=CertificateType.mysql,
+            common_name="mysql",
+            not_before=datetime.now(timezone.utc),
+            not_after=datetime.now(timezone.utc),
+        )
+        rendered = repr(row)
+        assert "\n" not in rendered
+        assert "mysql" in rendered

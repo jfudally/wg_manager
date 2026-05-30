@@ -44,7 +44,10 @@ def main() -> int:
             file=sys.stderr,
         )
         print(
-            "       Quickest dev path: make tls-issue-dev && "
+            "       Quickest dev path: wg-manager operators add --cn "
+            "dev-operator --role admin && wg-manager certs issue --type "
+            "api --cn 127.0.0.1 --out-cert tls/server.crt --out-key "
+            "tls/server.key --out-chain tls/ca-bundle.crt — then "
             "see README 'Running with TLS'.",
             file=sys.stderr,
         )

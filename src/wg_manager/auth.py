@@ -1,7 +1,7 @@
-"""Phase 2d CP2 mTLS authentication layer.
+"""Phase 2d CP2 + CP3.2 mTLS authentication layer.
 
 This module is the seam between uvicorn's TLS-terminated socket and
-the wg-manager FastAPI handlers. It does three jobs:
+the wg-manager FastAPI handlers. It does four jobs:
 
 1. **Parse** a leaf cert PEM into a frozen :class:`CertSubject` value
    object (``parse_subject_from_pem``).
@@ -9,19 +9,24 @@ the wg-manager FastAPI handlers. It does three jobs:
    us per request (``extract_subject_from_scope``) — uvicorn 0.32+
    surfaces the peer cert chain via the ASGI-TLS extension at
    ``scope["extensions"]["tls"]["client_cert_chain"]``.
-3. **Enforce** the "every request carries a client cert" invariant
-   via :class:`MTLSAuthMiddleware` and the
-   :func:`require_subject` FastAPI dependency.
+3. **Enforce** the "every request carries a client cert *and* the cert
+   belongs to a registered, active operator" invariant via
+   :class:`MTLSAuthMiddleware`. CP3.2 added the registry tightening
+   on top of CP2's bare cert-presence check.
+4. **Yield** the resolved identity to FastAPI handlers via
+   :func:`require_subject` (any active operator) and
+   :func:`require_role` (operator + role allow-list).
 
 The middleware is gated by :attr:`wg_manager.config.Settings.tls_required`
 so the test suite (which uses :class:`starlette.testclient.TestClient`
 and never speaks TLS) can disable it. Production posture is
 ``TLS_REQUIRED=true`` — see ``.env.example``.
 
-CP2 returns a :class:`CertSubject` value object rather than resolving
-to an ``Operator`` row; the row lives in CP3 (Alembic 0009). Keeping
-the seam value-object-shaped now means CP3 can layer the resolver on
-top without rewriting the middleware or the handler dependencies.
+CP3.2 reads the ``operator`` table on every cert-bearing request to
+decide admission. The bootstrap path — controlled by
+:attr:`Settings.auth_bootstrap_operator_cn` — auto-registers the very
+first cert that matches the configured CN, so an empty registry
+doesn't lock the operator out of their own API.
 """
 
 from __future__ import annotations
@@ -29,15 +34,19 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from cryptography import x509
 from fastapi import HTTPException, Request, status
+from sqlalchemy.exc import IntegrityError
+from sqlmodel import Session, select
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
+from wg_manager import db as db_module
 from wg_manager.config import Settings
+from wg_manager.models import Operator, OperatorRole, OperatorStatus
 
 logger = logging.getLogger(__name__)
 
@@ -228,25 +237,38 @@ def extract_subject_from_scope(scope: dict[str, Any]) -> CertSubject | None:
 
 
 class MTLSAuthMiddleware(BaseHTTPMiddleware):
-    """Enforce per-request client-cert auth when ``tls_required=True``.
+    """Enforce per-request client-cert auth + operator-registry admission.
 
-    Three short-circuits:
+    Decision order:
 
     * ``tls_required=False`` — passthrough; sets
-      ``request.state.cert_subject = None``. This is the
-      test / dev posture.
+      ``request.state.cert_subject = None`` and
+      ``request.state.operator = None``. This is the test / dev
+      posture.
     * ``request.method == "OPTIONS"`` — CORS preflight. The browser
       negotiates CORS *before* it sends the cert, so a 401 here
-      breaks the entire dashboard. We let preflight through (it
-      carries no auth-sensitive data) with ``cert_subject = None``.
-    * ``tls_required=True`` and no cert on the scope — return 401
-      directly via :class:`JSONResponse`. We don't raise
-      :class:`AuthError` because middleware runs before FastAPI's
-      exception-handler chain; raising would surface as a 500.
+      breaks the entire dashboard. We let preflight through with both
+      state slots set to ``None``.
+    * ``tls_required=True`` and no cert on the scope — 401 with
+      ``"client cert required"``.
+    * CP3.2: cert present but CN not in the ``operator`` registry —
+      401 with ``"operator not registered"``. The
+      :attr:`Settings.auth_bootstrap_operator_cn` knob can opt one CN
+      into self-register on the first such request.
+    * CP3.2: cert present, row found, but ``status='disabled'`` —
+      401 with ``"operator disabled"``. The distinct body lets the
+      operator distinguish "I forgot to register" from "I was
+      revoked" without grepping the audit log.
+
+    We return :class:`JSONResponse` directly rather than raising
+    :class:`AuthError` because middleware runs before FastAPI's
+    exception-handler chain; raising would surface as a 500.
 
     Happy path stashes the parsed :class:`CertSubject` on
-    ``request.state.cert_subject`` so handlers can read it via
-    :func:`require_subject` or directly off ``request.state``.
+    ``request.state.cert_subject`` and the resolved (detached)
+    :class:`Operator` on ``request.state.operator`` so handlers can
+    read either via :func:`require_subject` / :func:`require_role` or
+    directly off ``request.state``.
     """
 
     def __init__(self, app: ASGIApp, settings: Settings | None = None) -> None:
@@ -264,12 +286,14 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
         self._settings = settings or Settings()
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
-        """Run the three-branch decision before forwarding to the app."""
+        """Run the decision chain before forwarding to the app."""
         if not self._settings.tls_required:
             request.state.cert_subject = None
+            request.state.operator = None
             return await call_next(request)
         if request.method == "OPTIONS":
             request.state.cert_subject = None
+            request.state.operator = None
             return await call_next(request)
         subject = extract_subject_from_scope(dict(request.scope))
         if subject is None:
@@ -277,8 +301,106 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
                 {"detail": "client cert required"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        operator = self._resolve_operator(subject)
+        if operator is None:
+            return JSONResponse(
+                {"detail": "operator not registered"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
+        if operator.status != OperatorStatus.active:
+            return JSONResponse(
+                {"detail": "operator disabled"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
         request.state.cert_subject = subject
+        request.state.operator = operator
         return await call_next(request)
+
+    def _resolve_operator(self, subject: CertSubject) -> Operator | None:
+        """Look up — and optionally bootstrap — the operator for ``subject``.
+
+        Opens a short-lived :class:`Session` against the module-level
+        :data:`wg_manager.db.engine`. The test suite swaps the engine
+        for an in-memory SQLite handle via the ``engine`` fixture, so
+        the same code path is exercised in both modes.
+
+        Returns a *detached* :class:`Operator` instance — we snapshot
+        the row into a plain :class:`Operator` (no session attached)
+        so handlers that read ``request.state.operator`` after the
+        session has closed don't trigger a lazy-load
+        ``DetachedInstanceError``.
+
+        :returns: The resolved operator, or ``None`` when no row
+            exists and the bootstrap path doesn't apply.
+        """
+        with Session(db_module.engine) as session:
+            row = session.exec(
+                select(Operator).where(Operator.cn == subject.common_name)
+            ).first()
+            if row is None:
+                row = self._maybe_bootstrap(session, subject)
+                if row is None:
+                    return None
+            return Operator(
+                id=row.id,
+                cn=row.cn,
+                display_name=row.display_name,
+                role=row.role,
+                status=row.status,
+                created_at=row.created_at,
+            )
+
+    def _maybe_bootstrap(
+        self, session: Session, subject: CertSubject
+    ) -> Operator | None:
+        """Self-register ``subject`` when its CN matches the bootstrap knob.
+
+        The bootstrap path solves the chicken-and-egg gap CP3.1 left:
+        with mTLS enforced and the registry empty, there is no
+        authenticated path to insert the first row. Setting
+        ``AUTH_BOOTSTRAP_OPERATOR_CN`` opts one specific CN into
+        self-register on first contact; every other unknown CN still
+        gets a 401.
+
+        Bootstrap is *not* a "register any first comer" — the CN must
+        match exactly. Operators are expected to unset (or rotate) the
+        env var once the row exists and additional operators are
+        added through the dashboard / CLI follow-on.
+
+        Race condition: two concurrent first requests could both miss
+        the row and both try to insert. The unique CN index on
+        :class:`Operator` would raise :class:`IntegrityError` on the
+        loser; we catch it, re-query, and return the winning row so
+        both requests succeed.
+        """
+        bootstrap_cn = self._settings.auth_bootstrap_operator_cn
+        if not bootstrap_cn or bootstrap_cn != subject.common_name:
+            return None
+        try:
+            role = OperatorRole(self._settings.auth_bootstrap_operator_role)
+        except ValueError:
+            logger.warning(
+                "auth_bootstrap_operator_role %r is not a valid OperatorRole",
+                self._settings.auth_bootstrap_operator_role,
+            )
+            return None
+        row = Operator(
+            cn=subject.common_name,
+            display_name=f"bootstrap:{subject.common_name}",
+            role=role,
+            status=OperatorStatus.active,
+        )
+        session.add(row)
+        try:
+            session.commit()
+            session.refresh(row)
+        except IntegrityError:
+            # Lost the bootstrap race — the row exists now, re-fetch.
+            session.rollback()
+            row = session.exec(
+                select(Operator).where(Operator.cn == subject.common_name)
+            ).first()
+        return row
 
 
 def require_subject(request: Request) -> CertSubject:
@@ -300,11 +422,62 @@ def require_subject(request: Request) -> CertSubject:
     return subject
 
 
+def require_role(*roles: OperatorRole):
+    """Build a FastAPI dependency that admits only the listed roles.
+
+    The factory shape (rather than a single ``role=`` kwarg on
+    :func:`require_subject`) means a handler can declare
+    ``Depends(require_role(OperatorRole.admin, OperatorRole.auditor))``
+    directly. Handlers that don't care about role still use the
+    plain :func:`require_subject` dep — the two APIs compose, they
+    don't replace each other.
+
+    Error mapping:
+
+    * No cert on the request → 401 ``"client cert required"`` (via
+      :func:`require_subject`).
+    * Cert present but no operator stashed (shouldn't happen under
+      ``tls_required=True`` — the middleware admits or rejects
+      atomically — but defensive against a future passthrough mode)
+      → 401 ``"operator unknown"``.
+    * Operator present but role not in ``roles`` → 403
+      ``"role not permitted"``.
+
+    :param roles: Allow-list of :class:`OperatorRole` values. Passing
+        zero roles is operator error and rejected with
+        :class:`ValueError` at factory-build time so a typo can't
+        accidentally turn the gate into a passthrough.
+    :returns: A FastAPI dependency callable that yields the
+        :class:`CertSubject` on success.
+    :raises ValueError: When called with no role arguments.
+    """
+    if not roles:
+        raise ValueError(
+            "require_role() must be called with at least one OperatorRole"
+        )
+    allowed = frozenset(roles)
+
+    def _dep(request: Request) -> CertSubject:
+        subject = require_subject(request)
+        op: Operator | None = getattr(request.state, "operator", None)
+        if op is None:
+            raise AuthError(detail="operator unknown")
+        if op.role not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="role not permitted",
+            )
+        return subject
+
+    return _dep
+
+
 __all__ = [
     "AuthError",
     "CertSubject",
     "MTLSAuthMiddleware",
     "extract_subject_from_scope",
     "parse_subject_from_pem",
+    "require_role",
     "require_subject",
 ]

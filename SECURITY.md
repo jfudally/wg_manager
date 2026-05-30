@@ -55,7 +55,9 @@ shipped for every row.
 | Manual-client WireGuard keys at rest | Vault Transit envelope-encrypted        | **Phase 2b (shipped)** |
 | API authentication               | mTLS — `MTLSAuthMiddleware` rejects no-cert | **Phase 2d CP2 (shipped)** |
 | Browser ↔ API traffic            | TLS terminated at uvicorn (CERT_REQUIRED)   | **Phase 2d CP2 (shipped)** |
-| Operator / API cert registry     | Not yet — issuance is `make tls-issue-dev`  | Phase 2d CP3 |
+| Operator registry + middleware tightening | `MTLSAuthMiddleware` rejects unknown/disabled CNs; bootstrap env knob seeds the first row | **Phase 2d CP3.2 (shipped)** |
+| Cert audit registry + issuance CLI | `wg-manager certs issue/revoke/list` records every leaf in the `certificate` table | **Phase 2d CP3.3 (shipped)** |
+| Cert HTTP surface + dashboard    | None — issuance is CLI-only                 | Phase 2d CP3.4 |
 | App ↔ MySQL traffic              | Plaintext                                   | Phase 2d CP4 |
 | Audit logging of API mutations   | None beyond app logs                        | Phase 2e    |
 | Supply-chain verification (SBOM, signed builds) | None                           | Phase 2e    |

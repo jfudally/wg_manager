@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap tls-issue-dev e2e-up e2e-down e2e-logs
+.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -40,7 +40,6 @@ help:
 	@echo "  vault-smoke    Run scripts/vault_smoke.py against the dev Vault"
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
-	@echo "  tls-issue-dev  Mint local-dev TLS server + client certs into tls/ (Phase 2d CP2)"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -59,10 +58,16 @@ test:
 run:
 	@if [ -z "$(TLS_CERT_PEM)" ] || [ -z "$(TLS_KEY_PEM)" ] || [ -z "$(TLS_CA_BUNDLE_PEM)" ]; then \
 		echo "ERROR: TLS_CERT_PEM, TLS_KEY_PEM, and TLS_CA_BUNDLE_PEM must all be set."; \
-		echo "       Quickest dev path:  make tls-issue-dev"; \
-		echo "                           export TLS_REQUIRED=true TLS_CERT_PEM=tls/server.crt TLS_KEY_PEM=tls/server.key TLS_CA_BUNDLE_PEM=tls/ca-bundle.crt"; \
-		echo "                           make run"; \
-		echo "       Production:         see README 'Running with TLS' and docs/vault-cookbook.md §4."; \
+		echo "       Quickest dev path:"; \
+		echo "         alembic upgrade head"; \
+		echo "         wg-manager operators add --cn dev-operator --role admin"; \
+		echo "         wg-manager certs issue --type api --cn 127.0.0.1 \\"; \
+		echo "           --out-cert tls/server.crt --out-key tls/server.key --out-chain tls/ca-bundle.crt"; \
+		echo "         wg-manager certs issue --type cli --cn dev-operator \\"; \
+		echo "           --out-cert tls/client.crt --out-key tls/client.key --out-chain tls/client.chain.crt"; \
+		echo "         export TLS_REQUIRED=true TLS_CERT_PEM=tls/server.crt TLS_KEY_PEM=tls/server.key TLS_CA_BUNDLE_PEM=tls/ca-bundle.crt"; \
+		echo "         make run"; \
+		echo "       Production: see README 'Running with TLS' and docs/vault-cookbook.md §4."; \
 		exit 2; \
 	fi
 	BIND_HOST=$(HOST) BIND_PORT=$(PORT) $(PYTHON) -m wg_manager
@@ -161,14 +166,6 @@ ssh-ca-bootstrap:
 pki-bootstrap:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
 		$(PYTHON) scripts/pki_bootstrap.py
-
-# ---------------------------------------------------------------------------
-# TLS dev certs (Phase 2d CP2) — throwaway helper, deleted when CP3
-# ships the production `wg-manager certs issue` CLI.
-# ---------------------------------------------------------------------------
-
-tls-issue-dev:
-	$(PYTHON) scripts/issue_dev_tls.py
 
 # ---------------------------------------------------------------------------
 # Phase 2c CP5 — dockerised-sshd end-to-end suite

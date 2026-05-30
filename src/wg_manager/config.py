@@ -185,6 +185,27 @@ class Settings(BaseSettings):
     # validated rather than waved through.
     tls_ca_bundle_pem: str | None = None
 
+    # ----- Operator registry (Phase 2d CP3.2, see wg_manager.auth) -----
+    # CN of the operator that the middleware self-registers the first
+    # time it sees that CN on a request. Solves the chicken-and-egg
+    # bootstrap: with mTLS enforced and the ``operator`` table empty,
+    # there would otherwise be no way to add the first row through the
+    # API. Set on a fresh install, unset (or rotate) once the row exists
+    # and additional operators are added through the dashboard / CLI.
+    # ``None`` (default) disables the self-register path — every unknown
+    # CN is a 401.
+    auth_bootstrap_operator_cn: str | None = None
+    # Role assigned to the bootstrap operator at self-register time.
+    # Defaults to ``admin`` because the bootstrap operator's whole
+    # purpose is registry management (adding the rest of the team);
+    # production deploys can pin a different value if the first cert
+    # belongs to a service account that only needs read access. Stored
+    # as the enum's string value so :class:`Settings` doesn't have to
+    # import :class:`wg_manager.models.OperatorRole` (that import would
+    # pull SQLModel into config-time evaluation, which the rest of
+    # ``config.py`` is careful to avoid).
+    auth_bootstrap_operator_role: str = "admin"
+
     @field_validator("default_subnet")
     @classmethod
     def _validate_default_subnet(cls, value: str) -> str:

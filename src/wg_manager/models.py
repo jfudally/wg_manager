@@ -23,6 +23,90 @@ class NodeStatus(str, Enum):
     error = "error"
 
 
+class OperatorRole(str, Enum):
+    """Coarse-grained role attached to an :class:`Operator`.
+
+    Phase 2d CP3 introduces the registry so :class:`wg_manager.auth.MTLSAuthMiddleware`
+    can reject *valid* Vault-signed client certs whose CN isn't on the
+    allow-list. The role is captured at registration time and surfaced
+    to handlers via ``require_subject`` so the API can gate mutating
+    routes behind ``admin``, read-only routes behind ``auditor``, etc.
+    The first slice ships the column only — the actual authz gates
+    land in a follow-up sub-slice.
+
+    :cvar admin: Can register/disable other operators, issue + revoke
+        any certificate, and run every mutating endpoint.
+    :cvar operator: Day-to-day: register peers, run discovery, issue
+        and revoke their *own* certificates. Cannot manage the
+        operator registry itself.
+    :cvar auditor: Read-only. Can list rows, view audit logs, and
+        inspect cert metadata; refused on every mutation.
+
+    Subclassing ``str`` keeps the enum JSON-serialisable as its value
+    (``"admin"`` / ``"operator"`` / ``"auditor"``) — the schema layer
+    relies on that so dashboards and CLI clients see plain string
+    literals.
+    """
+
+    admin = "admin"
+    operator = "operator"
+    auditor = "auditor"
+
+
+class CertificateType(str, Enum):
+    """Logical purpose of an issued X.509 leaf cert.
+
+    Phase 2d CP3.3 introduces the :class:`Certificate` registry so the
+    operator can answer "which certs are currently live, who do they
+    belong to, when do they expire, has any of them been revoked?"
+    without grepping Vault. The cert type drives both the EKU the PKI
+    backend applies at issue time (server- vs. client-auth) and which
+    SAN defaults / TTL the CLI suggests.
+
+    :cvar api: ``serverAuth`` — terminates the FastAPI mTLS listener
+        (paired with the uvicorn ``--ssl-certfile`` flag). SANs are
+        the listener's hostnames + bind IPs; not owned by an
+        :class:`Operator`.
+    :cvar cli: ``clientAuth`` — an operator presents this when calling
+        the API from the wg-manager CLI (curl / httpx with
+        ``--cert``). Owned by an :class:`Operator`; CN is the operator
+        CN the registry keys on.
+    :cvar dashboard: ``clientAuth`` — same shape as :attr:`cli` but
+        exported as a PKCS#12 archive for browser import (Chrome /
+        Firefox / Safari all consume the PKCS#12 form natively).
+        Owned by an :class:`Operator`.
+    :cvar mysql: ``serverAuth`` — MySQL server cert (Phase 2d CP4).
+        SANs are the DB hostnames the app + worker dial. Not owned by
+        an :class:`Operator`.
+
+    Subclassing ``str`` keeps the enum JSON-serialisable as its value
+    so dashboards and CLI clients see plain string literals.
+    """
+
+    api = "api"
+    cli = "cli"
+    dashboard = "dashboard"
+    mysql = "mysql"
+
+
+class OperatorStatus(str, Enum):
+    """Lifecycle of an :class:`Operator` row.
+
+    Disabling is the supported way to revoke an operator's API access
+    without losing the audit-log linkage that a hard delete would
+    sever. The middleware (when the CP3 tightening lands) treats
+    ``disabled`` as "401 even with a valid cert chain".
+
+    :cvar active: The operator can authenticate against the API.
+    :cvar disabled: Soft-deleted. The row remains so the audit log
+        keeps linking past actions to the CN, but the middleware will
+        refuse new requests.
+    """
+
+    active = "active"
+    disabled = "disabled"
+
+
 class SSHKeyMode(str, Enum):
     """How wg-manager authenticates to hosts that use a given :class:`SSHKey`.
 
@@ -226,6 +310,53 @@ class Client(SQLModel, table=True):
     __str__ = __repr__
 
 
+class Operator(SQLModel, table=True):
+    """Registered API caller, keyed by the CN on their client certificate.
+
+    Phase 2d CP2 made mTLS mandatory but accepted any cert that
+    validated against the configured CA bundle — a gap explicitly
+    flagged in ``SECURITY.md`` (threat T-7, partial close). CP3 closes
+    that gap: only CNs that appear in this table as ``status='active'``
+    are admitted by :class:`wg_manager.auth.MTLSAuthMiddleware`. The
+    role attached to the row gates downstream authorization
+    (mutations vs. reads vs. registry management).
+
+    The first slice ships the table only — the middleware tightening
+    and ``Certificate`` registry land in subsequent CP3 sub-slices so
+    each step is reviewable in isolation.
+
+    :ivar cn: The Common Name lifted from the client cert's Subject.
+        Unique and indexed; stored verbatim (case-sensitive — the DB
+        default — to match how cert subjects are usually keyed).
+    :ivar display_name: Optional human-readable label for the
+        dashboard. The CN is the canonical identifier; this field
+        exists so operators don't have to read ``ops@wg.local`` when
+        they meant "Ops Team".
+    :ivar role: Coarse permission tier. Defaults to
+        :attr:`OperatorRole.operator` (principle of least privilege —
+        admins must be set explicitly).
+    :ivar status: Lifecycle state. Defaults to
+        :attr:`OperatorStatus.active`; disabling a row revokes API
+        access without breaking audit-log linkage.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    cn: str = Field(index=True, unique=True)
+    display_name: str | None = Field(default=None)
+    role: OperatorRole = Field(default=OperatorRole.operator)
+    status: OperatorStatus = Field(default=OperatorStatus.active)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"Operator(id={self.id!r}, cn={self.cn!r}, "
+            f"display_name={self.display_name!r}, role={self.role!r}, "
+            f"status={self.status!r}, created_at={self.created_at!r})"
+        )
+
+    __str__ = __repr__
+
+
 class DiscoveredPeer(SQLModel, table=True):
     """A WireGuard peer observed on a :class:`Server` via ``wg show <iface> dump``.
 
@@ -257,3 +388,93 @@ class DiscoveredPeer(SQLModel, table=True):
     is_managed: bool = False
     first_seen_at: datetime = Field(default_factory=_utcnow)
     last_seen_at: datetime = Field(default_factory=_utcnow)
+
+
+class Certificate(SQLModel, table=True):
+    """Audit record for every leaf cert wg-manager has issued.
+
+    Phase 2d CP3.3 introduces the registry so an operator can answer
+    "which certs are live, who do they belong to, when do they expire,
+    which have been revoked?" without grepping Vault. CP3.4 layers the
+    ``/certs`` HTTP surface + dashboard page on top; CP4 layers the
+    renewal job. CP3.3 ships the *write* side (``wg-manager certs
+    issue/revoke``) and the table; the *read* side is the
+    ``wg-manager certs list`` printout for now.
+
+    Operator linkage is **nullable**: ``cli`` / ``dashboard`` certs are
+    owned by a specific :class:`Operator` (the CN matches and the row
+    points at it), but ``api`` / ``mysql`` server certs are service
+    certs with no human owner — the FK stays ``NULL`` for those.
+
+    The row does **not** store the cert PEM or the private key. The
+    PEM lives on the disk path the operator wrote it to at issue time
+    (or in Vault, depending on the backend); the private key is
+    surfaced once at issue time and never persisted server-side. This
+    keeps the registry small, makes the table safe to ship in backups,
+    and means a leaked SQLite dump doesn't compromise any cert
+    material — only metadata.
+
+    Revocation lifecycle is **two-step**: ``revoke_cert`` on the
+    backend (Vault PKI CRL) and a row flip on this table. A row with
+    ``revoked=True`` is the audit trail; the CRL pull is what causes a
+    presenting peer to be rejected at handshake time. Keeping the row
+    after revocation (rather than hard-deleting) is what lets the
+    audit log say "operator X revoked serial Y on date Z".
+
+    :ivar serial: Issuer-assigned serial, stored as the decimal-string
+        rendering of the X.509 integer. Unique across the lifetime of
+        the table — Vault won't re-issue a colliding serial, and the
+        local-dev backend uses
+        ``cryptography.x509.random_serial_number`` (160 bits) so a
+        collision is statistically impossible. We pin a string column
+        (rather than ``BigInteger``) because cryptography's 160-bit
+        serial overflows SQLite's signed-INT64 and Vault's serials
+        regularly exceed it too; the int round-trips losslessly via
+        :func:`int` at the CLI boundary.
+    :ivar cert_type: One of :class:`CertificateType`. Drives the EKU
+        the PKI applies + the default SAN/TTL the CLI suggests.
+    :ivar operator_id: FK to :class:`Operator` for ``cli`` /
+        ``dashboard`` certs; ``NULL`` for ``api`` / ``mysql``.
+    :ivar common_name: CN baked into the cert subject. Kept here so
+        ``wg-manager certs list`` doesn't have to re-parse the cert
+        PEM.
+    :ivar sans: Comma-separated SAN list. Matches the storage style
+        :class:`Server.address` already uses to keep the
+        SQLite/MySQL/PostgreSQL schemas identical.
+    :ivar not_before: Validity-window start (UTC, tz-aware).
+    :ivar not_after: Validity-window end (UTC, tz-aware). CP4's
+        renewal job sleeps until ``not_after - jitter``.
+    :ivar revoked: Audit flag flipped by ``wg-manager certs revoke``.
+        Always set in the same transaction as the backend
+        :meth:`PKIBackend.revoke_cert` call so the row and the CRL
+        agree.
+    :ivar revoked_at: When the operator flipped :attr:`revoked`.
+        ``NULL`` for live certs.
+    :ivar created_at: When the row was inserted (which is when the
+        cert was issued).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    serial: str = Field(unique=True, index=True, max_length=64)
+    cert_type: CertificateType = Field(index=True)
+    operator_id: int | None = Field(
+        default=None, foreign_key="operator.id", index=True
+    )
+    common_name: str = Field(index=True)
+    sans: str = Field(default="")
+    not_before: datetime
+    not_after: datetime
+    revoked: bool = Field(default=False, index=True)
+    revoked_at: datetime | None = Field(default=None)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"Certificate(id={self.id!r}, serial={self.serial!r}, "
+            f"cert_type={self.cert_type!r}, "
+            f"operator_id={self.operator_id!r}, "
+            f"common_name={self.common_name!r}, "
+            f"not_after={self.not_after!r}, revoked={self.revoked!r})"
+        )
+
+    __str__ = __repr__

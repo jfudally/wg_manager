@@ -7,6 +7,10 @@
  */
 
 import type {
+  Certificate,
+  CertificateIssueRequest,
+  CertificateIssueResponse,
+  CertificateRevokeResponse,
   Client,
   ClientCreate,
   ClientDeleteResponse,
@@ -27,6 +31,7 @@ import type {
   ServerRegisterResponse,
   ServerUpdate,
   TaskStatus,
+  WhoAmI,
 } from "./types";
 
 /**
@@ -294,4 +299,38 @@ export const api = {
    * migration.
    */
   cryptoStatus: () => request<CryptoStatus>("/crypto/status"),
+
+  // --- Certificates (Phase 2d CP3.4) ---
+  /**
+   * Return the cert subject the API saw on the current request, plus
+   * the resolved operator row. The dashboard's "Who am I?" splash
+   * renders the result verbatim — a 200 here is the visible proof
+   * that the mTLS handshake worked end-to-end.
+   */
+  whoami: () => request<WhoAmI>("/certs/whoami"),
+  /** List every cert audit row (live + revoked). Admin / auditor. */
+  listCertificates: () => request<Certificate[]>("/certs"),
+  /**
+   * Issue a new leaf cert via the configured PKI backend and record
+   * the audit row. Admin only. The private key in the response body
+   * is the *only* copy — the server keeps none.
+   *
+   * For `cert_type: "dashboard"` the response additionally carries a
+   * base64-encoded PKCS#12 bundle (`pkcs12_b64`) that the operator
+   * imports into their browser.
+   */
+  issueCertificate: (payload: CertificateIssueRequest) =>
+    request<CertificateIssueResponse>("/certs", {
+      method: "POST",
+      body: payload,
+    }),
+  /**
+   * Revoke an issued cert by row id. Admin only. Two-step under the
+   * hood (CRL update + row flip) but exposed as one request to the
+   * dashboard. Idempotent — a retry after a flaky network is safe.
+   */
+  revokeCertificate: (id: number) =>
+    request<CertificateRevokeResponse>(`/certs/${id}/revoke`, {
+      method: "POST",
+    }),
 };

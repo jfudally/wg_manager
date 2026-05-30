@@ -294,3 +294,91 @@ export interface CryptoStatus {
   backend: string;
   key_version: number;
 }
+
+// ---------------------------------------------------------------------------
+// Certificates — Phase 2d CP3.4
+// ---------------------------------------------------------------------------
+
+/** Logical purpose of a leaf cert — mirrors `CertificateType` in
+ *  `src/wg_manager/models.py`. */
+export type CertificateType = "api" | "cli" | "dashboard" | "mysql";
+
+/** Operator role the API sees on the calling cert — mirrors
+ *  `OperatorRole` in `src/wg_manager/models.py`. Drives which controls
+ *  the dashboard exposes (issue/revoke are admin-only). */
+export type OperatorRole = "admin" | "operator" | "auditor";
+
+/** Operator lifecycle state. Disabled operators would already 401 at
+ *  the middleware, so a 200 `whoami` body always carries `active` —
+ *  the field stays for future expansion. */
+export type OperatorStatus = "active" | "disabled";
+
+/**
+ * Splash payload returned by ``GET /certs/whoami``.
+ *
+ * Keep in sync with `WhoAmIResponse` in `src/wg_manager/schemas.py`.
+ * The dashboard's "Who am I?" splash renders this verbatim so a
+ * freshly-imported PKCS#12 visibly proves the mTLS handshake worked.
+ */
+export interface WhoAmI {
+  cn: string;
+  serial: string;
+  sans: string[];
+  not_before: string;
+  not_after: string;
+  operator_cn: string;
+  operator_role: OperatorRole;
+  operator_status: OperatorStatus;
+}
+
+/**
+ * Audit-table row for an issued certificate.
+ *
+ * Keep in sync with `CertificateRead` in `src/wg_manager/schemas.py`.
+ */
+export interface Certificate {
+  id: number;
+  serial: string;
+  cert_type: CertificateType;
+  operator_id: number | null;
+  common_name: string;
+  /** Comma-separated SAN list — matches the storage style the table
+   *  uses on the backend so JSON CLI output and dashboard rendering
+   *  agree on the wire shape. Split client-side when listing. */
+  sans: string;
+  not_before: string;
+  not_after: string;
+  revoked: boolean;
+  revoked_at: string | null;
+  created_at: string;
+}
+
+/** Body for ``POST /certs``. Mirrors `CertificateIssueRequest`. */
+export interface CertificateIssueRequest {
+  cert_type: CertificateType;
+  common_name: string;
+  sans?: string[];
+  ttl_days?: number;
+  operator_cn?: string;
+  /** Password used to encrypt the PKCS#12 bundle for `dashboard`
+   *  certs. Empty string yields an unencrypted bundle (matches the
+   *  CLI default). Ignored for other cert types. */
+  pkcs12_password?: string;
+}
+
+/** Response for ``POST /certs``. Mirrors `CertificateIssueResponse`. */
+export interface CertificateIssueResponse {
+  certificate: Certificate;
+  cert_pem: string;
+  private_pem: string;
+  chain_pem: string;
+  /** Base64-encoded PKCS#12 bundle. Populated only for `dashboard`
+   *  cert_type; null otherwise. */
+  pkcs12_b64: string | null;
+}
+
+/** Response for ``POST /certs/{id}/revoke``. Idempotent — calling it
+ *  on an already-revoked row returns the same shape. */
+export interface CertificateRevokeResponse {
+  certificate: Certificate;
+}

@@ -13,7 +13,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from wg_manager._tls_uvicorn import enable_tls_extension
 from wg_manager.auth import MTLSAuthMiddleware
 from wg_manager.config import Settings, settings
-from wg_manager.routers import clients, crypto, servers, ssh_keys, tasks
+from wg_manager.routers import (
+    certs,
+    clients,
+    crypto,
+    servers,
+    ssh_keys,
+    tasks,
+)
 
 # uvicorn 0.44 doesn't implement the ASGI-TLS extension natively
 # (encode/uvicorn#1530). Patch it at import time so the auth middleware
@@ -73,6 +80,7 @@ def create_app() -> FastAPI:
     application.include_router(clients.router)
     application.include_router(tasks.router)
     application.include_router(crypto.router)
+    application.include_router(certs.router)
     return application
 
 

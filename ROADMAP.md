@@ -564,13 +564,160 @@ existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
   `local` mode; manual mTLS smoke against a live `python -m wg_manager`
   confirmed (200 with `--cert`, TLS handshake refused without,
   plain HTTP refused).
-- **Checkpoint 3 `[ ]`** — `Operator` + `Certificate` registry
-  (Alembic 0009). `wg-manager certs issue --type {api,cli,dashboard,mysql} ...`
-  + `wg-manager certs revoke --serial ...` CLI. New `/certs`
-  endpoints (list, issue, revoke). Dashboard **Certificates** page
-  with serial / SANs / NotAfter / revoke button + a "Who am I?"
-  splash that surfaces the cert subject the API saw, so a freshly-
-  imported PKCS#12 visibly proves the mTLS handshake worked.
+- **Checkpoint 3 `[~]`** — `Operator` + `Certificate` registry.
+  Reserved migration shifted from 0009 → 0010 because the
+  manual-client redesign consumed 0009. Landing in phased sub-slices:
+  - **CP3.1 `[x]`** (2026-05-29) — `Operator` table + `OperatorRole`
+    (admin/operator/auditor) + `OperatorStatus` (active/disabled)
+    enums in [`wg_manager.models`](../src/wg_manager/models.py).
+    Alembic `0010_add_operator_table` creates the table and the
+    unique `ix_operator_cn` index; `tests/test_alembic_0010.py`
+    pins the schema contract (column set, unique CN, idempotent
+    round-trip) and the enum + default-value shape (role defaults to
+    `operator`, status defaults to `active`). The `__repr__` scrub
+    regressions pick up an Operator section so the row never leaks
+    surprises through tracebacks. The middleware still accepts any
+    valid Vault-signed cert — the tightening that consults the
+    registry is CP3.2. Backend suite 292/292 green.
+  - **CP3.2 `[x]`** (2026-05-29) — `MTLSAuthMiddleware` now
+    consults the CP3.1 `operator` registry on every cert-bearing
+    request. Unknown CN → 401 `"operator not registered"`; a row
+    with `status='disabled'` → 401 `"operator disabled"` (distinct
+    body so a packet capture distinguishes "forgot to register"
+    from "revoked"); an `active` row admits the request and the
+    middleware stashes the resolved (detached, session-free)
+    `Operator` snapshot on `request.state.operator` alongside the
+    existing `cert_subject`. A `_resolve_operator` helper opens a
+    short-lived `Session(db.engine)` per request — the test suite
+    swaps in the in-memory SQLite engine via the `engine` fixture,
+    so the same code path runs in both modes. Bootstrap path
+    closes the chicken-and-egg gap CP3.1 left behind: new
+    `Settings.auth_bootstrap_operator_cn` +
+    `auth_bootstrap_operator_role` knobs (env:
+    `AUTH_BOOTSTRAP_OPERATOR_CN` / `AUTH_BOOTSTRAP_OPERATOR_ROLE`,
+    default role `admin`) opt one specific CN into a self-register
+    on first contact; every other unknown CN still 401s. The
+    bootstrap insert catches `IntegrityError` and re-fetches so a
+    concurrent first-request race resolves without surfacing the
+    unique-CN-index violation. Operators are expected to unset (or
+    rotate) the env var once the row exists and additional
+    operators are added through the (CP3.4) dashboard / CLI.
+    `require_subject(request)` keeps its CP2 signature; new
+    `require_role(*OperatorRole)` factory builds a dep that 401s
+    on no cert (via `require_subject`), 401s on missing operator
+    state (defence against a future passthrough), and 403s
+    (`"role not permitted"`) when the row's role isn't in the
+    allow-list — empty role list rejected with `ValueError` at
+    factory build so a typo can't silently turn the gate into a
+    passthrough. Tests: 7 new
+    `TestOperatorRegistryEnforcement` cases (unknown CN /
+    disabled / active / bootstrap happy / bootstrap mismatch /
+    OPTIONS bypass / `tls_required=False` bypass), 4 new
+    `TestRequireRoleDependency` cases (admin blocks operator /
+    admin allows admin / iterable allow-list / no-cert path is
+    401 not 403), plus minor updates to the two existing CP2
+    happy-path tests so they register an Operator before the
+    request. Full backend suite 303/303 green. Dashboard
+    Operators/Certificates surface is CP3.4 scope — no
+    `web/` changes in this slice.
+  - **CP3.3 `[x]`** (2026-05-29) — `Certificate` audit registry +
+    `wg-manager certs` / `wg-manager operators` direct-DB CLIs.
+    Alembic 0011 adds the `certificate` table (FK to `operator`,
+    nullable for the service certs); the row stores serial as a
+    decimal-string (cryptography's 160-bit X.509 serial overflows
+    SQLite's signed-INT64 and Vault's serials regularly do too, so
+    `String(64)` is the schema-neutral fit), `cert_type`,
+    `common_name`, `sans`, `not_before` / `not_after`, `revoked` +
+    `revoked_at` audit flags, `created_at`. New
+    `CertificateType` enum carries the four shipped values (`api` /
+    `cli` / `dashboard` / `mysql`) and drives the EKU + default
+    SAN/TTL the CLI suggests. New `wg-manager certs issue --type
+    ... --cn ... --san ... --ttl-days ...` wraps
+    `make_pki_backend()` directly: writes the leaf PEM + private key
+    (`0o600`) + chain to operator-supplied paths, mints the row in
+    the same transaction so an orphan file never points at nothing,
+    and refuses `cli`/`dashboard` issuance for a CN that isn't a
+    registered `Operator` (operator_cn defaults to `--cn` for those
+    types). `dashboard` instead writes a browser-importable PKCS#12
+    via `--out-pkcs12` (uses `load_pem_x509_certificates` so the
+    chain parsing is a single call rather than hand-rolled splits;
+    optional `--pkcs12-password` for `BestAvailableEncryption`).
+    New `wg-manager certs revoke --serial` calls
+    `PKIBackend.revoke_cert` and flips the row's `revoked` /
+    `revoked_at` flags atomically. New `wg-manager certs list`
+    prints the table as JSON for `jq`-pipeline use; CP3.4 will layer
+    a `/certs` HTTP surface and a dashboard view on the same shape.
+    Bootstrap glue: new `wg-manager operators add/list` direct-DB
+    subgroup closes the chicken-and-egg between cert issuance
+    (needs an Operator row) and the API (needs a registered client
+    cert), so a fresh install runs `alembic upgrade head` → 
+    `wg-manager operators add` → `wg-manager certs issue --type
+    api` → `wg-manager certs issue --type cli` → `make run` without
+    any direct SQL. Retirement: `scripts/issue_dev_tls.py` is
+    deleted; the `tls-issue-dev` Makefile target (+ PHONY entry +
+    help line + the `make run` "missing TLS" hint) is gone;
+    `python -m wg_manager`'s startup-error message, README's
+    Quickstart + dashboard Quickstart + "Running with TLS" section,
+    `.env.example`, `web/.env.example`, `web/README.md`, and
+    `SECURITY.md`'s current-posture table all point at the new
+    `wg-manager certs/operators` flow. Tests: 12
+    `tests/test_alembic_0011.py` cases (column set + unique-serial
+    index + nullable operator FK + downgrade round-trip + enum +
+    model defaults), 14 `tests/test_cli_certs.py` cases (api /
+    mysql / cli / dashboard issue happy paths + cli default-
+    operator-cn + cli unknown-operator-CN rejection + PKCS#12
+    round-trip + revoke happy + revoke unknown-serial + list +
+    operators add + operators duplicate-CN rejection + operators
+    list), 2 new `tests/test_model_repr.py` cases pinning the
+    Certificate row's one-line repr. Backend `pytest` 330/330 green
+    in `local` mode. Dashboard surface stays in CP3.4 scope — no
+    `web/` UI changes in this slice.
+  - **CP3.4 `[x]`** (2026-05-29) — HTTP surface + dashboard page
+    over the CP3.3 audit registry. New
+    [`wg_manager.routers.certs`](../src/wg_manager/routers/certs.py)
+    ships four endpoints: `GET /certs/whoami` (any operator)
+    surfaces the cert subject the API actually saw on the live TLS
+    scope plus the resolved `Operator` row — a 200 here is the
+    visible proof a freshly-imported PKCS#12 was accepted by the
+    mTLS listener and matched against an active operator row; `GET
+    /certs` (admin or auditor) lists every audit row live + revoked;
+    `POST /certs` (admin) mints a leaf via the configured
+    `PKIBackend` and persists the row in the same transaction — the
+    private key is surfaced exactly once in the response body and
+    `dashboard` certs additionally carry a base64-encoded PKCS#12 the
+    browser saves as a single import file; `POST /certs/{id}/revoke`
+    (admin) flips the row and tells the backend CRL, idempotent so a
+    dashboard retry after a flaky network is safe. The CN /
+    operator-FK / default-SAN / TTL resolution mirrors
+    `wg-manager certs issue` byte-for-byte so the CLI and API
+    produce identical leafs (the type-profile table is re-declared
+    inside the router rather than imported so `wg_manager.cli` isn't
+    a runtime dep). Role gating uses router-local `_RequireAdmin` /
+    `_RequireAdminOrAuditor` deps composed on a single
+    `_get_operator` reader — keeps the role-mapping logic next to
+    the endpoint that enforces it and gives tests a stable per-router
+    override point. Dashboard: new `/certificates` page with the
+    "Who am I?" splash (operator CN, role badge, cert CN, serial,
+    SANs, validity window), an inventory table (per-row
+    live/revoked badges; admins also see a Revoke action gated on
+    `cert.revoked=false`), an Issue form (cert type → CN → SANs →
+    TTL → operator CN → optional PKCS#12 password — fields toggle
+    on cert type), and a post-issue artefact-download panel (cert /
+    key / chain / optional PKCS#12 buttons that materialise files
+    via `Blob` + `URL.createObjectURL`). New nav entry
+    "Certificates"; `web/lib/api.ts` grows `whoami`,
+    `listCertificates`, `issueCertificate`, `revokeCertificate`
+    methods + mirroring types in `web/lib/types.ts`. Tests: 18 new
+    `tests/test_certs_api.py` cases (whoami × 2, list × 3, issue ×
+    7 — happy/operator-FK/PKCS#12/unknown-operator-CN/bad-cert-
+    type/role × 3, revoke × 6 — happy/idempotent/404/role × 3) +
+    6 vitest specs (`web/__tests__/certificates.test.tsx`) covering
+    splash render, error surface, inventory + revoke wiring, and the
+    admin-vs-auditor affordance surfaces. Backend `pytest` 348/348
+    green in `local` mode; vitest 35/35; `tsc --noEmit` is clean for
+    the new file (the pre-existing `lib/proxy.ts:124`
+    `Uint8Array<ArrayBufferLike>` ↔ `BodyInit` complaint stays out
+    of scope — tracked separately).
 - **Checkpoint 4 `[ ]`** — MySQL TLS. docker-compose mounts
   Vault-issued server cert + CA; `require_secure_transport=ON`
   server-side; SQLAlchemy URL grows `?ssl_ca=&ssl_cert=&ssl_key=`;

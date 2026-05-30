@@ -10,9 +10,14 @@ make install         # editable install + dev deps
 cp .env.example .env
 make migrate         # apply Alembic migrations
 
-# Mint a throwaway TLS cert set for the local API listener (Phase 2d CP2).
-# Production uses Vault PKI (see "Running with TLS" below).
-make tls-issue-dev   # writes tls/{server,client}.{crt,key} + tls/ca-bundle.crt
+# Register an operator + mint API server cert + an operator client
+# cert (Phase 2d CP3.3). Local-dev defaults to LocalDevPKI; production
+# points the PKI backend at Vault — see "Running with TLS" below.
+wg-manager operators add --cn dev-operator --role admin
+wg-manager certs issue --type api --cn 127.0.0.1 \
+  --out-cert tls/server.crt --out-key tls/server.key --out-chain tls/ca-bundle.crt
+wg-manager certs issue --type cli --cn dev-operator \
+  --out-cert tls/client.crt --out-key tls/client.key --out-chain tls/client.chain.crt
 export TLS_REQUIRED=true \
        TLS_CERT_PEM=tls/server.crt \
        TLS_KEY_PEM=tls/server.key \
@@ -41,7 +46,12 @@ for the details. Quick start:
 
 ```bash
 make ui-install                                  # one-time
-make tls-issue-dev                               # mint throwaway certs
+# Mint the certs via the CP3.3 CLI (see Quickstart at top of README):
+wg-manager operators add --cn dev-operator --role admin
+wg-manager certs issue --type api --cn 127.0.0.1 \
+  --out-cert tls/server.crt --out-key tls/server.key --out-chain tls/ca-bundle.crt
+wg-manager certs issue --type cli --cn dev-operator \
+  --out-cert tls/client.crt --out-key tls/client.key --out-chain tls/client.chain.crt
 cp web/.env.example web/.env.local               # wire BFF env vars
 make ui-dev                                      # http://127.0.0.1:3100
 ```
@@ -49,6 +59,17 @@ make ui-dev                                      # http://127.0.0.1:3100
 The BFF makes the legacy `CORS_ORIGINS` setting moot for browser
 traffic (every request is same-origin), but the env still exists for
 non-browser clients that may call the API directly.
+
+The dashboard ships a **Certificates** page (Phase 2d CP3.4) that
+mirrors `wg-manager certs` over HTTP: a "Who am I?" splash that
+surfaces the cert subject the API actually saw on the live TLS
+handshake (a 200 there is the visible proof a freshly-imported
+PKCS#12 was accepted), a per-row inventory of every cert wg-manager
+has issued (with live / revoked badges and a one-click Revoke action
+for admins), and an Issue form that produces a downloadable cert /
+key / chain triple — or a single browser-importable PKCS#12 archive
+when the cert type is `dashboard`. Auditors can read the inventory
+but cannot mint or revoke; plain operators see neither.
 
 ## Async provisioning
 
@@ -267,11 +288,18 @@ are all set; combined with `TLS_REQUIRED=true`, the
 [CP2 auth middleware](src/wg_manager/auth.py) 401s every non-OPTIONS
 request that arrives without a client certificate.
 
-**Dev path — throwaway local PKI:**
+**Dev path — LocalDevPKI + Phase 2d CP3.3 CLI:**
 
 ```bash
-make tls-issue-dev   # writes tls/server.{crt,key}, tls/client.{crt,key},
-                     # tls/ca-bundle.crt — gitignored; delete any time
+# Register the bootstrap operator (CP3.2 / CP3.3).
+wg-manager operators add --cn dev-operator --role admin
+
+# Mint the API server cert + the operator's CLI client cert.
+wg-manager certs issue --type api --cn 127.0.0.1 \
+  --out-cert tls/server.crt --out-key tls/server.key --out-chain tls/ca-bundle.crt
+wg-manager certs issue --type cli --cn dev-operator \
+  --out-cert tls/client.crt --out-key tls/client.key --out-chain tls/client.chain.crt
+
 export TLS_REQUIRED=true \
        TLS_CERT_PEM=tls/server.crt \
        TLS_KEY_PEM=tls/server.key \
@@ -285,8 +313,10 @@ curl --cacert tls/ca-bundle.crt \
      https://127.0.0.1:8000/crypto/status
 ```
 
-`scripts/issue_dev_tls.py` is a throwaway helper — delete it once CP3
-ships `wg-manager certs issue --type {api,cli,dashboard,mysql}`.
+The certs land on disk verbatim and the metadata is recorded in the
+`certificate` audit table (`wg-manager certs list` prints it as JSON).
+Phase 2d CP4 adds the renewal job; CP3.4 layers the dashboard surface
+on the same table.
 
 **Production path — Vault PKI:**
 

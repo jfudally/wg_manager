@@ -9,7 +9,15 @@ mirrored in `lib/types.ts` in the same commit.
 ```bash
 # from the repo root
 make ui-install            # npm install inside web/
-make tls-issue-dev         # mint throwaway TLS certs (once, gitignored)
+
+# Mint TLS material via the Phase 2d CP3.3 CLI (see root README
+# "Running with TLS" for details):
+wg-manager operators add --cn dev-operator --role admin
+wg-manager certs issue --type api --cn 127.0.0.1 \
+  --out-cert tls/server.crt --out-key tls/server.key --out-chain tls/ca-bundle.crt
+wg-manager certs issue --type cli --cn dev-operator \
+  --out-cert tls/client.crt --out-key tls/client.key --out-chain tls/client.chain.crt
+
 make run                   # the API on 127.0.0.1:8000 — needs TLS_* env;
                            # see root README "Running with TLS"
 make worker                # the Celery worker (in another terminal)
@@ -34,9 +42,10 @@ browser only ever speaks plain HTTP to `localhost:3100` and never sees
 a client certificate.
 
 Configure the four `WG_MANAGER_API_*` vars in `web/.env.local` (see
-`web/.env.example` for defaults pointing at `make tls-issue-dev`
-outputs). Set `NEXT_PUBLIC_WG_MANAGER_API` only when you want to
-bypass the BFF — e.g. against a non-mTLS staging host.
+`web/.env.example` for defaults pointing at the `tls/` directory that
+`wg-manager certs issue` writes into). Set `NEXT_PUBLIC_WG_MANAGER_API`
+only when you want to bypass the BFF — e.g. against a non-mTLS staging
+host.
 
 ## Layout
 

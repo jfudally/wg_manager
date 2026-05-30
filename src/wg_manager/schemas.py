@@ -8,7 +8,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from wg_manager.models import NodeStatus, SSHKeyMode
+from wg_manager.models import (
+    CertificateType,
+    NodeStatus,
+    OperatorRole,
+    OperatorStatus,
+    SSHKeyMode,
+)
 
 
 # Smallest prefix length that still leaves usable host space for a server
@@ -453,3 +459,147 @@ class CryptoStatusResponse(BaseModel):
 
     backend: str
     key_version: int
+
+
+# ---------------------------------------------------------------------------
+# Certificates — Phase 2d CP3.4
+# ---------------------------------------------------------------------------
+
+
+class WhoAmIResponse(BaseModel):
+    """Splash payload returned by ``GET /certs/whoami``.
+
+    The dashboard renders this above the Certificates table so a
+    freshly-imported PKCS#12 visibly proves the mTLS handshake worked
+    — the operator sees the CN, serial, and validity window the API
+    *actually saw* on the cert chain, not what the cert file on their
+    disk claims.
+
+    :ivar cn: Common Name lifted from the client cert's subject.
+    :ivar serial: Issuer-assigned serial, rendered as a decimal
+        string (Vault's serials regularly exceed signed-INT64, so the
+        wire format mirrors the audit-table column).
+    :ivar sans: Subject Alternative Names embedded in the cert, in
+        declaration order.
+    :ivar not_before: Validity-window start (UTC, tz-aware).
+    :ivar not_after: Validity-window end (UTC, tz-aware).
+    :ivar operator_cn: The CN of the resolved :class:`Operator` row.
+        Identical to :attr:`cn` for a well-formed handshake.
+    :ivar operator_role: ``admin`` / ``operator`` / ``auditor`` — drives
+        which buttons the dashboard renders on the page.
+    :ivar operator_status: ``active`` / ``disabled``. ``disabled``
+        would already 401 at the middleware, so a 200 ``whoami`` body
+        always carries ``active`` — included so the dashboard splash
+        can render the field unconditionally without an empty slot.
+    """
+
+    cn: str
+    serial: str
+    sans: list[str]
+    not_before: datetime
+    not_after: datetime
+    operator_cn: str
+    operator_role: OperatorRole
+    operator_status: OperatorStatus
+
+
+class CertificateRead(BaseModel):
+    """Public view of a :class:`wg_manager.models.Certificate` row.
+
+    Mirrors the storage shape one-to-one: ``serial`` and ``sans`` keep
+    their string encoding so a client that calls the JSON CLI
+    (``wg-manager certs list``) and the API path can compare results
+    field-for-field without re-formatting.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    serial: str
+    cert_type: CertificateType
+    operator_id: int | None
+    common_name: str
+    sans: str
+    not_before: datetime
+    not_after: datetime
+    revoked: bool
+    revoked_at: datetime | None
+    created_at: datetime
+
+
+class CertificateIssueRequest(BaseModel):
+    """Payload for ``POST /certs``.
+
+    Field defaults mirror the CLI's ``_CERT_PROFILES`` table so a caller
+    can fire-and-forget the minimum body (``cert_type`` +
+    ``common_name``) and get the same artefact the operator would get
+    from ``wg-manager certs issue --type ... --cn ...``.
+
+    :ivar cert_type: Which kind of leaf to mint. The four shipped
+        values drive both the EKU the PKI backend applies and the
+        default SAN/TTL the API picks when those fields are omitted.
+    :ivar common_name: CN baked into the cert subject.
+    :ivar sans: Subject Alternative Names. When omitted the API uses
+        a type-specific default (``api`` → ``127.0.0.1`` +
+        ``localhost``; ``mysql`` → ``mysql`` + loopback;
+        ``cli`` / ``dashboard`` → the CN).
+    :ivar ttl_days: Validity window in days. Defaults: ``api`` /
+        ``mysql`` = 30, ``cli`` / ``dashboard`` = 365.
+    :ivar operator_cn: Operator CN this cert belongs to (``cli`` +
+        ``dashboard`` only). Defaults to :attr:`common_name`; must
+        match a registered :class:`wg_manager.models.Operator` row or
+        the request is refused with 422.
+    :ivar pkcs12_password: Password used to encrypt the PKCS#12 bundle
+        returned for ``dashboard`` certs. Empty string yields an
+        unencrypted bundle (matches the CLI default).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cert_type: CertificateType
+    common_name: str
+    sans: list[str] | None = None
+    ttl_days: int | None = None
+    operator_cn: str | None = None
+    pkcs12_password: str = ""
+
+
+class CertificateIssueResponse(BaseModel):
+    """Body returned by ``POST /certs``.
+
+    Carries both the audit row (so the dashboard's table can render
+    the new entry without re-fetching) and the cert material itself
+    (the *only* moment the private key is ever surfaced — the server
+    persists no copy). For ``dashboard`` issuance the body
+    additionally carries :attr:`pkcs12_b64`, a base64-encoded PKCS#12
+    archive the browser can save as a single import file.
+
+    :ivar certificate: The newly-recorded audit row.
+    :ivar cert_pem: PEM body of the issued leaf certificate.
+    :ivar private_pem: PEM body of the matching private key. The
+        client should store this securely and never round-trip it
+        through wg-manager again.
+    :ivar chain_pem: PEM concatenation of the issuing chain
+        (intermediate + root).
+    :ivar pkcs12_b64: Base64 of the PKCS#12 bundle. ``None`` for
+        ``api`` / ``cli`` / ``mysql``; populated for ``dashboard``.
+    """
+
+    certificate: CertificateRead
+    cert_pem: str
+    private_pem: str
+    chain_pem: str
+    pkcs12_b64: str | None = None
+
+
+class CertificateRevokeResponse(BaseModel):
+    """Body returned by ``POST /certs/{id}/revoke``.
+
+    Idempotent: calling it on an already-revoked row returns 200 with
+    the same row shape so the dashboard can re-issue the call after a
+    flaky network without surfacing a confusing error. The ``revoked``
+    flag is ``True`` on success regardless of whether this call or a
+    prior one flipped it.
+    """
+
+    certificate: CertificateRead
