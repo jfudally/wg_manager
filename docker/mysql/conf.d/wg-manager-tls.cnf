@@ -1,0 +1,20 @@
+# Phase 2d CP4.2 — enforce TLS on every connection to the MySQL
+# daemon, and point at the Vault-issued server cert + CA bundle the
+# docker-compose mount ships into /etc/mysql/certs/.
+#
+# The mount source is ./tls/mysql/ on the host (see docker-compose.yml).
+# `make mysql-tls-issue` mints all three files via `wg-manager certs
+# issue --type mysql`. The CA bundle is the same chain the FastAPI
+# listener carries (wg_manager.pki.PKIBackend.ca_bundle_pem) so the
+# whole control plane shares one trust root.
+#
+# With `require_secure_transport=ON`, MySQL closes any incoming
+# connection that hasn't negotiated TLS. The app + worker engines
+# satisfy this via the pymysql `ssl={ca, cert, key, check_hostname}`
+# connect args that wg_manager.db._resolve_mysql_ssl produced in CP4.1.
+
+[mysqld]
+require_secure_transport=ON
+ssl-ca=/etc/mysql/certs/ca.crt
+ssl-cert=/etc/mysql/certs/server.crt
+ssl-key=/etc/mysql/certs/server.key

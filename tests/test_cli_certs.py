@@ -231,6 +231,80 @@ class TestIssueMysqlCert:
         assert rows[0].operator_id is None
 
 
+class TestIssueMysqlClientCert:
+    """``issue --type mysql-client`` mints a clientAuth cert with no operator FK.
+
+    Phase 2d CP4.2 adds this cert type so the app + worker can present
+    a Vault-issued client cert to the MySQL server (which is itself
+    running with a ``--type mysql`` server cert). Unlike ``cli`` /
+    ``dashboard``, ``mysql-client`` is a service principal — there is
+    no human :class:`Operator` to bind it to — so the ``requires_operator``
+    profile bit is ``False``.
+    """
+
+    def test_writes_pem_files_and_records_row(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        result = _invoke(
+            runner,
+            "certs",
+            "issue",
+            "--type",
+            "mysql-client",
+            "--cn",
+            "wg-manager-app",
+            "--out-cert",
+            str(tmp_path / "mysql-client.crt"),
+            "--out-key",
+            str(tmp_path / "mysql-client.key"),
+            "--out-chain",
+            str(tmp_path / "mysql-client.chain.crt"),
+        )
+        assert result.exit_code == 0, result.output
+        rows = _cert_rows()
+        assert len(rows) == 1
+        assert rows[0].cert_type == CertificateType.mysql_client
+        # No operator is bound — this is a service cert.
+        assert rows[0].operator_id is None
+        # The default SAN list folds back to the CN since the profile
+        # carries ``default_sans=None`` (matching cli/dashboard's
+        # CN-driven shape).
+        sans = rows[0].sans.split(",")
+        assert "wg-manager-app" in sans
+
+    def test_leaf_carries_client_auth_eku(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        """The leaf's EKU is clientAuth — server certs would fail mTLS as a client."""
+        _invoke(
+            runner,
+            "certs",
+            "issue",
+            "--type",
+            "mysql-client",
+            "--cn",
+            "wg-manager-app",
+            "--out-cert",
+            str(tmp_path / "mc.crt"),
+            "--out-key",
+            str(tmp_path / "mc.key"),
+            "--out-chain",
+            str(tmp_path / "mc.chain.crt"),
+        )
+        cert = _load_pem_cert(tmp_path / "mc.crt")
+        eku = cert.extensions.get_extension_for_class(
+            x509.ExtendedKeyUsage
+        ).value
+        assert ExtendedKeyUsageOID.CLIENT_AUTH in eku
+        assert ExtendedKeyUsageOID.SERVER_AUTH not in eku
+
+
 # ---------------------------------------------------------------------------
 # issue — cli / dashboard (operator-bound)
 # ---------------------------------------------------------------------------

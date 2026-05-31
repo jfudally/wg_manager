@@ -10,6 +10,39 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2d CP4.2 — docker-compose MySQL TLS + `mysql-client` cert
+  type.** Three pieces ship together:
+  - `docker/mysql/conf.d/wg-manager-tls.cnf` — my.cnf drop-in that
+    sets `require_secure_transport=ON` and points mysqld at the
+    Vault-issued server cert + CA bundle (`ssl-ca`, `ssl-cert`,
+    `ssl-key`). The docker-compose `mysql` service now bind-mounts
+    `./tls/mysql:/etc/mysql/certs:ro` + `./docker/mysql/conf.d:
+    /etc/mysql/conf.d:ro` so the daemon comes up TLS-only on
+    `make db-down && make db-up`.
+  - New cert type `CertificateType.mysql_client` (wire value
+    ``"mysql-client"``): `clientAuth` EKU, no operator FK, 30-day
+    default. The app + worker present this to MySQL once
+    `DATABASE_TLS_REQUIRED=true` (CP4.1). Threaded through
+    `wg_manager.cli._CERT_PROFILES`, the parallel
+    `wg_manager.routers.certs._CERT_PROFILES`, and the dashboard's
+    `CertificateType` literal + Issue-form dropdown.
+  - New `make mysql-tls-issue` target that mints the server-side
+    cert into `tls/mysql/` so the docker-compose bind mount has
+    something to map. `.gitignore` keeps a tracked `tls/mysql/`
+    placeholder so a fresh clone has a directory for the mount to
+    bind onto.
+  - `docs/migrations/2d-mysql-tls.md` documents the full
+    bootstrap → bounce → engine-flip flow plus a recovery runbook
+    for the "cert expired, can't connect" case.
+  - Tests: 3 new CLI cases in `tests/test_cli_certs.py` (PEM write +
+    audit row + clientAuth EKU check), 1 new API case in
+    `tests/test_certs_api.py`, 8 new config-shape cases in
+    `tests/test_mysql_tls_config.py` (my.cnf drop-in fields,
+    docker-compose mount paths + `:ro` flags, Makefile target body),
+    and 1 vitest spec pinning the dashboard's cert-type dropdown
+    order. Backend `pytest` 368/368 green; vitest 36/36; `tsc
+    --noEmit` clean for the new code (pre-existing
+    `lib/proxy.ts:124` complaint is tracked separately).
 - **Phase 2d CP4.1 — engine TLS wiring + Settings.** New
   `DATABASE_TLS_REQUIRED` / `DATABASE_TLS_CA_PEM` /
   `DATABASE_TLS_CERT_PEM` / `DATABASE_TLS_KEY_PEM` Settings fields

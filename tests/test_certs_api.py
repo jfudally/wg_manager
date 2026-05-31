@@ -465,6 +465,37 @@ class TestIssueCert:
         key, leaf, _chain = pkcs12.load_key_and_certificates(p12_bytes, None)
         assert key is not None and leaf is not None
 
+    def test_issue_mysql_client_cert_happy_path(
+        self, as_admin: tuple[TestClient, Operator]
+    ) -> None:
+        """Phase 2d CP4.2 — ``mysql-client`` is a service-principal
+        clientAuth cert with no operator FK. The app + worker present
+        it to MySQL to satisfy ``require_secure_transport=ON``.
+        """
+        client, _ = as_admin
+        resp = client.post(
+            "/certs",
+            json={
+                "cert_type": "mysql-client",
+                "common_name": "wg-manager-app",
+                "ttl_days": 30,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+        assert body["certificate"]["cert_type"] == "mysql-client"
+        assert body["certificate"]["operator_id"] is None
+        # The leaf carries clientAuth (not serverAuth — that's mysql's job).
+        leaf = x509.load_pem_x509_certificate(body["cert_pem"].encode())
+        ekus = leaf.extensions.get_extension_for_class(
+            x509.ExtendedKeyUsage
+        ).value
+        assert ExtendedKeyUsageOID.CLIENT_AUTH in list(ekus)
+        assert ExtendedKeyUsageOID.SERVER_AUTH not in list(ekus)
+        # No PKCS#12 — only the dashboard type ships that.
+        assert body.get("pkcs12_b64") is None
+        assert _row_count() == 1
+
     def test_issue_rejects_invalid_cert_type(
         self, as_admin: tuple[TestClient, Operator]
     ) -> None:

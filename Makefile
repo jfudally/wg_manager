@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs
+.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -40,6 +40,7 @@ help:
 	@echo "  vault-smoke    Run scripts/vault_smoke.py against the dev Vault"
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
+	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -166,6 +167,23 @@ ssh-ca-bootstrap:
 pki-bootstrap:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
 		$(PYTHON) scripts/pki_bootstrap.py
+
+# ---------------------------------------------------------------------------
+# MySQL TLS (Phase 2d CP4.2) — mint the server cert into the bind-mount
+# directory the docker-compose `mysql` service reads from. The op needs
+# to run this before the first `make db-up` once CP4.2 is enabled; the
+# my.cnf drop-in in docker/mysql/conf.d/wg-manager-tls.cnf refuses to
+# let MySQL come up if the PEMs are missing.
+# ---------------------------------------------------------------------------
+
+mysql-tls-issue:
+	@mkdir -p tls/mysql
+	$(WG_MANAGER) certs issue --type mysql --cn localhost \
+		--san localhost --san 127.0.0.1 --san mysql --san wg_manager_mysql \
+		--ttl-days 30 \
+		--out-cert tls/mysql/server.crt \
+		--out-key tls/mysql/server.key \
+		--out-chain tls/mysql/ca.crt
 
 # ---------------------------------------------------------------------------
 # Phase 2c CP5 — dockerised-sshd end-to-end suite

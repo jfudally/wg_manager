@@ -78,6 +78,12 @@ class CertificateType(str, Enum):
     :cvar mysql: ``serverAuth`` — MySQL server cert (Phase 2d CP4).
         SANs are the DB hostnames the app + worker dial. Not owned by
         an :class:`Operator`.
+    :cvar mysql_client: ``clientAuth`` — service cert the app + worker
+        present back to MySQL once ``require_secure_transport=ON`` is
+        enforced (Phase 2d CP4.2). The wire enum value is
+        ``"mysql-client"`` so the JSON shape stays kebab-case and
+        consistent with how operators write SAN lists. Not owned by an
+        :class:`Operator` — these are service principals.
 
     Subclassing ``str`` keeps the enum JSON-serialisable as its value
     so dashboards and CLI clients see plain string literals.
@@ -87,6 +93,7 @@ class CertificateType(str, Enum):
     cli = "cli"
     dashboard = "dashboard"
     mysql = "mysql"
+    mysql_client = "mysql-client"
 
 
 class OperatorStatus(str, Enum):

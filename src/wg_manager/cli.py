@@ -799,13 +799,16 @@ class _CertType(str, Enum):
     cli = "cli"
     dashboard = "dashboard"
     mysql = "mysql"
+    mysql_client = "mysql-client"
 
 
 # Map cert type → (default TTL days, default SAN list, requires_operator,
 # uses_server_eku). The defaults match the "first run" shape an operator
 # expects: the API listener gets a short-lived loopback cert; the
 # operator-bound certs default to a year (rotation friction); MySQL
-# mirrors the API.
+# mirrors the API; mysql-client carries a clientAuth EKU so the app +
+# worker can present it back to MySQL once require_secure_transport is
+# enforced (Phase 2d CP4.2).
 _CERT_PROFILES: dict[_CertType, dict[str, Any]] = {
     _CertType.api: {
         "ttl_days": 30,
@@ -831,6 +834,12 @@ _CERT_PROFILES: dict[_CertType, dict[str, Any]] = {
         "requires_operator": False,
         "server_eku": True,
     },
+    _CertType.mysql_client: {
+        "ttl_days": 30,
+        "default_sans": None,  # populated from --cn at call time
+        "requires_operator": False,
+        "server_eku": False,
+    },
 }
 
 
@@ -854,8 +863,8 @@ def certs_issue(
         "-t",
         help=(
             "Logical cert purpose: api (FastAPI server), cli (operator "
-            "CLI client), dashboard (browser PKCS#12 client), or mysql "
-            "(DB server)."
+            "CLI client), dashboard (browser PKCS#12 client), mysql "
+            "(DB server), or mysql-client (app/worker → DB client)."
         ),
     ),
     common_name: str = typer.Option(
@@ -874,8 +883,8 @@ def certs_issue(
         None,
         "--ttl-days",
         help=(
-            "Validity window in days. Defaults: api/mysql=30, "
-            "cli/dashboard=365."
+            "Validity window in days. Defaults: api/mysql/"
+            "mysql-client=30, cli/dashboard=365."
         ),
     ),
     operator_cn: str | None = typer.Option(

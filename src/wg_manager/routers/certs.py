@@ -181,6 +181,12 @@ _CERT_PROFILES: dict[CertificateType, dict[str, Any]] = {
         "requires_operator": False,
         "server_eku": True,
     },
+    CertificateType.mysql_client: {
+        "ttl_days": 30,
+        "default_sans": None,  # populated from common_name at call time
+        "requires_operator": False,
+        "server_eku": False,
+    },
 }
 
 

@@ -341,6 +341,46 @@ Implementation notes:
   dashboard's CORS negotiation works on a TLS session that already
   carries the cert.
 
+## MySQL TLS (Phase 2d CP4)
+
+CP4.1 wires pymysql `ssl={ca, cert, key, check_hostname}` connect
+args into the engine when `DATABASE_TLS_REQUIRED=true`; CP4.2 ships
+the matching docker-compose mounts + a my.cnf drop-in that turns on
+`require_secure_transport=ON` server-side. The end-to-end walkthrough
+lives in
+[`docs/migrations/2d-mysql-tls.md`](docs/migrations/2d-mysql-tls.md) —
+here's the short form:
+
+```bash
+# 1. Mint the server cert into the bind-mount directory.
+make mysql-tls-issue
+
+# 2. Mint the matching service-principal client cert.
+wg-manager certs issue --type mysql-client --cn wg-manager-app \
+  --out-cert tls/mysql/client.crt --out-key tls/mysql/client.key \
+  --out-chain tls/mysql/client-ca.crt
+
+# 3. Bounce the DB so the my.cnf drop-in picks the new certs up.
+make db-down && make db-up
+
+# 4. Flip the engine on (add to .env):
+#      DATABASE_TLS_REQUIRED=true
+#      DATABASE_TLS_CA_PEM=tls/mysql/client-ca.crt
+#      DATABASE_TLS_CERT_PEM=tls/mysql/client.crt
+#      DATABASE_TLS_KEY_PEM=tls/mysql/client.key
+make run
+```
+
+Two cert types power this:
+
+- `mysql` — `serverAuth`, presented by the mysqld daemon.
+- `mysql-client` — `clientAuth`, presented by the app + worker.
+  Service principal, no `Operator` FK.
+
+Both are 30-day leaves by default. CP4.3 will ship `wg-manager certs
+renew` + a systemd-timer pattern so the rotation isn't manual; until
+then, re-run the two issue commands and bounce both processes.
+
 ## How to add a server
 
 The Phase 2c flow is **role-first**: register a role name, then

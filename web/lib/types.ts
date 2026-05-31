@@ -300,8 +300,14 @@ export interface CryptoStatus {
 // ---------------------------------------------------------------------------
 
 /** Logical purpose of a leaf cert — mirrors `CertificateType` in
- *  `src/wg_manager/models.py`. */
-export type CertificateType = "api" | "cli" | "dashboard" | "mysql";
+ *  `src/wg_manager/models.py`. ``mysql-client`` is the Phase 2d CP4.2
+ *  service cert the app + worker present to a TLS-enforcing MySQL. */
+export type CertificateType =
+  | "api"
+  | "cli"
+  | "dashboard"
+  | "mysql"
+  | "mysql-client";
 
 /** Operator role the API sees on the calling cert — mirrors
  *  `OperatorRole` in `src/wg_manager/models.py`. Drives which controls

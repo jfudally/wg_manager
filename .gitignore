@@ -36,9 +36,16 @@ Thumbs.db
 *.key
 !.env.example
 
-# Dev TLS material written by `make tls-issue-dev` (Phase 2d CP2).
-# Throwaway certs/keys for the local API listener — never commit.
-tls/
+# Dev TLS material written by `wg-manager certs issue` (Phase 2d CP3.3+).
+# Throwaway certs/keys for the local API listener / MySQL — never commit.
+# Phase 2d CP4.2 keeps an empty ``tls/mysql/`` directory checked in so the
+# docker-compose bind mount has a directory to point at on a fresh clone.
+# Use ``tls/*`` (not ``tls/``) so git still recurses into the directory
+# and the ``!`` re-include below actually matches.
+tls/*
+!tls/mysql/
+tls/mysql/*
+!tls/mysql/.gitkeep
 
 # --- Build artefacts --------------------------------------------------------
 *.log

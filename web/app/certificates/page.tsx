@@ -243,6 +243,11 @@ const CERT_TYPES: { value: CertificateType; label: string; hint: string }[] = [
     label: "MySQL (server)",
     hint: "serverAuth — DB listener (Phase 2d CP4).",
   },
+  {
+    value: "mysql-client",
+    label: "MySQL (client)",
+    hint: "clientAuth — app + worker → DB (Phase 2d CP4.2).",
+  },
 ];
 
 function IssueCertForm({
@@ -332,7 +337,9 @@ function IssueCertForm({
                   ? "127.0.0.1"
                   : certType === "mysql"
                     ? "mysql"
-                    : "ops@wg.local"
+                    : certType === "mysql-client"
+                      ? "wg-manager-app"
+                      : "ops@wg.local"
               }
             />
           </div>
@@ -346,7 +353,11 @@ function IssueCertForm({
               value={ttlDays}
               onChange={(e) => setTtlDays(e.currentTarget.value)}
               placeholder={
-                certType === "api" || certType === "mysql" ? "30" : "365"
+                certType === "api" ||
+                certType === "mysql" ||
+                certType === "mysql-client"
+                  ? "30"
+                  : "365"
               }
             />
           </div>
@@ -362,7 +373,9 @@ function IssueCertForm({
                   ? "127.0.0.1, localhost"
                   : certType === "mysql"
                     ? "mysql, 127.0.0.1, localhost"
-                    : "(defaults to the CN)"
+                    : certType === "mysql-client"
+                      ? "(defaults to the CN)"
+                      : "(defaults to the CN)"
               }
             />
           </div>

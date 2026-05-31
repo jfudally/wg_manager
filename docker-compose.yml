@@ -12,6 +12,14 @@ services:
       - "3307:3306"
     volumes:
       - wg_manager_mysql_data:/var/lib/mysql
+      # Phase 2d CP4.2 — bind-mount the operator-issued server cert
+      # bundle (mint with `make mysql-tls-issue`) and the my.cnf
+      # drop-in that turns on `require_secure_transport`. Both are
+      # read-only so a compromised mysqld can't rewrite its own trust
+      # anchors. The directories are committed empty; the .gitignore
+      # in tls/mysql/ keeps the actual PEMs out of git.
+      - ./tls/mysql:/etc/mysql/certs:ro
+      - ./docker/mysql/conf.d:/etc/mysql/conf.d:ro
 
   valkey:
     image: valkey/valkey:7-alpine

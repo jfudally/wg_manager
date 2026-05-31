@@ -739,12 +739,26 @@ existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
     unreadable. 9 new tests in `tests/test_db_tls.py`; backend
     `pytest` 357/357 green. Server-side
     `require_secure_transport=ON` lands in CP4.2.
-  - **CP4.2 `[ ]`** — docker-compose MySQL TLS. MySQL container
-    mounts a Vault-issued server cert + CA bundle; my.cnf drop-in
-    sets `require_secure_transport=ON`; Makefile target
-    `mysql-tls-issue` mints the server cert via `wg-manager certs
-    issue --type mysql`; bootstrap walkthrough in
-    `docs/migrations/2d-mysql-tls.md`.
+  - **CP4.2 `[x]`** (2026-05-31) — docker-compose MySQL TLS +
+    `mysql-client` cert type. `docker/mysql/conf.d/wg-manager-tls.cnf`
+    sets `require_secure_transport=ON` and points mysqld at the
+    Vault-issued server cert + CA bundle; the `mysql` compose
+    service bind-mounts `./tls/mysql:/etc/mysql/certs:ro` plus
+    `./docker/mysql/conf.d:/etc/mysql/conf.d:ro` so the daemon
+    comes up TLS-only on the next `make db-down && make db-up`.
+    New `CertificateType.mysql_client` (wire value
+    `"mysql-client"`, clientAuth EKU, no operator FK, 30-day
+    default) closes the matching client-side surface — the app +
+    worker present it to MySQL once `DATABASE_TLS_REQUIRED=true`
+    (CP4.1). Threaded through the CLI's `_CERT_PROFILES`, the
+    router's parallel `_CERT_PROFILES`, and the dashboard's
+    `CertificateType` literal + Issue-form dropdown. New
+    `make mysql-tls-issue` target mints the server cert into
+    `tls/mysql/`; `docs/migrations/2d-mysql-tls.md` documents the
+    full bootstrap + recovery flow. 3 new CLI tests + 1 new API
+    test + 8 new config-shape tests (my.cnf + docker-compose +
+    Makefile) + 1 new vitest dropdown spec. Backend `pytest`
+    368/368 green; vitest 36/36.
   - **CP4.3 `[ ]`** — `wg-manager certs renew` (+ `POST
     /certs/{id}/renew` + dashboard button). Walks the Certificate
     audit registry; re-issues any leaf with less than the

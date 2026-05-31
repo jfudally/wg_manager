@@ -251,3 +251,33 @@ describe("Certificates page — admin issuance affordance", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("Certificates page — Phase 2d CP4.2 cert-type dropdown", () => {
+  it("the Issue form lists every CertificateType, including mysql-client", async () => {
+    vi.spyOn(global, "fetch").mockImplementation(
+      fetchRouter({
+        "/certs/whoami": makeFetchResponse(200, makeWhoAmI()),
+        "/certs": makeFetchResponse(200, []),
+      }) as typeof fetch,
+    );
+
+    renderPage();
+
+    // Open the issue form so the cert-type <select> renders.
+    fireEvent.click(
+      await screen.findByRole("button", { name: /issue new cert/i }),
+    );
+
+    const select = await screen.findByLabelText(/cert type/i);
+    const optionValues = Array.from(
+      select.querySelectorAll("option"),
+    ).map((opt) => (opt as HTMLOptionElement).value);
+    expect(optionValues).toEqual([
+      "api",
+      "cli",
+      "dashboard",
+      "mysql",
+      "mysql-client",
+    ]);
+  });
+});
