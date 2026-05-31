@@ -718,13 +718,42 @@ existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
     the new file (the pre-existing `lib/proxy.ts:124`
     `Uint8Array<ArrayBufferLike>` ↔ `BodyInit` complaint stays out
     of scope — tracked separately).
-- **Checkpoint 4 `[ ]`** — MySQL TLS. docker-compose mounts
+- **Checkpoint 4 `[~]`** — MySQL TLS. docker-compose mounts
   Vault-issued server cert + CA; `require_secure_transport=ON`
-  server-side; SQLAlchemy URL grows `?ssl_ca=&ssl_cert=&ssl_key=`;
-  the app + worker each carry a Vault-issued client cert.
-  `wg-manager certs renew` walks every wg-manager-issued cert in
-  the same Vault PKI mount and is wired to a systemd-timer pattern
-  in the deploy story.
+  server-side; SQLAlchemy connect args grow
+  `ssl={ca,cert,key,check_hostname}`; the app + worker each carry a
+  Vault-issued client cert. `wg-manager certs renew` walks every
+  wg-manager-issued cert in the same Vault PKI mount and is wired
+  to a systemd-timer pattern in the deploy story. Landing in four
+  phased sub-slices:
+  - **CP4.1 `[x]`** (2026-05-30) — engine + Settings wiring. New
+    `DATABASE_TLS_REQUIRED` / `DATABASE_TLS_CA_PEM` /
+    `DATABASE_TLS_CERT_PEM` / `DATABASE_TLS_KEY_PEM` fields drive a
+    new `wg_manager.db._resolve_mysql_ssl` helper that produces
+    pymysql's `ssl={ca, cert, key, check_hostname}` connect-args
+    dict for MySQL/MariaDB URLs and stays empty for SQLite
+    (keeping the hermetic test suite untouched). `_build_engine`
+    threads the result through `create_engine(connect_args=...)`.
+    Refuses to start with a clear-message `RuntimeError` when TLS
+    is required but any of the three PEM paths is missing or
+    unreadable. 9 new tests in `tests/test_db_tls.py`; backend
+    `pytest` 357/357 green. Server-side
+    `require_secure_transport=ON` lands in CP4.2.
+  - **CP4.2 `[ ]`** — docker-compose MySQL TLS. MySQL container
+    mounts a Vault-issued server cert + CA bundle; my.cnf drop-in
+    sets `require_secure_transport=ON`; Makefile target
+    `mysql-tls-issue` mints the server cert via `wg-manager certs
+    issue --type mysql`; bootstrap walkthrough in
+    `docs/migrations/2d-mysql-tls.md`.
+  - **CP4.3 `[ ]`** — `wg-manager certs renew` (+ `POST
+    /certs/{id}/renew` + dashboard button). Walks the Certificate
+    audit registry; re-issues any leaf with less than the
+    threshold percentage of its TTL remaining; idempotent so a
+    systemd timer (or `cron`) can run it on a tight interval
+    without thrashing.
+  - **CP4.4 `[ ]`** — Docs sweep. `docs/deploy/systemd-timer.md`
+    documents the renewal cadence; README + SECURITY.md +
+    THREAT_MODEL.md sweep that flips T-8 to "Phase 2d shipped".
 - **Checkpoint 5 `[ ]`** — Acceptance suite: cert rotation under
   load (script flips MySQL's cert mid-request; app reconnects with
   no dropped requests), expired client cert → HTTP 401 + audit log

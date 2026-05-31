@@ -185,6 +185,32 @@ class Settings(BaseSettings):
     # validated rather than waved through.
     tls_ca_bundle_pem: str | None = None
 
+    # ----- Database TLS (Phase 2d CP4.1, see wg_manager.db) -----
+    # When ``True`` and :attr:`database_url` resolves to a MySQL driver,
+    # :func:`wg_manager.db._build_engine` injects a pymysql ``ssl`` dict
+    # built from the three PEM paths below — the connection refuses to
+    # open if any are missing or unreadable. Defaults to ``False`` so
+    # SQLite-backed tests and pre-Phase-2d-CP4 deployments keep working
+    # untouched. **Production must set this to ``True``** once CP4.2
+    # ships the matching server-side ``require_secure_transport=ON``
+    # config (see ``docs/migrations/2d-mysql-tls.md``).
+    database_tls_required: bool = False
+    # Path to the PEM bundle pymysql passes as ``ssl.ca`` — the trust
+    # anchor it uses to verify the MySQL server certificate. Typically
+    # the same CA bundle :class:`wg_manager.pki` advertises via
+    # :attr:`PKIBackend.ca_bundle_pem`. Required when
+    # ``database_tls_required=True``.
+    database_tls_ca_pem: str | None = None
+    # Path to the PEM body pymysql passes as ``ssl.cert`` — the client
+    # certificate the app + worker present to MySQL for mutual
+    # authentication. Mint with
+    # ``wg-manager certs issue --type mysql --cn <operator-svc-CN>``.
+    database_tls_cert_pem: str | None = None
+    # Path to the private-key PEM pymysql passes as ``ssl.key``. Pair
+    # with :attr:`database_tls_cert_pem`; required when
+    # ``database_tls_required=True``.
+    database_tls_key_pem: str | None = None
+
     # ----- Operator registry (Phase 2d CP3.2, see wg_manager.auth) -----
     # CN of the operator that the middleware self-registers the first
     # time it sees that CN on a request. Solves the chicken-and-egg

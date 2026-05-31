@@ -10,6 +10,26 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2d CP4.1 — engine TLS wiring + Settings.** New
+  `DATABASE_TLS_REQUIRED` / `DATABASE_TLS_CA_PEM` /
+  `DATABASE_TLS_CERT_PEM` / `DATABASE_TLS_KEY_PEM` Settings fields
+  drive a new `wg_manager.db._resolve_mysql_ssl` helper that
+  materialises pymysql's `ssl={ca, cert, key, check_hostname}`
+  connect-args dict for MySQL/MariaDB URLs. `_build_engine` threads
+  the result through `create_engine`'s `connect_args` so the app +
+  worker present a Vault-issued client cert to MySQL when TLS is
+  required. The helper refuses to start (clear-message
+  `RuntimeError`) if any of the three PEM paths is unset or points
+  at a non-existent file. SQLite URLs short-circuit to the legacy
+  `check_same_thread=False` shape, so the hermetic test suite stays
+  untouched (and `DATABASE_TLS_REQUIRED=false` remains the default
+  for the same reason — pre-CP4 deployments keep working). 9 new
+  tests in `tests/test_db_tls.py` pin the resolver (SQLite
+  short-circuit, MySQL without TLS, MySQL happy path, missing-PEM
+  per env var, missing-file rejection, engine fallback to
+  module-level settings). Backend `pytest` 357/357 green in `local`
+  mode. The matching server-side `require_secure_transport=ON` config
+  lands in CP4.2 alongside the docker-compose mounts.
 - **Phase 2d CP3.4 — `/certs` HTTP surface + dashboard page.** New
   `wg_manager.routers.certs` exposes four endpoints over the CP3.3
   audit registry: `GET /certs/whoami` (any operator) returns the
