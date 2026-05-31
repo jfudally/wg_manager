@@ -10,6 +10,26 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2d CP4.4 — docs sweep around the renewal flow.** No code
+  changes. New
+  [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)
+  ships the production deployment pattern: unit files for
+  `wg-manager-cert-renew.{service,timer}` (hourly with a 5-minute
+  jitter), the API/worker bounce pattern after a successful
+  rotation, per-cert-type threshold tuning guidance (defaults
+  appropriate for 30-day service certs vs. 365-day operator
+  certs), and a disaster-recovery runbook for "the timer hasn't
+  run in a while". README's "MySQL TLS" section drops the
+  "CP4.3 will ship..." aside and grows a "Cert renewal (Phase 2d
+  CP4.3)" section that walks the renew CLI + dashboard Renew
+  button + systemd-timer doc. SECURITY.md's current-posture table
+  flips three rows to "Phase 2d shipped" (`App ↔ MySQL traffic`,
+  `Cert HTTP surface + dashboard`, `Cert renewal automation`); the
+  hardening recommendations now lead with `DATABASE_TLS_REQUIRED`
+  and the systemd timer. THREAT_MODEL.md flips T-7 / T-8 / T-9 to
+  **Closed in Phase 2d**, refreshes the system-overview diagram so
+  the operator-facing arrows are labelled `mTLS` and `TLS+mTLS`
+  rather than `HTTP*` / `SQL*`, and updates B-1 / B-2 to "shipped".
 - **Phase 2d CP4.3 — `wg-manager certs renew` + dashboard surface.**
   Six pieces ship together:
   - Alembic 0012 adds three nullable string columns to ``certificate``

@@ -718,14 +718,15 @@ existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
     the new file (the pre-existing `lib/proxy.ts:124`
     `Uint8Array<ArrayBufferLike>` ↔ `BodyInit` complaint stays out
     of scope — tracked separately).
-- **Checkpoint 4 `[~]`** — MySQL TLS. docker-compose mounts
-  Vault-issued server cert + CA; `require_secure_transport=ON`
-  server-side; SQLAlchemy connect args grow
-  `ssl={ca,cert,key,check_hostname}`; the app + worker each carry a
-  Vault-issued client cert. `wg-manager certs renew` walks every
-  wg-manager-issued cert in the same Vault PKI mount and is wired
-  to a systemd-timer pattern in the deploy story. Landing in four
-  phased sub-slices:
+- **Checkpoint 4 `[x]`** (2026-05-31) — MySQL TLS + renewal flow.
+  docker-compose mounts Vault-issued server cert + CA;
+  `require_secure_transport=ON` server-side; SQLAlchemy connect
+  args grow `ssl={ca,cert,key,check_hostname}`; the app + worker
+  each carry a Vault-issued `mysql-client` cert. `wg-manager certs
+  renew --due` walks the audit registry and rotates expiring leaves
+  on a systemd timer (see
+  [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)).
+  Shipped in four sub-slices:
   - **CP4.1 `[x]`** (2026-05-30) — engine + Settings wiring. New
     `DATABASE_TLS_REQUIRED` / `DATABASE_TLS_CA_PEM` /
     `DATABASE_TLS_CERT_PEM` / `DATABASE_TLS_KEY_PEM` fields drive a
@@ -783,9 +784,27 @@ existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
     API ``POST /certs/{id}/renew`` cases + 4 vitest renew specs +
     1 ``api.test.ts`` case. Backend ``pytest`` 389/389 green;
     vitest 40/40.
-  - **CP4.4 `[ ]`** — Docs sweep. `docs/deploy/systemd-timer.md`
-    documents the renewal cadence; README + SECURITY.md +
-    THREAT_MODEL.md sweep that flips T-8 to "Phase 2d shipped".
+  - **CP4.4 `[x]`** (2026-05-31) — Docs sweep around the renewal
+    flow + threat-model. New
+    [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)
+    ships the unit files (`wg-manager-cert-renew.service` +
+    `.timer`), documents the API/worker bounce pattern, the
+    per-cert-type threshold tuning, and a disaster-recovery
+    runbook for "the timer hasn't run in a while". README's
+    "Running with TLS" section drops the "CLI lands soon"
+    placeholder, the MySQL-TLS section drops the "CP4.3 will
+    ship..." aside, and a new "Cert renewal (Phase 2d CP4.3)"
+    section walks the renew CLI + dashboard surface +
+    systemd-timer doc. SECURITY.md's current-posture table flips
+    `App ↔ MySQL traffic`, `Cert HTTP surface + dashboard`, and
+    `Cert renewal automation` to "Phase 2d (shipped)" with the
+    `mysql-client` cert type + the new endpoint named; the
+    hardening recommendations now lead with `DATABASE_TLS_REQUIRED`
+    and the systemd timer. THREAT_MODEL.md flips T-7 / T-8 / T-9
+    to **Closed in Phase 2d**, refreshes the system-overview
+    diagram so the operator-facing arrows are labelled `mTLS` and
+    `TLS+mTLS` rather than `HTTP*` / `SQL*`, and updates B-1 /
+    B-2 to "shipped". No code changes in this slice.
 - **Checkpoint 5 `[ ]`** — Acceptance suite: cert rotation under
   load (script flips MySQL's cert mid-request; app reconnects with
   no dropped requests), expired client cert → HTTP 401 + audit log

@@ -314,15 +314,16 @@ curl --cacert tls/ca-bundle.crt \
 ```
 
 The certs land on disk verbatim and the metadata is recorded in the
-`certificate` audit table (`wg-manager certs list` prints it as JSON).
-Phase 2d CP4 adds the renewal job; CP3.4 layers the dashboard surface
-on the same table.
+`certificate` audit table (`wg-manager certs list` prints it as JSON,
+the dashboard's `/certificates` page surfaces the same shape). Phase
+2d CP4.3 ships the renewal flow — see "Cert renewal" below.
 
 **Production path — Vault PKI:**
 
 ```bash
 make pki-bootstrap                           # one-time
-# Mint server + client certs from the Vault intermediate (CP3 CLI lands soon)
+# Same wg-manager certs issue invocations as the dev path, but
+# PKI_BACKEND=vault routes them through the Vault PKI mount.
 export TLS_REQUIRED=true \
        TLS_CERT_PEM=/etc/wg-manager/server.crt \
        TLS_KEY_PEM=/etc/wg-manager/server.key \
@@ -377,9 +378,41 @@ Two cert types power this:
 - `mysql-client` — `clientAuth`, presented by the app + worker.
   Service principal, no `Operator` FK.
 
-Both are 30-day leaves by default. CP4.3 will ship `wg-manager certs
-renew` + a systemd-timer pattern so the rotation isn't manual; until
-then, re-run the two issue commands and bounce both processes.
+Both are 30-day leaves by default — pair with the renewal flow below
+so rotation isn't manual.
+
+## Cert renewal (Phase 2d CP4.3)
+
+Each cert wg-manager issues lands in the `certificate` audit table
+with the on-disk PEM paths recorded (`out_cert_path` / `out_key_path`
+/ `out_chain_path`, populated when `wg-manager certs issue
+--out-cert/...` is used). `wg-manager certs renew` walks the table
+and re-mints in place:
+
+```bash
+# Renew one specific cert by row id.
+wg-manager certs renew --id 7
+
+# Walk the registry; re-mint every non-revoked cert past 50% of its
+# lifetime. Idempotent — safe to run on a cron / systemd timer.
+wg-manager certs renew --due --threshold-pct 50
+
+# Preview without minting.
+wg-manager certs renew --due --dry-run
+```
+
+The dashboard's `/certificates` page grew a per-row Renew button
+(admin only); the freshly-issued PEMs land in the same artefact-
+download panel as the Issue flow. The API surface is `POST
+/certs/{id}/renew` if you want to drive it from a script.
+
+Production deployments wire `wg-manager certs renew --due` into a
+systemd timer — see
+[`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md) for
+the unit files + the "bounce the API + worker on a successful
+rotation" pattern. Rows minted via `POST /certs` (no `out_*_path`)
+are skipped by the walker; re-issue them via the CLI to opt them
+into automated rotation.
 
 ## How to add a server
 

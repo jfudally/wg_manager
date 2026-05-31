@@ -32,13 +32,19 @@ The full STRIDE model lives at
   Phase 2c CP4.4 — the `sshkey` table dropped the ciphertext
   columns in Alembic 0008, and every worker connection mints a
   short-lived Vault-signed user cert in memory instead.
-- **Realistic attacker today.** Network attacker on the still-
-  plaintext app ↔ MySQL segment (Phase 2d CP2 closed the browser ↔
-  API segment with mTLS; CP4 closes the MySQL hop).
-- **Highest residual risk today.** App ↔ MySQL is still plaintext,
-  so a network attacker on that segment can read every write the
-  worker makes (including the manual-client ciphertext bound for
-  the encryption-at-rest table). Closes in Phase 2d CP4.
+- **Realistic attacker today.** With Phase 2d CP4 shipped, the only
+  unencrypted/unauthenticated surface left in the control plane is
+  the audit log (Phase 2e). A network attacker on the host loopback
+  no longer sees plaintext SQL between the app and MySQL — the
+  connection now negotiates TLS with a Vault-issued ``mysql-client``
+  cert and the daemon refuses cleartext via
+  ``require_secure_transport=ON``.
+- **Highest residual risk today.** The Vault dev container is
+  in-memory and unseals at boot — fine for development, **not**
+  production. Run a real Vault before storing anything you care
+  about (see [`docs/vault-cookbook.md`](docs/vault-cookbook.md) §6
+  for the production-storage / auto-unseal story). Phase 2e adds
+  the audit-log story and supply-chain pieces on top.
 
 ## Current posture
 
@@ -57,43 +63,56 @@ shipped for every row.
 | Browser ↔ API traffic            | TLS terminated at uvicorn (CERT_REQUIRED)   | **Phase 2d CP2 (shipped)** |
 | Operator registry + middleware tightening | `MTLSAuthMiddleware` rejects unknown/disabled CNs; bootstrap env knob seeds the first row | **Phase 2d CP3.2 (shipped)** |
 | Cert audit registry + issuance CLI | `wg-manager certs issue/revoke/list` records every leaf in the `certificate` table | **Phase 2d CP3.3 (shipped)** |
-| Cert HTTP surface + dashboard    | None — issuance is CLI-only                 | Phase 2d CP3.4 |
-| App ↔ MySQL traffic              | Plaintext                                   | Phase 2d CP4 |
+| Cert HTTP surface + dashboard    | `/certs/{whoami,list,issue,revoke,renew}` + dashboard inventory + Renew button | **Phase 2d CP3.4 / CP4.3 (shipped)** |
+| App ↔ MySQL traffic              | TLS — pymysql `ssl={ca,cert,key,check_hostname}` against `require_secure_transport=ON` | **Phase 2d CP4 (shipped)** |
+| Cert renewal automation          | `wg-manager certs renew --due` walker + `POST /certs/{id}/renew` + per-row Renew button; systemd-timer pattern in `docs/deploy/systemd-timer.md` | **Phase 2d CP4.3 (shipped)** |
 | Audit logging of API mutations   | None beyond app logs                        | Phase 2e    |
 | Supply-chain verification (SBOM, signed builds) | None                           | Phase 2e    |
 
 ## Hardening recommendations for current deployments
 
-Phase 2d CP2 closes the API-listener slice (mTLS, cert-subject
-extraction); CP3 (operator registry + cert-issuance CLI) and CP4
-(MySQL TLS) are still ahead, alongside Phase 2e (supply chain +
-audit). If you must run today:
+Phase 2d is now feature-complete: the API listener is mTLS-only
+(CP2), the operator registry tightens authz (CP3), and the MySQL
+hop is TLS + mutually authenticated (CP4). Phase 2e (audit-log
+hardening, SBOM, signed builds) is the next chunk. If you deploy
+today:
 
 1. **Always set `TLS_REQUIRED=true`** — the default is `false` so the
    test suite stays hermetic, but running without it leaves the API
    unauthenticated. `make run` already refuses to start without the
    `TLS_CERT_PEM` / `TLS_KEY_PEM` / `TLS_CA_BUNDLE_PEM` paths.
-2. Keep the API bound to `127.0.0.1` (or a tightly-scoped private
-   network) until CP3 ships the operator registry — a Vault-signed
-   cert chain that satisfies `KnownHostsCAPolicy` but carries an
-   unexpected CN is currently accepted as long as it validates
-   against the configured CA bundle.
-3. Restrict the MySQL user to the smallest grant set that still works
+2. **Set `DATABASE_TLS_REQUIRED=true`** and point at a Vault-issued
+   `mysql-client` cert (see
+   [`docs/migrations/2d-mysql-tls.md`](docs/migrations/2d-mysql-tls.md)
+   for the bootstrap walkthrough). The docker-compose `mysql` service
+   already ships the `require_secure_transport=ON` my.cnf drop-in;
+   the engine has to hand pymysql the matching client cert for the
+   handshake to complete.
+3. **Wire up `wg-manager certs renew --due` on a systemd timer**
+   (see [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)).
+   The 30-day defaults on `api` / `mysql` / `mysql-client` leaves
+   little headroom if rotation is manual.
+4. Restrict the MySQL user to the smallest grant set that still works
    (no `FILE`, no `SUPER`).
-3. Take encrypted MySQL backups (`mysqldump | age -r …`) and audit who
-   can read them. A leaked backup no longer leaks SSH keys (Phase 2c)
-   but still exposes manual-client WireGuard key ciphertext + every
+5. Take encrypted MySQL backups (`mysqldump | age -r …`) and audit
+   who can read them. A leaked backup no longer leaks SSH keys
+   (Phase 2c) or app-↔-MySQL traffic (Phase 2d CP4), but still
+   exposes manual-client WireGuard key ciphertext + every
    server/peer endpoint — bad enough.
-4. Run a **production** Vault, not the dev container — the dev
+6. Run a **production** Vault, not the dev container — the dev
    container is in-memory and wipes on restart. See
    [`docs/vault-cookbook.md`](docs/vault-cookbook.md) for the
    production-Vault story (file/raft storage, auto-unseal, audit
    log shipping).
-5. Tighten the SSH CA roles' `allowed_users` and `allowed_domains`
+7. Tighten the SSH CA roles' `allowed_users` and `allowed_domains`
    from their dev-friendly defaults to the specific accounts and
    FQDNs in use. The defaults cover cloud-image accounts (`ubuntu`,
    `ec2-user`, `azureuser`, …) for first-boot convenience; that's
    wider than a production deployment should accept.
+8. Tighten the PKI role's `allowed_domains` (env:
+   `PKI_VAULT_ALLOWED_DOMAINS`) once stable DNS is in place; the
+   default permits any name so the first `make pki-bootstrap` run
+   doesn't refuse a loopback-only fleet.
 
 ## Hall of thanks
 

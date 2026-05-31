@@ -12,7 +12,7 @@ API, persists state in MySQL, runs provisioning jobs in Celery workers
 backed by Valkey, and ships a Next.js dashboard.
 
 ```
-┌──────────────┐  HTTP*    ┌──────────────┐  SQL*      ┌─────────┐
+┌──────────────┐  mTLS     ┌──────────────┐  TLS+mTLS  ┌─────────┐
 │  Operator    │──────────►│  FastAPI     │───────────►│ MySQL   │
 │  (browser /  │           │  API +       │            └─────────┘
 │   CLI)       │           │  Celery      │  SSH cert   ┌─────────┐
@@ -23,17 +23,28 @@ backed by Valkey, and ships a Next.js dashboard.
                                   │ AppRole / mTLS (Phase 2e)
                                   ▼
                            ┌──────────────┐
-                           │ HashiCorp    │ ←── SSH CA + Transit
-                           │ Vault        │     (Phase 2b + 2c)
+                           │ HashiCorp    │ ←── SSH CA + Transit + PKI
+                           │ Vault        │     (Phase 2b + 2c + 2d)
                            └──────────────┘
-
-* still plaintext; Phase 2d wraps both in TLS / mTLS via Vault PKI.
 ```
 
-The worker → managed-host arrow no longer carries a stored SSH key:
-Phase 2c mints a short-lived Vault-signed user cert per session and
-validates the host cert chain via
-[`KnownHostsCAPolicy`](../src/wg_manager/ssh.py) (no TOFU).
+Phase 2d wired every operator-facing segment in TLS:
+- **Operator ↔ FastAPI** (mTLS): uvicorn terminates TLS with
+  `CERT_REQUIRED`; the `MTLSAuthMiddleware` resolves the cert
+  subject against the `operator` registry and 401s unknown or
+  disabled CNs.
+- **FastAPI / worker ↔ MySQL** (TLS + mTLS): pymysql presents a
+  Vault-issued `mysql-client` cert; the mysqld container is configured
+  with `require_secure_transport=ON` and rejects cleartext on the
+  network layer.
+- **Worker ↔ managed host** (SSH cert): Phase 2c — Vault-signed
+  short-lived user certs each session; host cert chain validated via
+  [`KnownHostsCAPolicy`](../src/wg_manager/ssh.py) (no TOFU).
+
+The worker→host arrow no longer carries a stored SSH key (Phase 2c
+dropped the columns entirely); Phase 2d CP4.3 added
+`wg-manager certs renew --due` so the 30-day TLS leaves rotate on a
+systemd timer (see [`deploy/systemd-timer.md`](deploy/systemd-timer.md)).
 
 ## 2. Assets (ranked by impact if compromised)
 
@@ -48,8 +59,8 @@ validates the host cert chain via
 
 ## 3. Trust boundaries
 
-- **B-1.** Browser ↔ FastAPI (today plain HTTP on 127.0.0.1; planned mTLS in Phase 2d).
-- **B-2.** FastAPI ↔ MySQL (today plain TCP; planned TLS + cert auth in Phase 2d).
+- **B-1.** Browser ↔ FastAPI (**Phase 2d CP2/CP3 shipped**: uvicorn-terminated mTLS with operator-registry-bound authz).
+- **B-2.** FastAPI ↔ MySQL (**Phase 2d CP4 shipped**: pymysql `ssl={ca,cert,key,check_hostname}` against `require_secure_transport=ON`; `mysql-client` service principal).
 - **B-3.** FastAPI / worker ↔ Vault (today token-auth over plain HTTP; planned mTLS + AppRole in Phase 2e).
 - **B-4.** Worker ↔ managed host (SSH; **Phase 2c shipped**: Vault-signed short-lived user certs in both directions, host cert chain enforced via `KnownHostsCAPolicy`, no TOFU).
 - **B-5.** Operator ↔ managed host (post-provision; out of scope — wg-manager
@@ -80,9 +91,9 @@ actors who can mount it, and the roadmap phase that closes it. See
 | T-4  | I      | SSH key material leaks through error messages or logs                               | A-1            | U-3, U-4   | **Closed in Phase 2c CP4.4** — no SSH key material to leak. |
 | T-5  | T      | TOFU host-key acceptance (`AutoAddPolicy`) — MITM at first registration silently owns the channel | A-1, A-2 | U-2 | **Closed in Phase 2c CP4.4** — `KnownHostsCAPolicy` enforces that every host cert chain back to the Vault CA the worker minted its user cert against. |
 | T-6  | I      | Long-lived SSH keys remain valid forever even when no longer needed                 | A-1            | U-3        | **Closed in Phase 2c CP4.4** — user certs default to 5-minute TTL; the long-lived asset doesn't exist. |
-| T-7  | S, E   | API has no auth — anyone with network access can register peers, rotate keys        | A-3            | U-2        | **Phase 2d CP2 partial-closed** — `MTLSAuthMiddleware` 401s every non-OPTIONS request without a Vault-signed client cert; CP3 adds the `Operator` registry + scoped authz so a *valid* cert with an unknown CN is no longer accepted. |
-| T-8  | I      | Browser ↔ API traffic in cleartext (cookies, tokens, config bodies)                 | A-2, A-3       | U-2        | **Phase 2d CP2 closed** — uvicorn terminates TLS with `CERT_REQUIRED`; no plain-HTTP listener remains in `make run`. |
-| T-9  | I      | App ↔ MySQL traffic in cleartext on the host network                                | A-2            | U-2        | Phase 2d CP4 |
+| T-7  | S, E   | API has no auth — anyone with network access can register peers, rotate keys        | A-3            | U-2        | **Closed in Phase 2d CP3.2** — `MTLSAuthMiddleware` 401s every non-OPTIONS request without a Vault-signed client cert; CP3.2 added the `Operator` registry + scoped authz so a *valid* cert with an unknown CN is no longer accepted; CP3.4 layered the `require_role(*OperatorRole)` dep so role-gated endpoints (admin-only issuance/revoke/renew) refuse with 403 when the row's role doesn't permit the action. |
+| T-8  | I      | Browser ↔ API traffic in cleartext (cookies, tokens, config bodies)                 | A-2, A-3       | U-2        | **Closed in Phase 2d CP2** — uvicorn terminates TLS with `CERT_REQUIRED`; no plain-HTTP listener remains in `make run`. |
+| T-9  | I      | App ↔ MySQL traffic in cleartext on the host network                                | A-2            | U-2        | **Closed in Phase 2d CP4** — CP4.1 wired pymysql `ssl={ca,cert,key,check_hostname}` connect args into the engine; CP4.2 mounts the Vault-issued server cert into the mysqld container and flips `require_secure_transport=ON` via a my.cnf drop-in; CP4.3 ships `wg-manager certs renew --due` (and a per-row API surface + dashboard button) so the 30-day default leaves rotate automatically on a systemd timer (see [`deploy/systemd-timer.md`](deploy/systemd-timer.md)). |
 | T-10 | T      | Malicious dependency pulled at build time (paramiko, hvac, …)                       | All            | U-5        | Phase 2e   |
 | T-11 | R      | Operator actions are not audit-logged — no forensic trail after an incident         | —              | U-1        | Phase 2e   |
 | T-12 | D      | A single dead host on `discover-all` could hang every worker                        | Service uptime | U-4        | Closed in Phase 1 (fail-soft discovery, `connect_timeout`) |
