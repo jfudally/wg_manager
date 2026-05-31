@@ -10,6 +10,52 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2d CP4.3 — `wg-manager certs renew` + dashboard surface.**
+  Six pieces ship together:
+  - Alembic 0012 adds three nullable string columns to ``certificate``
+    (``out_cert_path`` / ``out_key_path`` / ``out_chain_path``). The
+    CLI's ``certs issue`` flow now populates them when ``--out-cert``
+    et al. are passed; ``POST /certs`` (which never writes to disk)
+    leaves them ``NULL``.
+  - New ``POST /certs/{id}/renew`` (admin only) mints a fresh leaf
+    with the same identity as the source row — same ``cert_type``,
+    CN, SANs, operator FK, and TTL window length — and records a
+    *new* audit row alongside it (the original stays put as the
+    audit trail). Returns the same ``CertificateIssueResponse``
+    envelope as ``POST /certs``, so a dashboard renew button reuses
+    the existing artefact-download panel verbatim. 422 on revoked
+    rows; 404 on unknown IDs.
+  - New ``wg-manager certs renew`` CLI with two modes: ``--id N``
+    re-mints one row (writing to the row's stored ``out_*_path``
+    triple unless ``--out-cert/--out-key/--out-chain`` are passed
+    explicitly), and ``--due`` walks the registry and re-mints every
+    non-revoked row whose lifetime has crossed
+    ``--threshold-pct`` (default 50). ``--dry-run`` prints what
+    *would* be renewed; rows missing ``out_*_path`` are skipped with
+    a warning so the walker doesn't strand half-written files.
+  - Dashboard inventory grew a per-row **Renew** button (admin
+    only, hidden on revoked rows) that POSTs to the new endpoint
+    and surfaces the freshly-issued PEMs in the existing
+    artefact-download panel. The "last delivered cert" state is now
+    lifted to the page level so both the Issue form and the Renew
+    action feed into the same panel — operators get one consistent
+    place to grab fresh credentials.
+  - Schema additions: ``CertificateRead`` surfaces the three
+    out-paths so the CLI/API responses can describe them; the
+    dashboard's ``Certificate`` type literal mirrors.
+  - Tests: 4 new alembic-0012 cases (column adds + null/path
+    inserts + downgrade round-trip), 2 new CLI ``issue`` cases
+    pinning path-recording, 8 new CLI ``renew`` cases (single-id
+    happy path / explicit-out-override / unknown-id / revoked /
+    missing-paths / due-noop / due-only-renews-past-threshold /
+    due-dry-run), 7 new API renew cases (happy / TTL-preserved /
+    operator-FK-preserved / 404 / 422-revoked / role × 2), 4 new
+    vitest specs (Renew button gated / auditor-no-button / POST
+    wiring / artefact-panel surfaces), and 1 new ``api.test.ts``
+    case for ``api.renewCertificate``. Backend ``pytest`` 389/389
+    green; vitest 40/40; ``tsc --noEmit`` clean for the new code
+    (pre-existing ``lib/proxy.ts:124`` complaint tracked
+    separately).
 - **Phase 2d CP4.2 — docker-compose MySQL TLS + `mysql-client` cert
   type.** Three pieces ship together:
   - `docker/mysql/conf.d/wg-manager-tls.cnf` — my.cnf drop-in that

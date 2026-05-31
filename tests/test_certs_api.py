@@ -615,3 +615,159 @@ class TestRevokeCert:
         client, _ = as_auditor
         resp = client.post("/certs/1/revoke")
         assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# POST /certs/{id}/renew — Phase 2d CP4.3
+# ---------------------------------------------------------------------------
+
+
+class TestRenewCert:
+    """``POST /certs/{id}/renew`` mints a fresh leaf with the same identity.
+
+    Renewal is the systemd-timer-friendly path: the original audit
+    row stays intact (so the trail captures the rotation), a new row
+    is recorded for the freshly-minted leaf, and the response body
+    carries the same shape as ``POST /certs`` (cert/key/chain + the
+    new audit row). The walker form (``wg-manager certs renew``)
+    walks the registry and calls this endpoint per due cert.
+    """
+
+    def _seed_via_api(self, client: TestClient) -> dict[str, Any]:
+        resp = client.post(
+            "/certs",
+            json={
+                "cert_type": "api",
+                "common_name": "127.0.0.1",
+                "sans": ["127.0.0.1", "localhost"],
+                "ttl_days": 30,
+            },
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["certificate"]
+
+    def test_renew_returns_new_cert_and_row(
+        self, as_admin: tuple[TestClient, Operator]
+    ) -> None:
+        client, _ = as_admin
+        original = self._seed_via_api(client)
+        original_id = original["id"]
+
+        resp = client.post(f"/certs/{original_id}/renew")
+        assert resp.status_code == 201, resp.text
+        body = resp.json()
+
+        # The response carries the same envelope as POST /certs.
+        assert "cert_pem" in body and "BEGIN CERTIFICATE" in body["cert_pem"]
+        assert "private_pem" in body and "PRIVATE KEY" in body["private_pem"]
+        assert "chain_pem" in body and "BEGIN CERTIFICATE" in body["chain_pem"]
+
+        # A new audit row exists; the original is untouched.
+        new_row = body["certificate"]
+        assert new_row["id"] != original_id
+        assert new_row["serial"] != original["serial"]
+        assert new_row["cert_type"] == original["cert_type"]
+        assert new_row["common_name"] == original["common_name"]
+        assert new_row["sans"] == original["sans"]
+        assert new_row["revoked"] is False
+
+        # Both rows are now in the registry.
+        assert _row_count() == 2
+
+        # Original row stays put — that's the audit trail.
+        original_after = _row_by_serial(original["serial"])
+        assert original_after is not None
+        assert original_after.revoked is False
+
+    def test_renew_preserves_original_ttl_window_length(
+        self, as_admin: tuple[TestClient, Operator]
+    ) -> None:
+        """The new cert's lifetime matches the original's so a 30-day
+        leaf renews into another 30-day leaf, not a default-365-day
+        one."""
+        client, _ = as_admin
+        original = self._seed_via_api(client)
+        original_window = (
+            datetime.fromisoformat(original["not_after"].replace("Z", "+00:00"))
+            - datetime.fromisoformat(
+                original["not_before"].replace("Z", "+00:00")
+            )
+        )
+
+        resp = client.post(f"/certs/{original['id']}/renew")
+        assert resp.status_code == 201, resp.text
+        new_row = resp.json()["certificate"]
+        new_window = (
+            datetime.fromisoformat(
+                new_row["not_after"].replace("Z", "+00:00")
+            )
+            - datetime.fromisoformat(
+                new_row["not_before"].replace("Z", "+00:00")
+            )
+        )
+        # The PKI backend adds a few seconds of clock-skew leeway on
+        # each issuance so the windows aren't bit-exact equal — but
+        # they must round-trip to the same number of days (a default-
+        # TTL renewal would land at 365 days, an order of magnitude
+        # off from the 30 the original cert carried).
+        assert new_window.days == original_window.days
+        assert abs(new_window - original_window) <= timedelta(minutes=5)
+
+    def test_renew_unknown_id_returns_404(
+        self, as_admin: tuple[TestClient, Operator]
+    ) -> None:
+        client, _ = as_admin
+        resp = client.post("/certs/9999/renew")
+        assert resp.status_code == 404
+
+    def test_renew_revoked_returns_422(
+        self, as_admin: tuple[TestClient, Operator]
+    ) -> None:
+        """A revoked cert is by definition retired — renewing it would
+        mint a fresh leaf for an identity the operator already
+        decommissioned. Refuse with 422 + a clear message."""
+        client, _ = as_admin
+        original = self._seed_via_api(client)
+        revoke = client.post(f"/certs/{original['id']}/revoke")
+        assert revoke.status_code == 200, revoke.text
+
+        resp = client.post(f"/certs/{original['id']}/renew")
+        assert resp.status_code == 422, resp.text
+        assert "revoked" in resp.text.lower()
+
+    def test_renew_cli_cert_preserves_operator_fk(
+        self, as_admin: tuple[TestClient, Operator]
+    ) -> None:
+        """``cli``/``dashboard`` rows stay bound to their original
+        :class:`Operator` after renewal — that's how the dashboard
+        keeps showing "X's CLI cert" next to the new row."""
+        client, admin = as_admin
+        issue = client.post(
+            "/certs",
+            json={
+                "cert_type": "cli",
+                "common_name": admin.cn,
+                "ttl_days": 365,
+            },
+        )
+        assert issue.status_code == 201, issue.text
+        original = issue.json()["certificate"]
+        assert original["operator_id"] == admin.id
+
+        resp = client.post(f"/certs/{original['id']}/renew")
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["certificate"]["operator_id"] == admin.id
+
+    def test_plain_operator_cannot_renew(
+        self, as_operator: tuple[TestClient, Operator]
+    ) -> None:
+        client, _ = as_operator
+        resp = client.post("/certs/1/renew")
+        assert resp.status_code == 403
+
+    def test_auditor_cannot_renew(
+        self, as_auditor: tuple[TestClient, Operator]
+    ) -> None:
+        client, _ = as_auditor
+        resp = client.post("/certs/1/renew")
+        assert resp.status_code == 403

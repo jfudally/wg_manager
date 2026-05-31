@@ -77,6 +77,14 @@ export default function CertificatesPage() {
 
   const isAdmin = whoamiQuery.data?.operator_role === "admin";
 
+  // Phase 2d CP4.3: lift the "last delivered cert" state to the page
+  // so both the Issue form and the per-row Renew button can feed into
+  // the same artefact-download panel. Operators get one consistent
+  // place to grab fresh credentials regardless of whether they came
+  // from a manual issue or an automated renewal.
+  const [lastIssued, setLastIssued] =
+    useState<CertificateIssueResponse | null>(null);
+
   return (
     <div className="flex flex-col gap-6">
       <header>
@@ -90,9 +98,19 @@ export default function CertificatesPage() {
 
       <WhoAmIPanel query={whoamiQuery} />
 
-      {isAdmin ? <IssueCertSection /> : null}
+      {isAdmin ? (
+        <IssueCertSection
+          onIssued={setLastIssued}
+          lastIssued={lastIssued}
+          onDismiss={() => setLastIssued(null)}
+        />
+      ) : null}
 
-      <CertificateInventory query={certsQuery} isAdmin={isAdmin} />
+      <CertificateInventory
+        query={certsQuery}
+        isAdmin={isAdmin}
+        onRenewed={setLastIssued}
+      />
     </div>
   );
 }
@@ -192,10 +210,16 @@ function Field({
 // Issue form (admin only)
 // ---------------------------------------------------------------------------
 
-function IssueCertSection() {
+function IssueCertSection({
+  onIssued,
+  lastIssued,
+  onDismiss,
+}: {
+  onIssued: (resp: CertificateIssueResponse) => void;
+  lastIssued: CertificateIssueResponse | null;
+  onDismiss: () => void;
+}) {
   const [open, setOpen] = useState(false);
-  const [lastIssued, setLastIssued] =
-    useState<CertificateIssueResponse | null>(null);
   return (
     <section className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
@@ -207,16 +231,13 @@ function IssueCertSection() {
       {open ? (
         <IssueCertForm
           onIssued={(resp) => {
-            setLastIssued(resp);
+            onIssued(resp);
             setOpen(false);
           }}
         />
       ) : null}
       {lastIssued ? (
-        <IssuedCertPanel
-          resp={lastIssued}
-          onDismiss={() => setLastIssued(null)}
-        />
+        <IssuedCertPanel resp={lastIssued} onDismiss={onDismiss} />
       ) : null}
     </section>
   );
@@ -517,9 +538,11 @@ function IssuedCertPanel({
 function CertificateInventory({
   query,
   isAdmin,
+  onRenewed,
 }: {
   query: UseQueryResult<Certificate[], Error>;
   isAdmin: boolean;
+  onRenewed: (resp: CertificateIssueResponse) => void;
 }) {
   if (query.isError) {
     const err = query.error as ApiError | Error;
@@ -555,15 +578,23 @@ function CertificateInventory({
       />
     );
   }
-  return <CertificateTable certs={certs} isAdmin={isAdmin} />;
+  return (
+    <CertificateTable
+      certs={certs}
+      isAdmin={isAdmin}
+      onRenewed={onRenewed}
+    />
+  );
 }
 
 function CertificateTable({
   certs,
   isAdmin,
+  onRenewed,
 }: {
   certs: Certificate[];
   isAdmin: boolean;
+  onRenewed: (resp: CertificateIssueResponse) => void;
 }) {
   return (
     <Table>
@@ -575,12 +606,17 @@ function CertificateTable({
           <TableHead>Serial</TableHead>
           <TableHead>Status</TableHead>
           <TableHead>Valid until</TableHead>
-          {isAdmin ? <TableHead className="w-32 text-right">Actions</TableHead> : null}
+          {isAdmin ? <TableHead className="w-40 text-right">Actions</TableHead> : null}
         </TableRow>
       </TableHeader>
       <TableBody>
         {certs.map((cert) => (
-          <CertificateRow key={cert.id} cert={cert} isAdmin={isAdmin} />
+          <CertificateRow
+            key={cert.id}
+            cert={cert}
+            isAdmin={isAdmin}
+            onRenewed={onRenewed}
+          />
         ))}
       </TableBody>
     </Table>
@@ -590,14 +626,26 @@ function CertificateTable({
 function CertificateRow({
   cert,
   isAdmin,
+  onRenewed,
 }: {
   cert: Certificate;
   isAdmin: boolean;
+  onRenewed: (resp: CertificateIssueResponse) => void;
 }) {
   const qc = useQueryClient();
   const revokeMutation = useMutation({
     mutationFn: () => api.revokeCertificate(cert.id),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["certs"] });
+    },
+  });
+  const renewMutation = useMutation({
+    mutationFn: () => api.renewCertificate(cert.id),
+    onSuccess: (resp) => {
+      // Surface the renewed PEMs in the same artefact-download panel
+      // the Issue flow uses — operators get one consistent place to
+      // grab fresh credentials regardless of how they were minted.
+      onRenewed(resp);
       qc.invalidateQueries({ queryKey: ["certs"] });
     },
   });
@@ -635,23 +683,33 @@ function CertificateRow({
           {cert.revoked ? (
             <span className="text-xs text-muted-foreground">—</span>
           ) : (
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={revokeMutation.isPending}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `Revoke cert serial ${cert.serial} (${cert.common_name})? ` +
-                      `The CRL flips immediately; presenting peers will be rejected on the next handshake.`,
-                  )
-                ) {
-                  revokeMutation.mutate();
-                }
-              }}
-            >
-              {revokeMutation.isPending ? "Revoking…" : "Revoke"}
-            </Button>
+            <div className="flex justify-end gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={renewMutation.isPending}
+                onClick={() => renewMutation.mutate()}
+              >
+                {renewMutation.isPending ? "Renewing…" : "Renew"}
+              </Button>
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={revokeMutation.isPending}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `Revoke cert serial ${cert.serial} (${cert.common_name})? ` +
+                        `The CRL flips immediately; presenting peers will be rejected on the next handshake.`,
+                    )
+                  ) {
+                    revokeMutation.mutate();
+                  }
+                }}
+              >
+                {revokeMutation.isPending ? "Revoking…" : "Revoke"}
+              </Button>
+            </div>
           )}
         </TableCell>
       ) : null}

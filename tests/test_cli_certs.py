@@ -231,6 +231,73 @@ class TestIssueMysqlCert:
         assert rows[0].operator_id is None
 
 
+class TestIssueRecordsOutPaths:
+    """Phase 2d CP4.3 — the row carries the three on-disk PEM paths.
+
+    The walker form of ``wg-manager certs renew`` re-writes the leaf
+    in place on the systemd timer, so each row needs to know where
+    its PEM files live. The ``--out-cert/--out-key/--out-chain`` paths
+    operate inside ``certs_issue`` are the natural source.
+    """
+
+    def test_api_cert_records_three_paths(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        out_cert = tmp_path / "api.crt"
+        out_key = tmp_path / "api.key"
+        out_chain = tmp_path / "api.chain.crt"
+        result = _invoke(
+            runner,
+            "certs",
+            "issue",
+            "--type",
+            "api",
+            "--cn",
+            "127.0.0.1",
+            "--out-cert",
+            str(out_cert),
+            "--out-key",
+            str(out_key),
+            "--out-chain",
+            str(out_chain),
+        )
+        assert result.exit_code == 0, result.output
+        row = _cert_rows()[0]
+        assert row.out_cert_path == str(out_cert)
+        assert row.out_key_path == str(out_key)
+        assert row.out_chain_path == str(out_chain)
+
+    def test_dashboard_pkcs12_leaves_paths_null(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        """``--out-pkcs12`` issues a PKCS#12 archive; there is no
+        leaf/key/chain PEM trio on disk for the renewer to overwrite,
+        so the columns stay NULL."""
+        _insert_operator("ops@wg.local", role=OperatorRole.admin)
+        result = _invoke(
+            runner,
+            "certs",
+            "issue",
+            "--type",
+            "dashboard",
+            "--cn",
+            "ops@wg.local",
+            "--out-pkcs12",
+            str(tmp_path / "ops.p12"),
+        )
+        assert result.exit_code == 0, result.output
+        row = _cert_rows()[0]
+        assert row.out_cert_path is None
+        assert row.out_key_path is None
+        assert row.out_chain_path is None
+
+
 class TestIssueMysqlClientCert:
     """``issue --type mysql-client`` mints a clientAuth cert with no operator FK.
 
@@ -633,3 +700,255 @@ class TestList:
         assert len(parsed) == 2
         types = {entry["cert_type"] for entry in parsed}
         assert types == {"api", "cli"}
+
+
+# ---------------------------------------------------------------------------
+# renew — Phase 2d CP4.3
+# ---------------------------------------------------------------------------
+
+
+def _issue_via_cli(
+    runner: CliRunner,
+    tmp_path: Path,
+    *,
+    cn: str = "127.0.0.1",
+    name_prefix: str = "api",
+) -> int:
+    """Helper: issue an api cert via the CLI and return its row id."""
+    result = _invoke(
+        runner,
+        "certs",
+        "issue",
+        "--type",
+        "api",
+        "--cn",
+        cn,
+        "--out-cert",
+        str(tmp_path / f"{name_prefix}.crt"),
+        "--out-key",
+        str(tmp_path / f"{name_prefix}.key"),
+        "--out-chain",
+        str(tmp_path / f"{name_prefix}.chain.crt"),
+    )
+    assert result.exit_code == 0, result.output
+    rows = _cert_rows()
+    return int(rows[-1].id or 0)
+
+
+class TestRenewSingleId:
+    """``renew --id N`` re-mints one cert in place.
+
+    Phase 2d CP4.3 — when the row carries the three ``out_*_path``
+    columns, the renew command overwrites the leaf, key, and chain
+    files on disk and records a new audit row carrying the same paths
+    so subsequent renewals know where to write next time.
+    """
+
+    def test_renew_uses_stored_paths_when_no_overrides(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        original_id = _issue_via_cli(runner, tmp_path)
+        original = _cert_rows()[0]
+        assert original.out_cert_path is not None
+        original_cert_bytes = Path(original.out_cert_path).read_bytes()
+
+        result = _invoke(runner, "certs", "renew", "--id", str(original_id))
+        assert result.exit_code == 0, result.output
+
+        # The on-disk leaf has been rewritten.
+        new_cert_bytes = Path(original.out_cert_path).read_bytes()
+        assert new_cert_bytes != original_cert_bytes
+        # A new audit row was recorded.
+        rows = _cert_rows()
+        assert len(rows) == 2
+        new_row = rows[-1]
+        # The new row also remembers the out paths so the next renewal
+        # writes to the same files.
+        assert new_row.out_cert_path == original.out_cert_path
+        assert new_row.out_key_path == original.out_key_path
+        assert new_row.out_chain_path == original.out_chain_path
+        # The new leaf's CN survives the rotation.
+        new_cert = x509.load_pem_x509_certificate(new_cert_bytes)
+        assert new_cert.subject.rfc4514_string().endswith("CN=127.0.0.1")
+
+    def test_renew_with_explicit_out_paths_overrides_stored(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        original_id = _issue_via_cli(runner, tmp_path)
+        new_cert = tmp_path / "rotated.crt"
+        new_key = tmp_path / "rotated.key"
+        new_chain = tmp_path / "rotated.chain.crt"
+
+        result = _invoke(
+            runner,
+            "certs",
+            "renew",
+            "--id",
+            str(original_id),
+            "--out-cert",
+            str(new_cert),
+            "--out-key",
+            str(new_key),
+            "--out-chain",
+            str(new_chain),
+        )
+        assert result.exit_code == 0, result.output
+        assert new_cert.exists() and new_key.exists() and new_chain.exists()
+        # The new audit row points at the override paths.
+        rows = _cert_rows()
+        assert rows[-1].out_cert_path == str(new_cert)
+        assert rows[-1].out_key_path == str(new_key)
+        assert rows[-1].out_chain_path == str(new_chain)
+
+    def test_renew_unknown_id_returns_nonzero(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+    ) -> None:
+        result = _invoke(runner, "certs", "renew", "--id", "9999")
+        assert result.exit_code != 0
+        assert "9999" in result.output
+
+    def test_renew_revoked_row_returns_nonzero(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        original_id = _issue_via_cli(runner, tmp_path)
+        # Hand-flip the row to revoked (the revoke command would also
+        # call the backend CRL, which is overkill for this test).
+        with Session(db_module.engine) as session:
+            row = session.get(Certificate, original_id)
+            assert row is not None
+            row.revoked = True
+            session.add(row)
+            session.commit()
+
+        result = _invoke(runner, "certs", "renew", "--id", str(original_id))
+        assert result.exit_code != 0
+        assert "revoked" in result.output.lower()
+
+    def test_renew_row_without_paths_or_overrides_errors(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+    ) -> None:
+        """Rows minted via ``POST /certs`` (no on-disk PEMs) need
+        explicit ``--out-*`` flags to renew via the CLI. Without
+        either source, the operator is told what's missing."""
+        # Insert a row that mimics an API-issued cert (no out_paths).
+        with Session(db_module.engine) as session:
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+            now = _dt.now(_tz.utc).replace(microsecond=0)
+            row = Certificate(
+                serial="42424242",
+                cert_type=CertificateType.api,
+                common_name="127.0.0.1",
+                sans="127.0.0.1",
+                not_before=now,
+                not_after=now + _td(days=30),
+            )
+            session.add(row)
+            session.commit()
+            session.refresh(row)
+            row_id = int(row.id or 0)
+
+        result = _invoke(runner, "certs", "renew", "--id", str(row_id))
+        assert result.exit_code != 0
+        assert "--out-cert" in result.output
+
+
+class TestRenewDueMode:
+    """``renew --due`` walks the registry and renews expiring certs.
+
+    The systemd-timer pattern in ``docs/deploy/`` (CP4.4) calls this
+    every hour or so. A cert is considered "due" when more than
+    ``--threshold-pct`` percent of its issued lifetime has elapsed —
+    a cert with 49% of its TTL still ahead at ``--threshold-pct 50``
+    is due; a fresh one with 99% ahead is not.
+    """
+
+    def test_renew_due_no_certs_is_noop(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+    ) -> None:
+        result = _invoke(runner, "certs", "renew", "--due")
+        assert result.exit_code == 0, result.output
+
+    def test_renew_due_only_renews_certs_past_threshold(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        # Two certs: one fresh, one whose validity window is mostly
+        # in the past so even a 50% threshold marks it as due.
+        fresh_id = _issue_via_cli(runner, tmp_path, name_prefix="fresh")
+        stale_id = _issue_via_cli(runner, tmp_path, name_prefix="stale")
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+        with Session(db_module.engine) as session:
+            stale = session.get(Certificate, stale_id)
+            assert stale is not None
+            # Issued 25 days ago with a 30-day window → ~83% elapsed.
+            stale.not_before = _dt.now(_tz.utc) - _td(days=25)
+            stale.not_after = _dt.now(_tz.utc) + _td(days=5)
+            session.add(stale)
+            session.commit()
+
+        result = _invoke(runner, "certs", "renew", "--due")
+        assert result.exit_code == 0, result.output
+
+        # The stale row was renewed, the fresh row was not.
+        rows = _cert_rows()
+        assert len(rows) == 3  # fresh, stale, renewed-stale
+        # The renewed-stale row carries the stale row's out_cert_path.
+        renewed = [
+            r
+            for r in rows
+            if r.id not in (fresh_id, stale_id)
+        ]
+        assert len(renewed) == 1
+        stale_after = next(r for r in rows if r.id == stale_id)
+        assert renewed[0].out_cert_path == stale_after.out_cert_path
+
+    def test_renew_due_dry_run_makes_no_changes(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        stale_id = _issue_via_cli(runner, tmp_path, name_prefix="stale")
+        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+
+        with Session(db_module.engine) as session:
+            stale = session.get(Certificate, stale_id)
+            assert stale is not None
+            stale.not_before = _dt.now(_tz.utc) - _td(days=25)
+            stale.not_after = _dt.now(_tz.utc) + _td(days=5)
+            session.add(stale)
+            session.commit()
+            stale_cert_path = stale.out_cert_path
+
+        assert stale_cert_path is not None
+        before_bytes = Path(stale_cert_path).read_bytes()
+
+        result = _invoke(
+            runner, "certs", "renew", "--due", "--dry-run"
+        )
+        assert result.exit_code == 0, result.output
+        # The on-disk leaf is unchanged.
+        assert Path(stale_cert_path).read_bytes() == before_bytes
+        # Still only one row in the registry.
+        assert len(_cert_rows()) == 1
+        # The output names what would have been renewed.
+        assert str(stale_id) in result.output

@@ -409,6 +409,101 @@ def issue_cert(
 
 
 @router.post(
+    "/{cert_id}/renew",
+    response_model=CertificateIssueResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def renew_cert(
+    cert_id: int,
+    _: Annotated[Operator, Depends(_RequireAdmin)],
+    session: Annotated[Session, Depends(get_session)],
+    backend: Annotated[PKIBackend, Depends(get_pki_backend)],
+) -> CertificateIssueResponse:
+    """Mint a fresh leaf with the same identity as ``cert_id``.
+
+    Phase 2d CP4.3. The original audit row stays intact so the trail
+    captures the rotation; a *new* row is recorded for the fresh
+    leaf. The response body carries the same envelope as
+    ``POST /certs`` so a dashboard's renew button can reuse the
+    artefact-download panel verbatim.
+
+    The new leaf preserves the original's identity contract:
+
+    - ``cert_type`` is identical (clientAuth-vs-serverAuth EKU stays).
+    - ``common_name`` and ``sans`` are copied byte-for-byte.
+    - ``operator_id`` (for ``cli``/``dashboard`` rows) is preserved
+      so the dashboard still shows "X's cert" next to the new row.
+    - ``not_after - not_before`` is preserved, so a 30-day cert
+      renews into another 30-day cert (not the cert-type default).
+
+    Side effects: a 422 is returned for revoked rows (renewing them
+    would mint a cert for an identity the operator already
+    decommissioned). A 404 is returned for unknown IDs.
+
+    PKCS#12 archives are re-built for ``dashboard`` certs using an
+    *unencrypted* archive (matching the CLI default). Operators who
+    need a password should renew via the CLI; the API path is the
+    systemd-timer flow that runs without a human in the loop.
+    """
+    row = session.get(Certificate, cert_id)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"certificate id={cert_id} not found",
+        )
+    if row.revoked:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"certificate id={cert_id} is revoked; renewal is "
+                "not supported for revoked certs — issue a fresh "
+                "leaf via POST /certs"
+            ),
+        )
+
+    sans = [s for s in row.sans.split(",") if s]
+    ttl_seconds = max(1, int((row.not_after - row.not_before).total_seconds()))
+    cert = _mint_leaf(
+        backend,
+        row.cert_type,
+        row.common_name,
+        sans,
+        ttl_seconds,
+    )
+
+    pkcs12_b64: str | None = None
+    if row.cert_type == CertificateType.dashboard:
+        # Systemd-timer renewal can't ask for a password; mint an
+        # unencrypted bundle so the flow is fully automated. Operators
+        # who want a passworded archive should renew via the CLI.
+        pkcs12_b64 = _build_pkcs12(cert, password="")
+
+    new_row = Certificate(
+        serial=str(cert.serial),
+        cert_type=row.cert_type,
+        operator_id=row.operator_id,
+        common_name=cert.common_name,
+        sans=",".join(cert.sans),
+        not_before=cert.not_before,
+        not_after=cert.not_after,
+        out_cert_path=row.out_cert_path,
+        out_key_path=row.out_key_path,
+        out_chain_path=row.out_chain_path,
+    )
+    session.add(new_row)
+    session.commit()
+    session.refresh(new_row)
+
+    return CertificateIssueResponse(
+        certificate=CertificateRead.model_validate(new_row),
+        cert_pem=cert.cert_pem,
+        private_pem=cert.private_pem,
+        chain_pem=cert.chain_pem,
+        pkcs12_b64=pkcs12_b64,
+    )
+
+
+@router.post(
     "/{cert_id}/revoke",
     response_model=CertificateRevokeResponse,
 )

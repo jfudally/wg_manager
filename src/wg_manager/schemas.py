@@ -525,6 +525,14 @@ class CertificateRead(BaseModel):
     revoked: bool
     revoked_at: datetime | None
     created_at: datetime
+    # Phase 2d CP4.3 — populated when the row was minted via
+    # ``wg-manager certs issue --out-cert ...``. ``NULL`` for rows
+    # minted via ``POST /certs`` (the API never writes to disk) and
+    # for ``dashboard`` PKCS#12 archives. The renewal walker consults
+    # these to know where to rewrite the leaf in place.
+    out_cert_path: str | None = None
+    out_key_path: str | None = None
+    out_chain_path: str | None = None
 
 
 class CertificateIssueRequest(BaseModel):

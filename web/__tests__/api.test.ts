@@ -386,6 +386,39 @@ describe("endpoint paths", () => {
   // it called) — every SSH role is CA-mode by construction now, so
   // there is no legacy → CA flip to drive from the dashboard.
 
+  it("renewCertificate POSTs to /certs/{id}/renew", async () => {
+    // Phase 2d CP4.3 — the dashboard's per-row Renew button calls
+    // this. The response shape mirrors POST /certs so the existing
+    // artefact-download panel can be reused verbatim.
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
+      makeResponse(201, {
+        certificate: {
+          id: 42,
+          serial: "999",
+          cert_type: "api",
+          operator_id: null,
+          common_name: "127.0.0.1",
+          sans: "127.0.0.1",
+          not_before: "2026-05-31T00:00:00Z",
+          not_after: "2026-06-30T00:00:00Z",
+          revoked: false,
+          revoked_at: null,
+          created_at: "2026-05-31T00:00:00Z",
+        },
+        cert_pem: "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n",
+        private_pem: "-----BEGIN PRIVATE KEY-----\n…\n-----END PRIVATE KEY-----\n",
+        chain_pem: "-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----\n",
+        pkcs12_b64: null,
+      }),
+    );
+    const r = await api.renewCertificate(7);
+    expect(r.certificate.id).toBe(42);
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://test.local/certs/7/renew",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("deleteClient returns the hub reconfigure task envelope", async () => {
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
       makeResponse(202, { task_id: "abc", client_id: 3, server_id: 1 }),

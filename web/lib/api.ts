@@ -333,4 +333,19 @@ export const api = {
     request<CertificateRevokeResponse>(`/certs/${id}/revoke`, {
       method: "POST",
     }),
+  /**
+   * Renew an issued cert by row id (Phase 2d CP4.3). Admin only.
+   * Mints a fresh leaf with the same identity (CN/SANs/cert_type/TTL)
+   * as the original and records a new audit row alongside it; the
+   * original stays put so the trail captures the rotation. Returns
+   * the same `CertificateIssueResponse` envelope as `issueCertificate`
+   * — including the private key, surfaced exactly once — so the
+   * post-issue artefact-download panel can be reused verbatim. The
+   * original row's `out_*_path` columns are carried onto the new row
+   * so subsequent renewals continue to write to the same disk paths.
+   */
+  renewCertificate: (id: number) =>
+    request<CertificateIssueResponse>(`/certs/${id}/renew`, {
+      method: "POST",
+    }),
 };

@@ -1080,7 +1080,11 @@ def certs_issue(
         typer.echo(f"wrote chain to {out_chain}")
 
     # Record the audit row only after the disk writes have succeeded so
-    # a row never points at files that aren't there.
+    # a row never points at files that aren't there. Phase 2d CP4.3 also
+    # stashes the three PEM paths so ``wg-manager certs renew`` can
+    # rewrite the leaf in place without re-asking the operator. PKCS#12
+    # bundles (dashboard) skip the path columns — there is no separate
+    # leaf/key/chain trio for the renewer to overwrite.
     with Session(engine) as session:
         row = Certificate(
             serial=str(cert.serial),
@@ -1090,6 +1094,11 @@ def certs_issue(
             sans=",".join(cert.sans),
             not_before=cert.not_before,
             not_after=cert.not_after,
+            out_cert_path=str(out_cert) if out_cert is not None else None,
+            out_key_path=str(out_key) if out_key is not None else None,
+            out_chain_path=(
+                str(out_chain) if out_chain is not None else None
+            ),
         )
         session.add(row)
         session.commit()
@@ -1151,6 +1160,334 @@ def certs_revoke(
         session.add(row)
         session.commit()
         typer.echo(f"revoked certificate serial={serial}")
+
+
+# ---------------------------------------------------------------------------
+# renew — Phase 2d CP4.3
+# ---------------------------------------------------------------------------
+
+
+def _renew_row(
+    session: Any,
+    backend: Any,
+    row: Any,
+    *,
+    out_cert: Path | None,
+    out_key: Path | None,
+    out_chain: Path | None,
+) -> Any:
+    """Mint a fresh leaf for ``row`` and write it to disk.
+
+    Returns the new :class:`Certificate` row (already committed). The
+    caller is responsible for catching exceptions and presenting them
+    to the operator — this helper is the I/O-heavy core that both the
+    single-id path and the ``--due`` walker share.
+
+    Write-path resolution: explicit ``--out-*`` paths win over the
+    row's stored ``out_*_path`` columns. If neither source supplies a
+    full triple, :class:`RuntimeError` is raised so the operator gets
+    a clear message instead of partial files.
+    """
+    from wg_manager.models import Certificate, CertificateType
+
+    cert_path = out_cert or (
+        Path(row.out_cert_path) if row.out_cert_path else None
+    )
+    key_path = out_key or (
+        Path(row.out_key_path) if row.out_key_path else None
+    )
+    chain_path = out_chain or (
+        Path(row.out_chain_path) if row.out_chain_path else None
+    )
+    if cert_path is None or key_path is None or chain_path is None:
+        raise RuntimeError(
+            f"cannot renew certificate id={row.id}: the row has no "
+            "stored out-paths and the command was not invoked with "
+            "--out-cert / --out-key / --out-chain. Re-issue the cert "
+            "via `wg-manager certs issue` with --out-cert/... to "
+            "populate the path columns, or call `renew --id` with "
+            "explicit --out-* flags."
+        )
+
+    sans = [s for s in row.sans.split(",") if s]
+    ttl_seconds = max(
+        1,
+        int(
+            (_as_utc(row.not_after) - _as_utc(row.not_before)).total_seconds()
+        ),
+    )
+
+    profile = _CERT_PROFILES[_CertType(row.cert_type.value)]
+    if profile["server_eku"]:
+        cert = backend.issue_server_cert(
+            common_name=row.common_name, sans=sans, ttl_seconds=ttl_seconds
+        )
+    else:
+        cert = backend.issue_client_cert(
+            common_name=row.common_name, sans=sans, ttl_seconds=ttl_seconds
+        )
+
+    _write_pem(cert_path, cert.cert_pem, mode=0o644)
+    _write_pem(key_path, cert.private_pem, mode=0o600)
+    _write_pem(chain_path, cert.chain_pem, mode=0o644)
+
+    new_row = Certificate(
+        serial=str(cert.serial),
+        cert_type=row.cert_type,
+        operator_id=row.operator_id,
+        common_name=cert.common_name,
+        sans=",".join(cert.sans),
+        not_before=cert.not_before,
+        not_after=cert.not_after,
+        out_cert_path=str(cert_path),
+        out_key_path=str(key_path),
+        out_chain_path=str(chain_path),
+    )
+    session.add(new_row)
+    session.commit()
+    session.refresh(new_row)
+    return new_row
+
+
+def _as_utc(dt: Any) -> Any:
+    """Coerce ``dt`` to a tz-aware UTC datetime.
+
+    SQLite drops the tzinfo on round-trip, so a datetime that went in
+    as ``datetime(2026, 5, 31, tzinfo=UTC)`` comes back naive. The
+    walker has to subtract these against a ``datetime.now(UTC)`` which
+    is always tz-aware; without normalisation Python raises
+    ``TypeError: can't subtract offset-naive and offset-aware
+    datetimes``.
+    """
+    from datetime import timezone as _tz
+
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=_tz.utc)
+    return dt
+
+
+def _row_is_due(row: Any, threshold_pct: float, now: Any) -> bool:
+    """Return ``True`` when ``row`` has burned more than the threshold
+    percentage of its issued lifetime.
+
+    Threshold semantics match the cert-manager / smallstep convention:
+    ``--threshold-pct 50`` renews any cert that has less than 50% of
+    its TTL remaining (i.e. has used more than 50%). A freshly-issued
+    cert at 0% elapsed is not due regardless of threshold.
+    """
+    not_before = _as_utc(row.not_before)
+    not_after = _as_utc(row.not_after)
+    window = not_after - not_before
+    if window.total_seconds() <= 0:
+        return True  # malformed window — renew defensively
+    elapsed = (now - not_before).total_seconds()
+    return (elapsed / window.total_seconds()) * 100 >= threshold_pct
+
+
+@certs_app.command("renew")
+def certs_renew(
+    cert_id: int | None = typer.Option(
+        None,
+        "--id",
+        help=(
+            "Renew a specific row. Mutually exclusive with --due."
+        ),
+    ),
+    due: bool = typer.Option(
+        False,
+        "--due/--no-due",
+        help=(
+            "Walk the registry and renew every non-revoked cert past "
+            "the threshold percentage of its lifetime."
+        ),
+    ),
+    threshold_pct: float = typer.Option(
+        50.0,
+        "--threshold-pct",
+        help=(
+            "Percentage of the cert's lifetime that must have elapsed "
+            "for --due mode to consider the row stale. Default 50 — "
+            "renew any cert past the halfway mark of its window."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run/--no-dry-run",
+        help=(
+            "Print which certs would be renewed without minting or "
+            "writing any files. Always exits 0."
+        ),
+    ),
+    out_cert: Path | None = typer.Option(
+        None,
+        "--out-cert",
+        help="Override the row's stored leaf path (single-id mode only).",
+    ),
+    out_key: Path | None = typer.Option(
+        None,
+        "--out-key",
+        help="Override the row's stored key path (single-id mode only).",
+    ),
+    out_chain: Path | None = typer.Option(
+        None,
+        "--out-chain",
+        help="Override the row's stored chain path (single-id mode only).",
+    ),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Re-mint a leaf cert in place.
+
+    Phase 2d CP4.3. Two modes:
+
+    \b
+    * ``--id N`` — renew one row. The new leaf is written to the
+      row's stored ``out_*_path`` triple unless ``--out-cert/...``
+      are passed explicitly.
+    * ``--due`` — walk the registry and renew any non-revoked row
+      whose lifetime has crossed the ``--threshold-pct`` mark.
+      Rows without stored ``out_*_path`` columns are skipped (the
+      walker has nowhere to write them); the operator gets a
+      warning line per skip.
+
+    A revoked row is never renewed — that would mint a fresh leaf
+    for an identity the operator already decommissioned. The command
+    is idempotent under ``--due``: re-running it after a recent
+    successful renewal is a no-op because the fresh row's elapsed
+    fraction is below the threshold.
+
+    The systemd-timer pattern (see ``docs/deploy/systemd-timer.md``)
+    runs ``wg-manager certs renew --due`` every hour; the threshold
+    is the knob operators tune to trade rotation churn for headroom
+    before expiry.
+    """
+    from datetime import datetime as _dt, timezone as _tz
+
+    from sqlmodel import Session
+
+    from wg_manager.models import Certificate
+    from wg_manager.pki import make_pki_backend
+
+    if (cert_id is None and not due) or (cert_id is not None and due):
+        typer.secho(
+            "exactly one of --id or --due must be supplied",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    engine = _get_engine(database_url)
+    backend = make_pki_backend() if not dry_run else None
+
+    if cert_id is not None:
+        with Session(engine) as session:
+            row = session.get(Certificate, cert_id)
+            if row is None:
+                typer.secho(
+                    f"no certificate registered with id={cert_id}",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            if row.revoked:
+                typer.secho(
+                    f"certificate id={cert_id} is revoked; "
+                    "renewal is not supported for revoked certs",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            if dry_run:
+                typer.echo(
+                    f"DRY-RUN: would renew id={cert_id} "
+                    f"serial={row.serial} cn={row.common_name!r}"
+                )
+                return
+            try:
+                new_row = _renew_row(
+                    session,
+                    backend,
+                    row,
+                    out_cert=out_cert,
+                    out_key=out_key,
+                    out_chain=out_chain,
+                )
+            except RuntimeError as exc:
+                typer.secho(str(exc), fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            typer.echo(
+                f"renewed certificate id={cert_id} -> new id={new_row.id} "
+                f"serial={new_row.serial}"
+            )
+        return
+
+    # --due walker. Out-* overrides are not honoured here because they
+    # only make sense for a single row.
+    if out_cert or out_key or out_chain:
+        typer.secho(
+            "--out-cert/--out-key/--out-chain only apply with --id",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+    now = _dt.now(_tz.utc)
+    with Session(engine) as session:
+        rows = list(
+            session.exec(
+                select(Certificate).where(Certificate.revoked == False)  # noqa: E712
+            )
+        )
+        due_rows = [
+            r for r in rows if _row_is_due(r, threshold_pct, now)
+        ]
+        if not due_rows:
+            typer.echo(
+                f"no certs past --threshold-pct={threshold_pct} "
+                f"(scanned {len(rows)} live row(s))"
+            )
+            return
+
+        renewed = 0
+        skipped = 0
+        for r in due_rows:
+            if dry_run:
+                typer.echo(
+                    f"DRY-RUN: would renew id={r.id} serial={r.serial} "
+                    f"cn={r.common_name!r}"
+                )
+                continue
+            try:
+                new_row = _renew_row(
+                    session,
+                    backend,
+                    r,
+                    out_cert=None,
+                    out_key=None,
+                    out_chain=None,
+                )
+            except RuntimeError as exc:
+                typer.secho(
+                    f"skipping id={r.id}: {exc}",
+                    fg=typer.colors.YELLOW,
+                    err=True,
+                )
+                skipped += 1
+                continue
+            typer.echo(
+                f"renewed id={r.id} -> new id={new_row.id} "
+                f"serial={new_row.serial}"
+            )
+            renewed += 1
+
+        if not dry_run:
+            typer.echo(
+                f"summary: renewed={renewed} skipped={skipped} "
+                f"scanned={len(rows)}"
+            )
 
 
 @certs_app.command("list")

@@ -252,6 +252,97 @@ describe("Certificates page — admin issuance affordance", () => {
   });
 });
 
+describe("Certificates page — Phase 2d CP4.3 renew flow", () => {
+  it("admin sees a Renew button on each live cert row", async () => {
+    vi.spyOn(global, "fetch").mockImplementation(
+      fetchRouter({
+        "/certs/whoami": makeFetchResponse(200, makeWhoAmI()),
+        "/certs": makeFetchResponse(200, [
+          makeCertificate({ id: 7, serial: "11" }),
+          makeCertificate({
+            id: 8,
+            serial: "22",
+            revoked: true,
+            revoked_at: "2026-05-29T00:00:00Z",
+          }),
+        ]),
+      }) as typeof fetch,
+    );
+
+    renderPage();
+
+    await screen.findByText("11");
+    // Exactly one Renew button — the revoked row doesn't get one.
+    const renewButtons = screen.getAllByRole("button", { name: /^renew$/i });
+    expect(renewButtons.length).toBe(1);
+  });
+
+  it("auditor sees no Renew button", async () => {
+    vi.spyOn(global, "fetch").mockImplementation(
+      fetchRouter({
+        "/certs/whoami": makeFetchResponse(
+          200,
+          makeWhoAmI({ operator_role: "auditor" }),
+        ),
+        "/certs": makeFetchResponse(200, [
+          makeCertificate({ id: 7, serial: "11" }),
+        ]),
+      }) as typeof fetch,
+    );
+
+    renderPage();
+
+    await screen.findByText("11");
+    expect(screen.queryByRole("button", { name: /^renew$/i })).toBeNull();
+  });
+
+  it("clicking Renew POSTs to /certs/{id}/renew and surfaces the new PEM", async () => {
+    const issueResp = {
+      certificate: makeCertificate({
+        id: 99,
+        serial: "999",
+        common_name: "127.0.0.1",
+      }),
+      cert_pem: "-----BEGIN CERTIFICATE-----\nrenewed\n-----END CERTIFICATE-----\n",
+      private_pem: "-----BEGIN PRIVATE KEY-----\nrenewed-key\n-----END PRIVATE KEY-----\n",
+      chain_pem: "-----BEGIN CERTIFICATE-----\nchain\n-----END CERTIFICATE-----\n",
+      pkcs12_b64: null,
+    };
+    const fetchStub = vi
+      .spyOn(global, "fetch")
+      .mockImplementation(
+        fetchRouter({
+          "/certs/whoami": makeFetchResponse(200, makeWhoAmI()),
+          "/certs": makeFetchResponse(200, [
+            makeCertificate({ id: 7, serial: "11" }),
+          ]),
+          "/certs/7/renew": makeFetchResponse(201, issueResp),
+        }) as typeof fetch,
+      );
+
+    renderPage();
+
+    const renewButton = await screen.findByRole("button", {
+      name: /^renew$/i,
+    });
+    fireEvent.click(renewButton);
+
+    // POST went through.
+    await waitFor(() => {
+      const renewCalls = fetchStub.mock.calls.filter(([url]) =>
+        String(url).endsWith("/certs/7/renew"),
+      );
+      expect(renewCalls.length).toBe(1);
+      expect(renewCalls[0][1]?.method).toBe("POST");
+    });
+
+    // The artefact-download panel appears with the new serial.
+    expect(
+      await screen.findByText(/cert issued — serial 999/i),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("Certificates page — Phase 2d CP4.2 cert-type dropdown", () => {
   it("the Issue form lists every CertificateType, including mysql-client", async () => {
     vi.spyOn(global, "fetch").mockImplementation(

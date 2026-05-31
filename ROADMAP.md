@@ -759,12 +759,30 @@ existing SSH key, then rotates. Document in `docs/migrations/2c-ssh-ca.md`.
     test + 8 new config-shape tests (my.cnf + docker-compose +
     Makefile) + 1 new vitest dropdown spec. Backend `pytest`
     368/368 green; vitest 36/36.
-  - **CP4.3 `[ ]`** — `wg-manager certs renew` (+ `POST
-    /certs/{id}/renew` + dashboard button). Walks the Certificate
-    audit registry; re-issues any leaf with less than the
-    threshold percentage of its TTL remaining; idempotent so a
-    systemd timer (or `cron`) can run it on a tight interval
-    without thrashing.
+  - **CP4.3 `[x]`** (2026-05-31) — `wg-manager certs renew` +
+    `POST /certs/{id}/renew` + dashboard surface. Alembic 0012
+    grows the ``certificate`` table by three nullable columns
+    (``out_cert_path`` / ``out_key_path`` / ``out_chain_path``)
+    that ``certs issue`` populates when ``--out-cert/...`` are
+    passed; the walker form of ``certs renew --due`` uses them to
+    know where to rewrite the leaf in place. The CLI ships two
+    modes — ``--id N`` re-mints one row, ``--due`` walks the
+    registry and re-mints every non-revoked row past
+    ``--threshold-pct`` (default 50) — with ``--dry-run`` for
+    preview. The API endpoint and the CLI single-id path share
+    the same identity-preservation contract: same ``cert_type``,
+    CN, SANs, operator FK, and TTL window length; revoked rows
+    are 422 (you can't renew an identity you already
+    decommissioned); the original row stays put as the audit
+    trail and the freshly-issued leaf gets a new row. Dashboard
+    inventory grew a per-row "Renew" button (admin only, hidden
+    on revoked rows); the "last delivered cert" state lifted to
+    the page level so both Issue and Renew feed the same
+    artefact-download panel. Tests: 4 alembic-0012 cases + 2 CLI
+    ``issue`` path-recording cases + 8 CLI ``renew`` cases + 7
+    API ``POST /certs/{id}/renew`` cases + 4 vitest renew specs +
+    1 ``api.test.ts`` case. Backend ``pytest`` 389/389 green;
+    vitest 40/40.
   - **CP4.4 `[ ]`** — Docs sweep. `docs/deploy/systemd-timer.md`
     documents the renewal cadence; README + SECURITY.md +
     THREAT_MODEL.md sweep that flips T-8 to "Phase 2d shipped".

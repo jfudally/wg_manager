@@ -459,6 +459,16 @@ class Certificate(SQLModel, table=True):
         ``NULL`` for live certs.
     :ivar created_at: When the row was inserted (which is when the
         cert was issued).
+    :ivar out_cert_path: Absolute path the CLI wrote the leaf PEM to
+        (``--out-cert`` on ``wg-manager certs issue``). ``NULL`` for
+        rows minted via ``POST /certs`` — the API returns the PEM in
+        the response body and never touches the filesystem. Phase 2d
+        CP4.3's ``wg-manager certs renew`` walker uses this to know
+        where to rewrite the leaf in place.
+    :ivar out_key_path: Matching private-key PEM path. Always paired
+        with :attr:`out_cert_path` (either both ``NULL`` or both set).
+    :ivar out_chain_path: CA-bundle PEM path. Always paired with
+        :attr:`out_cert_path`.
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -474,6 +484,9 @@ class Certificate(SQLModel, table=True):
     revoked: bool = Field(default=False, index=True)
     revoked_at: datetime | None = Field(default=None)
     created_at: datetime = Field(default_factory=_utcnow)
+    out_cert_path: str | None = Field(default=None, max_length=512)
+    out_key_path: str | None = Field(default=None, max_length=512)
+    out_chain_path: str | None = Field(default=None, max_length=512)
 
     def __repr__(self) -> str:
         return (
