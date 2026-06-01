@@ -10,6 +10,41 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e cycle 3 — `audit.persist` wired into mutating endpoints.**
+  Cycle 2 shipped the helper; cycle 3 plumbs it into the five mutating
+  endpoint families called out in the plan, one per resource:
+
+  - `POST /servers` ([`routers/servers.py`](src/wg_manager/routers/servers.py)) → `server.create`
+  - `PATCH /servers/{id}` → `server.update` (captures pre-mutation row dict)
+  - `DELETE /clients/{id}` ([`routers/clients.py`](src/wg_manager/routers/clients.py)) → `client.delete`
+  - `POST /ssh-keys` ([`routers/ssh_keys.py`](src/wg_manager/routers/ssh_keys.py)) → `ssh_key.create`
+  - `POST /certs/{id}/revoke` ([`routers/certs.py`](src/wg_manager/routers/certs.py)) → `certificate.revoke`
+
+  Each handler now picks up the same transaction shape: capture
+  `before` dict if applicable, `session.add → session.flush →
+  session.refresh`, `audit.persist(...)`, then `session.commit()`. The
+  audit row lives or dies alongside the mutation it records — a
+  rolled-back mutation never leaves an orphan audit row, and an
+  audit-write failure rolls back the mutation.
+
+  New helper [`audit.actor_from_request(request)`](src/wg_manager/audit.py)
+  extracts `actor_cn` / `actor_serial` / `actor_role` off
+  `request.state.operator` and `request.state.cert_subject` (populated
+  by `MTLSAuthMiddleware`), returning `None` fields when the
+  middleware is in passthrough mode. Endpoints call
+  `**audit.actor_from_request(request)` without branching for the
+  test path. Idempotent revoke on `POST /certs/{id}/revoke` skips the
+  audit row on the no-op retry so the application audit trail stays
+  one-row-per-event.
+
+  Tests: 8 cases in
+  [`tests/test_audit_wiring.py`](tests/test_audit_wiring.py) — two
+  for `actor_from_request` (populated + empty `request.state`), one
+  per wired endpoint asserting event slug / resource binding / hash
+  polarity, plus an idempotent-revoke assertion that a second
+  retry doesn't double-write the audit row. Backend pytest 438/438
+  (was 430/430).
+
 - **Phase 2e cycle 2 — `wg_manager.audit` module + `persist()` helper.**
   Cycle 1's table needed a writer; cycle 2 introduces the single seam
   every mutating endpoint will go through. New module

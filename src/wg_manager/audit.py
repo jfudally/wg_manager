@@ -48,6 +48,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
+    from fastapi import Request
     from sqlmodel import Session
 
     from wg_manager.models import AuditEvent
@@ -125,6 +126,42 @@ def canonical_json_hash(obj: dict[str, Any] | None) -> str | None:
         return None
     body = json.dumps(obj, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Actor extraction
+# ---------------------------------------------------------------------------
+
+
+def actor_from_request(request: "Request") -> dict[str, str | None]:
+    """Build the ``actor_*`` kwargs for :func:`persist` from a FastAPI request.
+
+    Reads :attr:`MTLSAuthMiddleware`'s two stash points off
+    ``request.state`` — ``operator`` (the registry row) and
+    ``cert_subject`` (the parsed cert). Both are populated for every
+    cert-bearing request in production; both are ``None`` in
+    ``TLS_REQUIRED=false`` mode (the default for the test suite),
+    which lets endpoints call ``persist(**actor_from_request(request))``
+    without branching for the test path.
+
+    The serial is rendered as a decimal string to match
+    :attr:`Certificate.serial`'s storage convention — X.509 160-bit
+    serials overflow signed-INT64 and Vault's serials regularly do
+    too, so the column is :class:`String(64)` everywhere.
+
+    :param request: The incoming FastAPI :class:`Request`.
+    :return: ``{"actor_cn", "actor_serial", "actor_role"}`` dict —
+        each value is the populated string or ``None``.
+    """
+    operator = getattr(request.state, "operator", None)
+    subject = getattr(request.state, "cert_subject", None)
+    return {
+        "actor_cn": operator.cn if operator is not None else None,
+        "actor_serial": str(subject.serial) if subject is not None else None,
+        "actor_role": (
+            operator.role.value if operator is not None else None
+        ),
+    }
 
 
 # ---------------------------------------------------------------------------

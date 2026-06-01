@@ -19,9 +19,10 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import Session, select
 
+from wg_manager import audit
 from wg_manager.db import get_session
 from wg_manager.models import Client, SSHKey, Server
 from wg_manager.schemas import SSHKeyCreate, SSHKeyRead, SSHKeyUpdate
@@ -32,13 +33,18 @@ _SessionDep = Annotated[Session, Depends(get_session)]
 
 
 @router.post("", response_model=SSHKeyRead, status_code=status.HTTP_201_CREATED)
-def create_ssh_key(payload: SSHKeyCreate, session: _SessionDep) -> SSHKey:
+def create_ssh_key(
+    payload: SSHKeyCreate, request: Request, session: _SessionDep
+) -> SSHKey:
     """Register a new SSH role.
 
     Post-CP4.4 the role carries no private-key material — the row is
     a name-and-mode label only. The default mode (set on the model)
     is ``ca``; every connection at task time mints a fresh user cert
     from the SSH CA.
+
+    Phase 2e cycle 3 emits one ``ssh_key.create`` audit row inside the
+    same transaction as the insert.
 
     :raises HTTPException: 409 if the role name is already taken.
     """
@@ -52,6 +58,19 @@ def create_ssh_key(payload: SSHKeyCreate, session: _SessionDep) -> SSHKey:
         )
     row = SSHKey(name=payload.name)
     session.add(row)
+    session.flush()
+    session.refresh(row)
+    audit.persist(
+        session,
+        event="ssh_key.create",
+        **audit.actor_from_request(request),
+        resource_type="ssh_key",
+        resource_id=row.id,
+        action="create",
+        before=None,
+        after=row.model_dump(mode="json"),
+        payload={"name": row.name},
+    )
     session.commit()
     session.refresh(row)
     return row

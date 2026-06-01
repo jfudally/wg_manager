@@ -5,9 +5,10 @@ from __future__ import annotations
 from ipaddress import IPv4Network
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import Session, select
 
+from wg_manager import audit
 from wg_manager.config import settings
 from wg_manager.db import get_session
 from wg_manager.models import (
@@ -44,12 +45,18 @@ _SessionDep = Annotated[Session, Depends(get_session)]
     response_model=ServerRegisterResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def register_server(payload: ServerCreate, session: _SessionDep) -> ServerRegisterResponse:
+def register_server(
+    payload: ServerCreate, request: Request, session: _SessionDep
+) -> ServerRegisterResponse:
     """Register a server and dispatch its provisioning task.
 
     The row is persisted in **pending** state and a Celery task is enqueued
     to perform the actual SSH-driven install. The response includes both the
     row and a ``task_id`` the caller can poll at ``GET /tasks/{task_id}``.
+
+    Phase 2e cycle 3 wires :func:`wg_manager.audit.persist` into the
+    same transaction as the row insert so a successful register lands
+    one ``server.create`` audit row and a failure leaves none.
     """
     ssh_key = session.get(SSHKey, payload.ssh_key_id)
     if ssh_key is None:
@@ -76,6 +83,19 @@ def register_server(payload: ServerCreate, session: _SessionDep) -> ServerRegist
         status=NodeStatus.pending,
     )
     session.add(row)
+    session.flush()
+    session.refresh(row)
+    audit.persist(
+        session,
+        event="server.create",
+        **audit.actor_from_request(request),
+        resource_type="server",
+        resource_id=row.id,
+        action="create",
+        before=None,
+        after=row.model_dump(mode="json"),
+        payload={"hostname": row.hostname},
+    )
     session.commit()
     session.refresh(row)
 
@@ -132,7 +152,10 @@ def get_server(server_id: int, session: _SessionDep) -> Server:
 
 @router.patch("/{server_id}", response_model=ServerRead)
 def update_server(
-    server_id: int, payload: ServerUpdate, session: _SessionDep
+    server_id: int,
+    payload: ServerUpdate,
+    request: Request,
+    session: _SessionDep,
 ) -> Server:
     """Partially update operator-supplied fields on a server.
 
@@ -144,6 +167,10 @@ def update_server(
     Changing ``endpoint_host`` / ``endpoint_port`` does **not** rewrite
     already-deployed client configs — they will keep pointing at the old
     endpoint until each client is reprovisioned.
+
+    Phase 2e cycle 3 captures the pre-mutation row dict for the audit
+    log's ``before_hash`` and emits a ``server.update`` row inside the
+    same transaction as the mutation.
 
     :return: The updated server row.
     :rtype: Server
@@ -160,10 +187,24 @@ def update_server(
     if new_key_id is not None and session.get(SSHKey, new_key_id) is None:
         raise HTTPException(status_code=404, detail="SSH key not found")
 
+    before = row.model_dump(mode="json")
     for field, value in updates.items():
         setattr(row, field, value)
 
     session.add(row)
+    session.flush()
+    session.refresh(row)
+    audit.persist(
+        session,
+        event="server.update",
+        **audit.actor_from_request(request),
+        resource_type="server",
+        resource_id=row.id,
+        action="update",
+        before=before,
+        after=row.model_dump(mode="json"),
+        payload={"hostname": row.hostname, "fields": sorted(updates.keys())},
+    )
     session.commit()
     session.refresh(row)
     return row

@@ -62,6 +62,7 @@ from cryptography.hazmat.primitives.serialization import (
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlmodel import Session, select
 
+from wg_manager import audit
 from wg_manager.auth import CertSubject, require_subject
 from wg_manager.db import get_session
 from wg_manager.deps import get_pki_backend
@@ -509,6 +510,7 @@ def renew_cert(
 )
 def revoke_cert(
     cert_id: int,
+    request: Request,
     _: Annotated[Operator, Depends(_RequireAdmin)],
     session: Annotated[Session, Depends(get_session)],
     backend: Annotated[PKIBackend, Depends(get_pki_backend)],
@@ -522,6 +524,10 @@ def revoke_cert(
     network is safe. The original ``revoked_at`` timestamp is
     preserved so the audit trail reflects the first revocation event,
     not the last retry.
+
+    Phase 2e cycle 3 emits one ``certificate.revoke`` audit row on
+    the **first** revoke only; idempotent retries don't add a second
+    row so the application audit trail stays one-row-per-event.
     """
     row = session.get(Certificate, cert_id)
     if row is None:
@@ -535,10 +541,24 @@ def revoke_cert(
         # still say "live", not "revoked but the CRL never got the
         # update". The opposite order would let a CRL flip linger
         # while the audit row claimed the cert was still good.
+        before = row.model_dump(mode="json")
         backend.revoke_cert(serial=int(row.serial))
         row.revoked = True
         row.revoked_at = datetime.now(timezone.utc)
         session.add(row)
+        session.flush()
+        session.refresh(row)
+        audit.persist(
+            session,
+            event="certificate.revoke",
+            **audit.actor_from_request(request),
+            resource_type="certificate",
+            resource_id=row.id,
+            action="revoke",
+            before=before,
+            after=row.model_dump(mode="json"),
+            payload={"serial": row.serial, "common_name": row.common_name},
+        )
         session.commit()
         session.refresh(row)
 
