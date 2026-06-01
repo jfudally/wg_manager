@@ -120,3 +120,60 @@ class TestBootstrapRunnerWiring:
         assert not hasattr(pkey, "_called_load_certificate"), (
             "BootstrapSSHRunner must not invoke load_certificate on the pkey"
         )
+
+    def test_bootstrap_runner_does_not_install_known_hosts_ca_policy(
+        self, ed25519_key_file: Path
+    ) -> None:
+        """Pin the invariant: bootstrap is the *only* TOFU-permitting path.
+
+        This test is the brittle one on purpose. If someone tries to
+        "harden" the bootstrap runner by adding a :class:`KnownHostsCAPolicy`
+        (or any other CA-aware policy) here, the production no-TOFU
+        invariant in :mod:`wg_manager.ssh` becomes the *only* thing
+        keeping the broader codebase from re-introducing TOFU through
+        the bootstrap door. Locking the policy choice down so the
+        bootstrap runner *only* installs :class:`paramiko.AutoAddPolicy`
+        keeps the two modes cleanly separated: production = no TOFU,
+        bootstrap = TOFU once and the operator knows it.
+
+        The flip side (the production runner stays TOFU-free) is
+        already pinned by :mod:`tests.test_ssh_cert_mode`; this
+        complement keeps both halves of the contract under test.
+        """
+        from wg_manager.ssh import KnownHostsCAPolicy
+
+        runner = BootstrapSSHRunner(
+            host="fresh-host.example.com",
+            port=22,
+            username="ubuntu",
+            key_path=ed25519_key_file,
+        )
+
+        with mock.patch(
+            "wg_manager.bootstrap_ssh.paramiko.SSHClient"
+        ) as fake_client_cls:
+            fake_client = fake_client_cls.return_value
+            with runner:
+                pass
+
+        # Exactly one policy was installed; assert *what* it was — and
+        # *what it wasn't*.
+        policies_installed = [
+            call.args[0]
+            for call in fake_client.set_missing_host_key_policy.call_args_list
+        ]
+        assert len(policies_installed) == 1, (
+            f"expected exactly one policy install during bootstrap, "
+            f"got {len(policies_installed)}: {policies_installed!r}"
+        )
+        policy = policies_installed[0]
+        assert isinstance(policy, paramiko.AutoAddPolicy), (
+            f"BootstrapSSHRunner must install AutoAddPolicy (TOFU); "
+            f"got {type(policy).__name__}"
+        )
+        assert not isinstance(policy, KnownHostsCAPolicy), (
+            "BootstrapSSHRunner must NOT install KnownHostsCAPolicy "
+            "— that would defeat the bootstrap purpose (the host has "
+            "no CA-signed host cert *yet*; installing the CA-mode "
+            "policy here would reject every fresh host)."
+        )
