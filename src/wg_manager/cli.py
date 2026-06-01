@@ -25,6 +25,11 @@ import httpx
 import typer
 from sqlmodel import select
 
+from wg_manager.bootstrap_ssh import BootstrapSSHRunner, bootstrap_host
+from wg_manager.config import Settings
+from wg_manager.ssh import SSHConnectionError
+from wg_manager.ssh_ca import SSHCAError, make_ssh_ca_backend
+
 DEFAULT_API_URL = "http://127.0.0.1:8000"
 
 app = typer.Typer(
@@ -1663,6 +1668,181 @@ def operators_list(
         for row in rows
     ]
     typer.echo(json.dumps(payload, indent=2, default=str, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
+# bootstrap-host — Phase 2c CP4.5
+# ---------------------------------------------------------------------------
+#
+# Operator-facing seam between a fresh box (only a long-lived
+# operator SSH key works against it) and a wg-manager-managed box
+# (the production runner needs CA-mode trust). Lays down the three
+# files the production path needs and exits; the operator follows
+# up with ``wg-manager servers register`` / ``clients register`` to
+# catalogue the box in the state store. No DB writes here on
+# purpose — bootstrap and registration are two operator actions so
+# the operator can verify the install before committing a row.
+
+
+@app.command("bootstrap-host")
+def bootstrap_host_cmd(
+    hostname: str = typer.Option(
+        ...,
+        "--hostname",
+        "-H",
+        help=(
+            "SSH-dial-name / IP of the target host. Also the cert "
+            "principal when --principal is not supplied."
+        ),
+    ),
+    ssh_key: Path = typer.Option(
+        ...,
+        "--ssh-key",
+        "-k",
+        exists=True,
+        dir_okay=False,
+        readable=True,
+        help=(
+            "Path to the operator's long-lived OOB SSH private key "
+            "(e.g. ~/.ssh/id_ed25519). Used once to TOFU the host "
+            "so the CA + host cert can be installed; the production "
+            "path subsequently uses Vault-minted certs."
+        ),
+    ),
+    ssh_key_passphrase: str | None = typer.Option(
+        None,
+        "--ssh-key-passphrase",
+        envvar="WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE",
+        help=(
+            "Passphrase protecting --ssh-key. Reads from "
+            "WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE if not passed "
+            "on the command line; omit both for an unencrypted key."
+        ),
+    ),
+    ssh_user: str = typer.Option(
+        "ubuntu",
+        "--ssh-user",
+        "-u",
+        help=(
+            "Remote SSH user for the bootstrap session. Must already "
+            "exist on the box and have passwordless sudo."
+        ),
+    ),
+    ssh_port: int = typer.Option(
+        22,
+        "--ssh-port",
+        help="SSH port on the target host (default 22).",
+    ),
+    principal: str | None = typer.Option(
+        None,
+        "--principal",
+        "-p",
+        help=(
+            "Cert principal baked into the new host cert. Defaults "
+            "to --hostname; pass a different value when the SSH "
+            "dial-name and the cert principal differ (e.g. public "
+            "IP vs internal DNS)."
+        ),
+    ),
+    ttl_seconds: int | None = typer.Option(
+        None,
+        "--ttl-seconds",
+        help=(
+            "TTL the host cert asks the CA for. Defaults to "
+            "Settings.ssh_host_cert_ttl_seconds (24h). Vault caps "
+            "this at the host-role's max_ttl."
+        ),
+    ),
+    connect_timeout: float = typer.Option(
+        15.0,
+        "--connect-timeout",
+        help="Seconds to wait for TCP handshake / banner / auth.",
+    ),
+) -> None:
+    """Install the wg-manager SSH CA trust + a host cert on a fresh host.
+
+    Phase 2c CP4.5. Closes the bootstrap gap CP4.4 created: the
+    production SSH path is locked to CA-only auth, so a brand-new
+    box has nothing for it to talk to. This command opens an
+    out-of-band SSH session with the operator's long-lived key,
+    drops the CA pubkey + a CA-signed host cert + an sshd drop-in
+    onto the box, reloads sshd, and exits.
+
+    \b
+    Prerequisites:
+    * Vault SSH CA already bootstrapped (`make ssh-ca-bootstrap`).
+      Vault unreachable → exit 1.
+    * Operator SSH key already authorized on the target host. SSH
+      refused → exit 1 (with the underlying paramiko reason).
+    * The target user has passwordless sudo. Missing sudo → exit 1
+      (the install will surface SSHCommandError mid-flight).
+
+    \b
+    No database writes happen here. Run `wg-manager servers register`
+    (or `clients register`) after a successful bootstrap to catalogue
+    the box in the state store.
+    """
+    settings = Settings()
+
+    try:
+        ca = make_ssh_ca_backend(settings)
+    except SSHCAError as exc:
+        typer.secho(
+            f"failed to reach the SSH CA backend: {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    effective_principal = principal or hostname
+    effective_ttl = (
+        ttl_seconds
+        if ttl_seconds is not None
+        else settings.ssh_host_cert_ttl_seconds
+    )
+
+    runner = BootstrapSSHRunner(
+        host=hostname,
+        port=ssh_port,
+        username=ssh_user,
+        key_path=ssh_key,
+        passphrase=ssh_key_passphrase,
+        connect_timeout=connect_timeout,
+    )
+
+    try:
+        with runner as session:
+            cert = bootstrap_host(
+                runner=session,
+                hostname=hostname,
+                principal=effective_principal,
+                ca=ca,
+                ttl_seconds=effective_ttl,
+                cn=ssh_user,
+            )
+    except SSHConnectionError as exc:
+        typer.secho(
+            f"SSH connection to {hostname}:{ssh_port} failed: {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    except SSHCAError as exc:
+        typer.secho(
+            f"SSH CA refused to sign: {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    # One-line summary so operator scripts can grep ``^[OK]`` to
+    # confirm the install landed. The serial is the join key against
+    # the future ``servers register`` row.
+    typer.echo(
+        f"[OK] bootstrapped {hostname}: "
+        f"cert serial={cert.serial} "
+        f"valid_until={cert.valid_before.isoformat()}"
+    )
 
 
 def main() -> None:  # pragma: no cover - thin entrypoint
