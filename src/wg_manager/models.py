@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import BigInteger, Column, UniqueConstraint
+from sqlalchemy import BigInteger, Column, Index, UniqueConstraint
 from sqlalchemy import Text  # re-exported for the manual-client column below
 from sqlmodel import Field, SQLModel
 
@@ -495,6 +495,116 @@ class Certificate(SQLModel, table=True):
             f"operator_id={self.operator_id!r}, "
             f"common_name={self.common_name!r}, "
             f"not_after={self.not_after!r}, revoked={self.revoked!r})"
+        )
+
+    __str__ = __repr__
+
+
+class AuditEvent(SQLModel, table=True):
+    """One persisted entry in the application audit log.
+
+    Phase 2e cycle 1 introduces the table; subsequent cycles wire the
+    ``wg_manager.audit.persist`` helper into every mutating endpoint and
+    expose the rows over ``GET /audit`` for the dashboard. The CP5
+    stderr stream (``wg_manager.audit`` named logger) keeps emitting the
+    same one-line JSON it already does for admit / reject / bootstrap
+    decisions — those are per-request and high-volume, and don't belong
+    in this table. Anything that *mutates* a managed resource (server,
+    client, ssh key, certificate, crypto secret) lands here.
+
+    The row stores **hashes**, not raw row JSON. ``before_hash`` and
+    ``after_hash`` are SHA-256 over the canonical-JSON rendering of the
+    affected row pre- and post-mutation respectively. The hash is
+    enough to prove integrity ("the row had these exact contents at
+    this moment") without smuggling secret material into the audit
+    table — keeping the registry safe to ship in backups for the same
+    reason :class:`Certificate` only stores cert metadata, not the PEM.
+    The ``payload`` column holds a small JSON summary dict (resource
+    name, action verb, anything the dashboard surface needs to render
+    without joining back to the resource row) — sized in bytes, not
+    intended as a queryable secondary index.
+
+    Actor fields are nullable because not every legitimate event has a
+    human behind it: ``crypto.rotate`` is invoked by a scheduled job
+    with no mTLS cert, and the Phase 2d CP4.5 ``bootstrap.host`` event
+    fires from an operator's CLI before the box even has a CN to
+    present. Persisted rows for those events carry ``actor_cn=NULL``
+    and use the ``payload`` dict to record their non-mTLS provenance.
+
+    Resource fields are split rather than packed into a single
+    ``"server:7"`` string so the composite index
+    ``ix_auditevent_resource`` on ``(resource_type, resource_id)`` lets
+    the "show me everything that happened to server #7" query hit a
+    single index scan. ``resource_id`` is nullable so global-scope
+    events (``crypto.rotate``) can omit it cleanly rather than smuggling
+    a sentinel ``0``.
+
+    :ivar ts: When the event was emitted, UTC. Indexed because the
+        ``/audit`` endpoint pages newest-first.
+    :ivar event: Slug of the form ``<resource>.<action>``
+        (``server.create``, ``client.delete``, ``crypto.rotate``).
+        Indexed so a single-event filter is a single index scan.
+    :ivar actor_cn: CN lifted off the mTLS cert that authorised the
+        mutation; ``NULL`` for system-origin events. Indexed for
+        ``GET /audit?operator=<cn>``.
+    :ivar actor_serial: Cert serial as the decimal-string rendering of
+        the X.509 integer, matching :class:`Certificate.serial`'s
+        storage convention. ``NULL`` for system-origin events.
+    :ivar actor_role: :class:`OperatorRole` value at action time.
+        Snapshot rather than FK because role changes shouldn't
+        retroactively rewrite history.
+    :ivar resource_type: Coarse bucket: ``server`` / ``client`` /
+        ``ssh_key`` / ``certificate`` / ``crypto``. String rather than
+        enum so the column accepts future bucket additions without an
+        Alembic migration.
+    :ivar resource_id: Row id of the affected resource; ``NULL`` for
+        global-scope events.
+    :ivar action: Verb: ``create`` / ``update`` / ``delete`` /
+        ``revoke`` / ``rotate``. String for the same reason
+        ``resource_type`` is.
+    :ivar before_hash: SHA-256 hex (lower-case, 64 chars) of canonical
+        JSON of the resource row *before* the mutation. ``NULL`` for
+        create events.
+    :ivar after_hash: SHA-256 hex of canonical JSON of the resource row
+        *after* the mutation. ``NULL`` for delete events.
+    :ivar payload: Compact JSON summary dict (resource name, action
+        kwargs, etc.). Stored as ``Text`` so the column doesn't impose
+        a row-size ceiling but kept small by convention — callers
+        strip secret material before passing it in.
+    :ivar request_id: Correlation ID lifted from the request context
+        (or a ``uuid4`` for system-origin events). Lets a single
+        operator action that fans out to multiple audit rows be
+        re-joined for the dashboard.
+    """
+
+    __table_args__ = (
+        Index(
+            "ix_auditevent_resource",
+            "resource_type",
+            "resource_id",
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    ts: datetime = Field(default_factory=_utcnow, index=True)
+    event: str = Field(index=True, max_length=64)
+    actor_cn: str | None = Field(default=None, index=True, max_length=255)
+    actor_serial: str | None = Field(default=None, max_length=64)
+    actor_role: str | None = Field(default=None, max_length=16)
+    resource_type: str = Field(max_length=32)
+    resource_id: int | None = Field(default=None)
+    action: str = Field(max_length=16)
+    before_hash: str | None = Field(default=None, max_length=64)
+    after_hash: str | None = Field(default=None, max_length=64)
+    payload: str | None = Field(default=None, sa_column=Column(Text))
+    request_id: str | None = Field(default=None, max_length=64)
+
+    def __repr__(self) -> str:
+        return (
+            f"AuditEvent(id={self.id!r}, ts={self.ts!r}, "
+            f"event={self.event!r}, actor_cn={self.actor_cn!r}, "
+            f"resource_type={self.resource_type!r}, "
+            f"resource_id={self.resource_id!r}, action={self.action!r})"
         )
 
     __str__ = __repr__

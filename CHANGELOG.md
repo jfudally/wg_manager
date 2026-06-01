@@ -10,6 +10,26 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e cycle 1 — `auditevent` table.** First slice of the
+  application audit log. Phase 2d CP5 ships per-request audit lines
+  to stderr via the `wg_manager.audit` named logger (admit / reject /
+  bootstrap-host); cycle 1 introduces the persisted-mutations
+  counterpart that the upcoming `/audit` endpoint and dashboard page
+  will read from. Schema lands as
+  [`alembic/versions/0013_add_audit_event_table.py`](alembic/versions/0013_add_audit_event_table.py)
+  + [`AuditEvent`](src/wg_manager/models.py) — `id, ts, event,
+  actor_cn, actor_serial, actor_role, resource_type, resource_id,
+  action, before_hash, after_hash, payload, request_id` — backed by
+  four indexes (`ts`, `event`, `actor_cn`, and a composite
+  `(resource_type, resource_id)` so `GET /audit?resource_type=server
+  &resource_id=7` is a single index scan). Hash-only design: rows
+  carry SHA-256 of the canonical-JSON pre/post-mutation, never the
+  raw row, so the registry stays safe to ship in backups for the
+  same reason [`Certificate`](src/wg_manager/models.py) doesn't
+  store PEM bodies. No call sites yet — `wg_manager.audit.persist()`
+  + per-endpoint wiring land in cycle 2 / cycle 3. Backend pytest
+  412/412 (was 405/405).
+
 - **Phase 2c CP4.5 — `wg-manager bootstrap-host` CLI.** Closes the
   gap CP4.4 created when it retired `wg_manager.ssh_migrate`: the
   production [`SSHRunner`](src/wg_manager/ssh.py) is locked to CA-only
