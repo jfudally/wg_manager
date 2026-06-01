@@ -451,21 +451,64 @@ register a server that references it. No private keys to upload.
      can validate the host cert chain;
    * flips the row to `ready`.
 
-4. **First-connect requirements on the target host.** The Vault
-   CA's pubkey must be installed as `TrustedUserCAKeys` on the
-   target host *before* the first wg-manager registration —
-   otherwise sshd will reject the user cert and the provisioning
-   task fails. The cookbook
-   [`docs/migrations/2c-ssh-ca.md`](docs/migrations/2c-ssh-ca.md)
-   walks through this for both fresh hosts and fleets being
-   migrated off the Phase 1 / 2b stored-key model.
+4. **Bootstrap the target host's SSH CA trust** (Phase 2c CP4.5).
+   The Vault CA's pubkey must be installed as `TrustedUserCAKeys`
+   on the target host *before* the first wg-manager registration —
+   otherwise sshd will reject the cert-based session the
+   provisioning task opens. Use the operator-facing
+   `wg-manager bootstrap-host` command, passing the long-lived
+   SSH key you already use to dial the box (e.g.
+   `~/.ssh/id_ed25519`):
 
-Phase 2c shipped across five checkpoints (CP1–CP5) — module +
-runner + host install + per-row routing + migration + dockerised-
-sshd acceptance suite. See `ROADMAP.md` for the full history and
-`docs/migrations/2c-ssh-ca.md` for the operator-facing migration
-cookbook covering fleets provisioned under the Phase 1 / 2b
-stored-key model.
+   ```bash
+   wg-manager bootstrap-host \
+       --hostname vpn-hub-1.example.com \
+       --ssh-user ubuntu \
+       --ssh-key ~/.ssh/id_ed25519
+   ```
+
+   Optional flags:
+   - `--principal <name>` — cert principal when it differs from
+     the SSH dial-name (e.g. internal DNS vs public IP).
+   - `--ssh-key-passphrase <pass>` — passphrase for the key
+     (or set `WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE`).
+   - `--ssh-port 22`, `--ttl-seconds 86400`, `--connect-timeout 15`.
+
+   The command opens **one** SSH session with TOFU host-key
+   acceptance (the only legitimate TOFU site in the codebase —
+   you are consciously trusting the box for the first time so
+   wg-manager can trust it without TOFU thereafter), mints a
+   host cert against the Vault SSH CA, drops the three files
+   (`/etc/ssh/wg-manager-user-ca.pub`, `…ssh_host_ed25519_key-
+   cert.pub`, `…sshd_config.d/wg-manager.conf`), reloads sshd,
+   and exits with `[OK] bootstrapped <host>: cert serial=<n>
+   valid_until=<ts>`. Idempotent — re-running rotates the host
+   cert in place before TTL expiry.
+
+   The command does **not** write to the database — that's
+   step 5 (`servers register`). Two operator actions on purpose
+   so you can verify the install before committing a row.
+
+   Fleets being migrated off the Phase 1 / 2b stored-key model
+   should follow the cookbook in
+   [`docs/migrations/2c-ssh-ca.md`](docs/migrations/2c-ssh-ca.md);
+   the bootstrap-host CLI replaces the manual file copy step that
+   cookbook used to call out.
+
+5. **Register the box in wg-manager.** Once `bootstrap-host`
+   reports `[OK]`, follow up with `wg-manager servers register`
+   (step 3 above) or `wg-manager clients register` to catalogue
+   the box in the state store and kick off provisioning. The
+   provisioning task uses the host cert that bootstrap just
+   installed; no more first-connect failures.
+
+Phase 2c shipped across five major checkpoints (CP1–CP5) plus
+CP4.5's operator bootstrap follow-up — module + runner + host
+install + per-row routing + migration + dockerised-sshd
+acceptance suite + bootstrap CLI. See `ROADMAP.md` for the full
+history and `docs/migrations/2c-ssh-ca.md` for the operator-
+facing migration cookbook covering fleets provisioned under the
+Phase 1 / 2b stored-key model.
 
 Tests:
 

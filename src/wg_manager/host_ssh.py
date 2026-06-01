@@ -198,12 +198,22 @@ def _install_host_cert_files(
     # ``reload`` is the right verb (not ``restart``): it re-reads
     # config without dropping the current session. If reload fails
     # because the unit isn't running yet, fall back to ``restart``
-    # via a shell-side OR. The four-step chain covers distros that
-    # name the unit ``sshd`` (RHEL / Amazon Linux) and ``ssh``
-    # (Debian / Ubuntu).
+    # via a shell-side OR. The chain covers:
+    #   * systemd distros that name the unit ``sshd`` (RHEL, Amazon
+    #     Linux): ``systemctl reload sshd`` / ``systemctl restart sshd``.
+    #   * systemd distros that name the unit ``ssh`` (Debian, Ubuntu):
+    #     ``systemctl reload ssh`` / ``systemctl restart ssh``.
+    #   * sysv / containerised hosts without systemd (the Phase 2c
+    #     CP5 e2e sshd container, minimal Alpine builds): fall back
+    #     to ``service`` and finally ``kill -HUP $(pidof sshd)``
+    #     which works on anything with a process table.
     runner.sudo(
         "sh -c 'systemctl reload sshd || systemctl restart sshd "
-        "|| systemctl reload ssh || systemctl restart ssh'"
+        "|| systemctl reload ssh || systemctl restart ssh "
+        "|| service ssh reload || service ssh restart "
+        "|| service sshd reload || service sshd restart "
+        "|| kill -HUP $(pidof sshd) "
+        "|| kill -HUP 1'"
     )
     return cert
 

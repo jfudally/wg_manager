@@ -10,6 +10,63 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2c CP4.5 — `wg-manager bootstrap-host` CLI.** Closes the
+  gap CP4.4 created when it retired `wg_manager.ssh_migrate`: the
+  production [`SSHRunner`](src/wg_manager/ssh.py) is locked to CA-only
+  auth + `KnownHostsCAPolicy`, so a brand-new VM has nothing for it
+  to talk to until `/etc/ssh/wg-manager-user-ca.pub` + a CA-signed
+  host cert + the sshd drop-in are in place. Before CP4.5 operators
+  had to hand-install those three files via plain `ssh`; the new CLI
+  does it in one command. Wire shape:
+
+  ```
+  wg-manager bootstrap-host --hostname X --ssh-key ~/.ssh/id_ed25519 \
+      [--principal P] [--ssh-user U] [--ssh-port 22] \
+      [--ssh-key-passphrase PASS] [--ttl-seconds 86400]
+  ```
+
+  Opens an out-of-band SSH session with the operator-supplied
+  long-lived key, mints a host cert against the Vault SSH CA,
+  drops the three files at the canonical OpenSSH paths, and reloads
+  sshd via a portable shell-or chain (systemctl reload sshd / ssh,
+  service reload, kill -HUP sshd) so containerised + minimal hosts
+  without systemd work too. **Does not touch the database** — the
+  operator follows up with `wg-manager servers register` /
+  `clients register` to catalogue the box.
+
+  Architecture notes:
+  - New module [`wg_manager.bootstrap_ssh`](src/wg_manager/bootstrap_ssh.py)
+    holds the operator-driven runner (`BootstrapSSHRunner`) and the
+    orchestrator (`bootstrap_host`). The bootstrap runner uses
+    `paramiko.AutoAddPolicy` — TOFU once, knowingly — and is
+    **never** imported from `tasks.py` so the production no-TOFU
+    invariant is safe by construction. A dedicated unit test
+    (`test_bootstrap_runner_does_not_install_known_hosts_ca_policy`)
+    locks the policy choice down so a future "harden the bootstrap"
+    refactor can't accidentally dual-install the CA policy and leak
+    TOFU back into the production path.
+  - [`host_ssh.py`](src/wg_manager/host_ssh.py) refactored: new
+    `HostInstallRunner` Protocol (sudo + write_file) lets the new
+    `_install_host_cert_files(*, runner, ca, principal, ttl_seconds)`
+    lower-level worker drive either runner without an adapter.
+    `install_host_cert` (the production task-layer call site) becomes
+    the Server-shaped wrapper around it.
+  - Audit emission: every successful bootstrap emits one
+    `event=bootstrap.host` line on the existing `wg_manager.audit`
+    logger with `hostname`, `principal`, `cert_serial`, `cn` — joins
+    the Phase 2d CP5 audit stream so SIEM rules can match the install
+    alongside auth admit/reject decisions.
+  - Tests: 4 unit cases in
+    [`tests/test_bootstrap_ssh.py`](tests/test_bootstrap_ssh.py)
+    (AutoAddPolicy wiring, no-CA-policy lock, three-file orchestration,
+    audit emission) + 5 CLI cases in
+    [`tests/test_cli_bootstrap_host.py`](tests/test_cli_bootstrap_host.py)
+    (required args, principal default, principal override, success
+    summary, Vault-unreachable exit code) + 1 end-to-end case in
+    [`tests/e2e/test_bootstrap_host.py`](tests/e2e/test_bootstrap_host.py)
+    that drives the full pre-fail → bootstrap → post-succeed → audit-
+    line arc against the existing CP5 dockerised sshd. Backend
+    pytest 405/405; e2e 6/6.
 - **Phase 2d CP5 — mTLS acceptance suite + audit emission + revoked-cert gate.**
   Lands as a single checkpoint that closes Phase 2d. Six tests under
   the new [`tests/e2e/tls/`](tests/e2e/tls/) bucket (separate from

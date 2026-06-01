@@ -370,6 +370,67 @@ Transit key's data-key client-side for a short TTL (Vault's
     224/225 green (1 unrelated pre-existing crypto failure carried
     forward from CP4.3); dashboard `vitest` 25/25 green;
     `tsc --noEmit` clean.
+  - **CP4.5 `[x]`** (2026-06-01) — `wg-manager bootstrap-host`
+    CLI closes the operator-facing gap CP4.4 left behind. The
+    production `SSHRunner` is locked to CA-only auth via
+    `KnownHostsCAPolicy`; a fresh box has nothing for it to talk
+    to until `/etc/ssh/wg-manager-user-ca.pub` + a CA-signed
+    host cert + the sshd drop-in are in place. Before CP4.5
+    operators hand-installed those three files via plain `ssh`
+    (`wg_manager.ssh_migrate` was retired in CP4.4 alongside the
+    legacy stored-key path it depended on); CP4.5 brings the
+    install back behind a single command:
+
+    ```
+    wg-manager bootstrap-host --hostname X --ssh-key PATH \
+        [--principal P] [--ssh-user U] [--ssh-port 22] \
+        [--ssh-key-passphrase PASS] [--ttl-seconds 86400]
+    ```
+
+    Operator follows up with `wg-manager servers register` /
+    `clients register` to catalogue the box — bootstrap and
+    registration are two operator actions so the operator can
+    verify the install before committing a row. The CLI never
+    writes to the DB.
+
+    Architecture: new module `wg_manager.bootstrap_ssh` holds
+    `BootstrapSSHRunner` (the operator-driven, AutoAddPolicy
+    runner — the *one* legitimate TOFU site in the codebase) and
+    the `bootstrap_host` orchestrator. `BootstrapSSHRunner` is
+    deliberately separate from `SSHRunner` and **never** imported
+    from `tasks.py` so the production no-TOFU invariant is safe
+    by construction; a sentinel test pins the policy choice down
+    so a future "harden the bootstrap" refactor can't accidentally
+    dual-install `KnownHostsCAPolicy` and leak TOFU back into the
+    production path. `host_ssh.py` refactored with a
+    `HostInstallRunner` Protocol so the new
+    `_install_host_cert_files()` lower-level worker drives either
+    runner without an adapter — `install_host_cert()` becomes the
+    Server-shaped wrapper around it for the production task-layer
+    call sites. The sshd-reload chain widened to cover non-systemd
+    hosts (`service ssh reload`, `kill -HUP $(pidof sshd)`, `kill
+    -HUP 1`) so containerised + minimal fleet members work too.
+
+    Audit: each successful bootstrap emits one
+    `event=bootstrap.host` line on the `wg_manager.audit` logger
+    with `hostname`, `principal`, `cert_serial`, `cn` — joins the
+    Phase 2d CP5 audit stream so SIEM rules match the install
+    alongside auth admit/reject decisions. Idempotent —
+    re-running against an already-bootstrapped host overwrites
+    the three files with fresh material, which is also the
+    operator-driven rotation flow before host-cert expiry.
+
+    Tests: 4 unit cases in `tests/test_bootstrap_ssh.py`
+    (AutoAddPolicy wiring, no-CA-policy lock, three-file
+    orchestration with ordering / payload / mode assertions,
+    audit emission) + 5 CLI cases in
+    `tests/test_cli_bootstrap_host.py` (required args, principal
+    default, principal override, success summary line, SSHCAError
+    → exit 1 + stderr) + 1 end-to-end case in
+    `tests/e2e/test_bootstrap_host.py` that drives the full
+    pre-fail → bootstrap → post-succeed → audit-line arc against
+    the CP5 dockerised sshd. Backend pytest 405/405; e2e 6/6
+    (was 5/5).
 - **Checkpoint 5 `[x]`** (2026-05-29) — Acceptance: dockerised
   sshd suite under `tests/e2e/` proves the cert-based SSH path
   works against a real OpenSSH server using only Vault-signed
