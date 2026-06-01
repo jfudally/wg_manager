@@ -53,6 +53,7 @@ from typing import Any
 
 import paramiko
 
+from wg_manager.auth import _emit_audit
 from wg_manager.host_ssh import HostInstallRunner, _install_host_cert_files
 from wg_manager.ssh import (
     CommandResult,
@@ -363,6 +364,7 @@ def bootstrap_host(
     principal: str,
     ca: SSHCABackend,
     ttl_seconds: int,
+    cn: str = "",
 ) -> HostCert:
     """Run the CA + host-cert + sshd-drop-in install against a fresh host.
 
@@ -420,6 +422,13 @@ def bootstrap_host(
     :type ca: SSHCABackend
     :param ttl_seconds: TTL the cert request asks the CA for.
     :type ttl_seconds: int
+    :param cn: The OOB SSH username the bootstrap session opened
+        under — surfaced on the audit line so an operator grepping
+        the audit stream can attribute the install. Defaults to the
+        empty string when the caller is exercising the helper without
+        a real bootstrap session (the orchestrator tests do this);
+        the CLI always populates it from the runner's ``username``.
+    :type cn: str
     :return: The :class:`HostCert` the CA returned. Carries serial,
         principals, and validity window; the CLI surfaces ``serial``
         and ``valid_before`` to the operator on success.
@@ -429,15 +438,21 @@ def bootstrap_host(
         on the host first).
     :raises wg_manager.ssh_ca.SSHCAError: If the CA refuses to sign.
     """
-    # Hostname is currently informational on this signature; the
-    # value is wired into the audit emission in cycle 4. Keeping it
-    # on the signature now (rather than threading it in later) means
-    # the CLI integration in cycle 5 doesn't have to widen the call
-    # site twice.
-    _ = hostname
-    return _install_host_cert_files(
+    cert = _install_host_cert_files(
         runner=runner,
         ca=ca,
         principal=principal,
         ttl_seconds=ttl_seconds,
     )
+    # Audit emission lands *after* the install commits, so a failure
+    # part-way through (CA refusal, ssh write error) doesn't leave a
+    # misleading "bootstrap.host" line in the audit stream. Mirrors
+    # the CP5 admit-pattern in wg_manager.auth.MTLSAuthMiddleware.
+    _emit_audit(
+        "bootstrap.host",
+        hostname=hostname,
+        principal=principal,
+        cert_serial=str(cert.serial),
+        cn=cn,
+    )
+    return cert

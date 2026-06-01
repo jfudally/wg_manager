@@ -348,3 +348,65 @@ class TestBootstrapHostOrchestration:
         assert "systemctl restart sshd" in joined
         assert "systemctl reload ssh" in joined
         assert "systemctl restart ssh" in joined
+
+    def test_bootstrap_host_emits_audit_line(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A successful bootstrap emits exactly one ``bootstrap.host`` audit line.
+
+        Pins the Phase 2d CP5 audit-emission shape onto the new
+        bootstrap surface. Every cert-bearing decision the rest of
+        wg-manager makes already emits one JSON line on the
+        ``wg_manager.audit`` named logger (see
+        :class:`wg_manager.auth.MTLSAuthMiddleware`); the bootstrap
+        flow joins that pattern so an operator grepping the audit
+        stream can see the install land alongside the auth
+        admit / reject lines.
+
+        Required fields on the record:
+
+        * ``event`` — the string ``"bootstrap.host"`` so a SIEM rule
+          can match this and only this event.
+        * ``hostname`` — the operator-supplied ``--hostname`` value
+          (which may or may not be the same as ``principal``).
+        * ``principal`` — the principal baked into the host cert.
+        * ``cert_serial`` — the CA-assigned serial, useful for
+          cross-referencing the row that lands in the dashboard
+          after the operator's follow-up ``servers register``.
+        * ``cn`` — the OOB username the bootstrap session opened
+          under (operator identity for the audit log).
+        """
+        import json
+        import logging
+
+        ca = LocalDevSSHCA.generate()
+        runner = _FakeRunner(_HOST_PUBKEY)
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            cert = bootstrap_host(
+                runner=runner,
+                hostname="fresh-host.example.com",
+                principal="fresh-host.example.com",
+                ca=ca,
+                ttl_seconds=86400,
+                cn="ubuntu",
+            )
+
+        audit_records = [
+            json.loads(rec.getMessage())
+            for rec in caplog.records
+            if rec.name == "wg_manager.audit"
+        ]
+        bootstrap_lines = [
+            r for r in audit_records if r.get("event") == "bootstrap.host"
+        ]
+        assert len(bootstrap_lines) == 1, (
+            f"expected exactly one bootstrap.host audit line, got "
+            f"{len(bootstrap_lines)}: {bootstrap_lines!r}"
+        )
+        record = bootstrap_lines[0]
+        assert record["hostname"] == "fresh-host.example.com"
+        assert record["principal"] == "fresh-host.example.com"
+        assert record["cert_serial"] == str(cert.serial)
+        assert record["cn"] == "ubuntu"
