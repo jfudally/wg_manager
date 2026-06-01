@@ -30,7 +30,13 @@ from unittest import mock
 import paramiko
 import pytest
 
-from wg_manager.bootstrap_ssh import BootstrapSSHRunner
+from wg_manager.bootstrap_ssh import BootstrapSSHRunner, bootstrap_host
+from wg_manager.host_ssh import (
+    HOST_CA_PUB_PATH,
+    HOST_CERT_PATH,
+    SSHD_DROPIN_PATH,
+)
+from wg_manager.ssh_ca import LocalDevSSHCA
 
 
 @pytest.fixture()
@@ -177,3 +183,168 @@ class TestBootstrapRunnerWiring:
             "no CA-signed host cert *yet*; installing the CA-mode "
             "policy here would reject every fresh host)."
         )
+
+
+class _FakeRunner:
+    """Minimal stand-in for BootstrapSSHRunner used by the orchestrator tests.
+
+    Records ``write_file`` and ``sudo`` calls in declaration order so
+    the test can pin both *what* was written (paths, payloads, modes)
+    and the relative ordering against the sshd reload. The runner does
+    not enforce the context-manager protocol — the tests pass it to
+    :func:`bootstrap_host` already "open", which mirrors the CLI
+    layer's usage (CLI enters the runner once and then drives the
+    orchestrator inside the `with` block).
+    """
+
+    def __init__(self, host_pubkey: str) -> None:
+        self.host_pubkey = host_pubkey
+        self.write_file_calls: list[tuple[str, str, str, bool]] = []
+        self.sudo_calls: list[str] = []
+        self.run_calls: list[str] = []
+
+    def run(self, cmd: str, check: bool = True) -> Any:
+        self.run_calls.append(cmd)
+        return _Result(0, "", "")
+
+    def sudo(self, cmd: str, check: bool = True) -> Any:
+        self.sudo_calls.append(cmd)
+        # The install helper probes for the host pubkey via
+        # ``sudo cat /etc/ssh/ssh_host_ed25519_key.pub``; return our
+        # canned value when that path appears anywhere in the command.
+        if "ssh_host_ed25519_key.pub" in cmd:
+            return _Result(0, self.host_pubkey + "\n", "")
+        return _Result(0, "", "")
+
+    def write_file(
+        self,
+        path: str,
+        content: str,
+        mode: str = "644",
+        sudo: bool = True,
+    ) -> Any:
+        self.write_file_calls.append((path, content, mode, sudo))
+        return _Result(0, "", "")
+
+
+class _Result:
+    """Tiny CommandResult-shaped value for the fake runner."""
+
+    def __init__(self, rc: int, stdout: str, stderr: str) -> None:
+        self.rc = rc
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+# Real ed25519 host pubkey used across the orchestrator tests. Mirrors
+# the value :mod:`tests.test_host_ssh` uses; a fixed string keeps the
+# host-cert mint deterministic so the principal assertion stays stable
+# across runs.
+_HOST_PUBKEY = (
+    "ssh-ed25519 "
+    "AAAAC3NzaC1lZDI1NTE5AAAAINcv8wY+y8d0KcKZ6t6S/n7JoYx7M3jzqu7K2YgQGvD7"
+    " root@fresh-host.example.com"
+)
+
+
+# Late import so the typing-only ``Any`` doesn't trigger a NameError
+# when the test file is collected before the bootstrap module is
+# wired up (cycle 1 ordering).
+from typing import Any  # noqa: E402
+
+
+class TestBootstrapHostOrchestration:
+    """``bootstrap_host`` writes three files + reloads sshd, in order."""
+
+    def test_bootstrap_host_writes_three_files_and_reloads_sshd(self) -> None:
+        """Pin the wire-level shape of the bootstrap install.
+
+        Asserts the orchestrator does exactly what an operator would
+        do by hand:
+
+        1. Writes ``/etc/ssh/wg-manager-user-ca.pub`` with the CA's
+           OpenSSH-formatted public key.
+        2. Writes ``/etc/ssh/ssh_host_ed25519_key-cert.pub`` with a
+           freshly-minted host cert against the host's existing
+           ed25519 pubkey.
+        3. Writes ``/etc/ssh/sshd_config.d/wg-manager.conf`` with
+           ``TrustedUserCAKeys`` + ``HostCertificate`` directives.
+        4. Reloads sshd via the four-step shell-or so distros that
+           name the unit ``ssh`` (Debian/Ubuntu) and those that name
+           it ``sshd`` (RHEL/Amazon Linux) both work.
+
+        The three writes must happen *before* the reload so a partial
+        failure on the reload still leaves the cert material in
+        place for an operator to inspect.
+        """
+        ca = LocalDevSSHCA.generate()
+        runner = _FakeRunner(_HOST_PUBKEY)
+
+        cert = bootstrap_host(
+            runner=runner,
+            hostname="fresh-host.example.com",
+            principal="fresh-host.example.com",
+            ca=ca,
+            ttl_seconds=86400,
+        )
+
+        # The returned HostCert carries the principal we asked for.
+        assert "fresh-host.example.com" in cert.principals
+
+        # Three writes happened, in CA-then-cert-then-dropin order.
+        assert len(runner.write_file_calls) == 3, (
+            f"expected three write_file calls, got "
+            f"{len(runner.write_file_calls)}: "
+            f"{[c[0] for c in runner.write_file_calls]!r}"
+        )
+
+        paths_in_order = [call[0] for call in runner.write_file_calls]
+        assert paths_in_order == [
+            HOST_CA_PUB_PATH,
+            HOST_CERT_PATH,
+            SSHD_DROPIN_PATH,
+        ], (
+            f"writes must land in CA / host-cert / drop-in order, "
+            f"got {paths_in_order!r}"
+        )
+
+        # CA pubkey body matches verbatim (trailing newline tolerated).
+        ca_body = runner.write_file_calls[0][1]
+        assert ca_body.strip() == ca.ca_public_key.strip()
+        # Host cert body begins with the OpenSSH ed25519 cert algo
+        # name; that's the strongest assertion we can make without
+        # re-parsing the cert here (the cert content is already
+        # exercised by :mod:`tests.test_ssh_ca`).
+        host_cert_body = runner.write_file_calls[1][1]
+        assert host_cert_body.startswith(
+            "ssh-ed25519-cert-v01@openssh.com "
+        )
+        # Drop-in references the two real paths so sshd actually
+        # picks the install up.
+        dropin = runner.write_file_calls[2][1]
+        assert f"TrustedUserCAKeys {HOST_CA_PUB_PATH}" in dropin
+        assert f"HostCertificate {HOST_CERT_PATH}" in dropin
+
+        # All three writes asked for sudo + 0o644 — the OpenSSH
+        # convention for these paths.
+        for path, _body, mode, sudo in runner.write_file_calls:
+            assert mode == "644", f"unexpected mode {mode!r} for {path!r}"
+            assert sudo is True, f"expected sudo write for {path!r}"
+
+        # Exactly one sshd reload happens *after* the writes. The
+        # shell-or covers ``sshd`` and ``ssh`` unit names + reload
+        # vs restart so distro variants don't matter.
+        reload_cmds = [
+            cmd for cmd in runner.sudo_calls if "systemctl" in cmd
+        ]
+        assert len(reload_cmds) == 1, (
+            f"expected exactly one sshd reload call, got "
+            f"{len(reload_cmds)}: {reload_cmds!r}"
+        )
+        joined = reload_cmds[0]
+        # All four branches must be present so the call works on the
+        # broad range of distros wg-manager targets.
+        assert "systemctl reload sshd" in joined
+        assert "systemctl restart sshd" in joined
+        assert "systemctl reload ssh" in joined
+        assert "systemctl restart ssh" in joined

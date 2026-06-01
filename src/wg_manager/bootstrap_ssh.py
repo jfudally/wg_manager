@@ -53,11 +53,13 @@ from typing import Any
 
 import paramiko
 
+from wg_manager.host_ssh import HostInstallRunner, _install_host_cert_files
 from wg_manager.ssh import (
     CommandResult,
     SSHCommandError,
     SSHConnectionError,
 )
+from wg_manager.ssh_ca import HostCert, SSHCABackend
 
 
 def _load_pkey_from_path(
@@ -352,3 +354,90 @@ class BootstrapSSHRunner:
     def client(self) -> Any:
         """Expose the underlying paramiko client (``None`` until entered)."""
         return self._client
+
+
+def bootstrap_host(
+    *,
+    runner: HostInstallRunner,
+    hostname: str,
+    principal: str,
+    ca: SSHCABackend,
+    ttl_seconds: int,
+) -> HostCert:
+    """Run the CA + host-cert + sshd-drop-in install against a fresh host.
+
+    Phase 2c CP4.5 — operator-driven equivalent of the per-provision
+    install in :func:`wg_manager.tasks.provision_server_task`. The
+    operator opens a :class:`BootstrapSSHRunner` against the box
+    using a long-lived private key they already have on the host
+    (i.e. the same key they'd use with plain ``ssh``), and this
+    function lays down:
+
+    1. ``/etc/ssh/wg-manager-user-ca.pub`` — the CA the production
+       runner's :class:`KnownHostsCAPolicy` trusts.
+    2. ``/etc/ssh/ssh_host_ed25519_key-cert.pub`` — a CA-signed host
+       cert bound to ``principal``.
+    3. ``/etc/ssh/sshd_config.d/wg-manager.conf`` — wires both into
+       sshd's config (``TrustedUserCAKeys`` + ``HostCertificate``).
+
+    …and reloads sshd. After this completes the production runner
+    can dial the host without TOFU; the operator's bootstrap key
+    can be retired (the box no longer needs it for wg-manager to
+    work).
+
+    Crucially this function does **not** touch the database. The
+    operator's follow-up is to call ``wg-manager servers register``
+    (or ``clients register``) to actually catalogue the box in the
+    state store; bootstrap and registration are two operator actions
+    on purpose so the operator can verify the install before
+    committing a row.
+
+    Idempotent — re-running against an already-bootstrapped host
+    simply overwrites the three files with fresh material (a new CA
+    signature, a new host cert serial). That's how an operator
+    rotates the host cert before its TTL expires.
+
+    :param runner: Open SSH runner bound to the target host. The
+        caller is responsible for entering it as a context manager.
+        Either runner type (production CA-mode or the bootstrap
+        TOFU runner) satisfies the protocol; the orchestrator
+        doesn't know which is which.
+    :type runner: HostInstallRunner
+    :param hostname: The hostname the operator named the box with on
+        the command line (``--hostname``). Currently informational
+        — surfaced in audit emission in cycle 4 — but kept on the
+        signature so the cycle 4 wiring doesn't have to widen it.
+    :type hostname: str
+    :param principal: The DNS / hostname principal the host cert
+        will carry. Production callers typically pass the same
+        value as ``hostname``; the CLI lets the operator override
+        with ``--principal`` for fleets where the SSH hostname and
+        the cert principal differ (e.g. internal DNS vs public IP).
+    :type principal: str
+    :param ca: The SSH CA backend that signs the host cert.
+        Typically the Vault-backed one returned by
+        :func:`wg_manager.ssh_ca.make_ssh_ca_backend`.
+    :type ca: SSHCABackend
+    :param ttl_seconds: TTL the cert request asks the CA for.
+    :type ttl_seconds: int
+    :return: The :class:`HostCert` the CA returned. Carries serial,
+        principals, and validity window; the CLI surfaces ``serial``
+        and ``valid_before`` to the operator on success.
+    :rtype: HostCert
+    :raises wg_manager.host_ssh.HostCertInstallError: If the target
+        host has no ed25519 host pubkey yet (re-run ``ssh-keygen -A``
+        on the host first).
+    :raises wg_manager.ssh_ca.SSHCAError: If the CA refuses to sign.
+    """
+    # Hostname is currently informational on this signature; the
+    # value is wired into the audit emission in cycle 4. Keeping it
+    # on the signature now (rather than threading it in later) means
+    # the CLI integration in cycle 5 doesn't have to widen the call
+    # site twice.
+    _ = hostname
+    return _install_host_cert_files(
+        runner=runner,
+        ca=ca,
+        principal=principal,
+        ttl_seconds=ttl_seconds,
+    )

@@ -23,12 +23,44 @@ place, so re-running the helper is the rotation flow.
 from __future__ import annotations
 
 import logging
+from typing import Protocol, runtime_checkable
 
 from wg_manager.models import Server
-from wg_manager.ssh import SSHRunner
+from wg_manager.ssh import CommandResult, SSHRunner
 from wg_manager.ssh_ca import HostCert, SSHCABackend
 
 logger = logging.getLogger(__name__)
+
+
+@runtime_checkable
+class HostInstallRunner(Protocol):
+    """Minimal surface :func:`_install_host_cert_files` needs from a runner.
+
+    Both :class:`wg_manager.ssh.SSHRunner` (production / CA-mode) and
+    :class:`wg_manager.bootstrap_ssh.BootstrapSSHRunner` (operator-
+    driven bootstrap / TOFU) implement this shape, so the lower-level
+    install helper can drive either without knowing which auth path
+    opened the session.
+
+    The protocol is intentionally narrower than either runner's full
+    public surface — only the operations the install helper actually
+    calls live here. Adding new methods to either runner has no
+    impact on the protocol or its callers.
+    """
+
+    def sudo(self, cmd: str, check: bool = True) -> CommandResult:
+        """Execute ``cmd`` under ``sudo -n``."""
+        ...
+
+    def write_file(
+        self,
+        path: str,
+        content: str,
+        mode: str = "644",
+        sudo: bool = True,
+    ) -> CommandResult:
+        """Write ``content`` to remote ``path``."""
+        ...
 
 
 class HostCertInstallError(RuntimeError):
@@ -72,7 +104,7 @@ HostCertificate {host_cert}
 """
 
 
-def _read_host_pubkey(runner: SSHRunner) -> str:
+def _read_host_pubkey(runner: HostInstallRunner) -> str:
     """Return the host's existing OpenSSH ed25519 public key.
 
     Reads ``/etc/ssh/ssh_host_ed25519_key.pub`` via ``sudo cat`` and
@@ -90,6 +122,90 @@ def _read_host_pubkey(runner: SSHRunner) -> str:
             f"before re-running provisioning"
         )
     return body
+
+
+def _install_host_cert_files(
+    *,
+    runner: HostInstallRunner,
+    ca: SSHCABackend,
+    principal: str,
+    ttl_seconds: int,
+) -> HostCert:
+    """Lower-level "lay down the three files + reload sshd" worker.
+
+    Factored out of :func:`install_host_cert` in Phase 2c CP4.5 so
+    the new operator-driven bootstrap path (which has no
+    :class:`Server` row yet — the whole point is to *prepare* a host
+    for registration) can reuse the same wire-level behaviour without
+    fabricating a stub row. The Server-shaped wrapper
+    (:func:`install_host_cert`) is kept for the production task layer's
+    call sites; both end up here.
+
+    Accepts the :class:`HostInstallRunner` protocol rather than a
+    concrete runner type so the same code path drives both
+    :class:`wg_manager.ssh.SSHRunner` (production / CA mode) and
+    :class:`wg_manager.bootstrap_ssh.BootstrapSSHRunner` (operator /
+    TOFU) — no adapter, no special-case branch.
+
+    :param runner: Open SSH runner bound to the target host. The
+        caller is responsible for entering it as a context manager
+        before calling this helper.
+    :type runner: HostInstallRunner
+    :param ca: An :class:`SSHCABackend` that can sign host certs.
+    :type ca: SSHCABackend
+    :param principal: The hostname / DNS name the cert is bound to.
+        Production callers pass the :attr:`Server.hostname` value;
+        bootstrap callers pass the operator-supplied ``--hostname``.
+    :type principal: str
+    :param ttl_seconds: TTL the cert request asks the CA for. Vault
+        caps this at the role's ``max_ttl``; the local backend
+        honours it verbatim.
+    :type ttl_seconds: int
+    :return: The :class:`HostCert` the CA returned (serial, principals,
+        validity window).
+    :rtype: HostCert
+    :raises HostCertInstallError: If the host has no ed25519 host
+        pubkey yet (re-run ``ssh-keygen -A`` on the host first).
+    :raises wg_manager.ssh_ca.SSHCAError: If the CA refuses to sign.
+    """
+    host_pubkey = _read_host_pubkey(runner)
+    cert = ca.mint_host_cert(
+        public_key_openssh=host_pubkey,
+        principals=[principal],
+        ttl_seconds=ttl_seconds,
+    )
+
+    # Write the three files. ``mode`` differs because the CA pubkey
+    # and the host cert are world-readable on real sshd hosts (they
+    # have to be — sshd reads them as root but other tooling expects
+    # to be able to inspect them), while the drop-in is also 644 to
+    # match OpenSSH's stock config files.
+    runner.write_file(
+        HOST_CA_PUB_PATH, ca.ca_public_key + "\n", mode="644", sudo=True
+    )
+    runner.write_file(
+        HOST_CERT_PATH, cert.cert_pem + "\n", mode="644", sudo=True
+    )
+    runner.write_file(
+        SSHD_DROPIN_PATH,
+        _SSHD_DROPIN_TEMPLATE.format(
+            ca_pub=HOST_CA_PUB_PATH, host_cert=HOST_CERT_PATH
+        ),
+        mode="644",
+        sudo=True,
+    )
+
+    # ``reload`` is the right verb (not ``restart``): it re-reads
+    # config without dropping the current session. If reload fails
+    # because the unit isn't running yet, fall back to ``restart``
+    # via a shell-side OR. The four-step chain covers distros that
+    # name the unit ``sshd`` (RHEL / Amazon Linux) and ``ssh``
+    # (Debian / Ubuntu).
+    runner.sudo(
+        "sh -c 'systemctl reload sshd || systemctl restart sshd "
+        "|| systemctl reload ssh || systemctl restart ssh'"
+    )
+    return cert
 
 
 def install_host_cert(
@@ -135,35 +251,9 @@ def install_host_cert(
     :raises RuntimeError: If the host has no ed25519 host pubkey yet.
     :raises wg_manager.ssh_ca.SSHCAError: If the CA refuses to sign.
     """
-    host_pubkey = _read_host_pubkey(runner)
-    cert = ca.mint_host_cert(
-        public_key_openssh=host_pubkey,
-        principals=[server.hostname],
+    return _install_host_cert_files(
+        runner=runner,
+        ca=ca,
+        principal=server.hostname,
         ttl_seconds=ttl_seconds,
     )
-
-    # Write the three files. ``mode`` differs because the CA pubkey
-    # and the host cert are world-readable on real sshd hosts (they
-    # have to be — sshd reads them as root but other tooling expects
-    # to be able to inspect them), while the drop-in is also 644 to
-    # match OpenSSH's stock config files.
-    runner.write_file(HOST_CA_PUB_PATH, ca.ca_public_key + "\n", mode="644", sudo=True)
-    runner.write_file(HOST_CERT_PATH, cert.cert_pem + "\n", mode="644", sudo=True)
-    runner.write_file(
-        SSHD_DROPIN_PATH,
-        _SSHD_DROPIN_TEMPLATE.format(
-            ca_pub=HOST_CA_PUB_PATH, host_cert=HOST_CERT_PATH
-        ),
-        mode="644",
-        sudo=True,
-    )
-
-    # ``reload`` is the right verb (not ``restart``): it re-reads
-    # config without dropping the current session. If reload fails
-    # because the unit isn't running yet, fall back to ``restart``
-    # via a shell-side OR.
-    runner.sudo(
-        "sh -c 'systemctl reload sshd || systemctl restart sshd "
-        "|| systemctl reload ssh || systemctl restart ssh'"
-    )
-    return cert
