@@ -388,3 +388,79 @@ export interface CertificateIssueResponse {
 export interface CertificateRevokeResponse {
   certificate: Certificate;
 }
+
+// --- Audit log (Phase 2e cycle 4) ---
+
+/**
+ * One row in the application audit log.
+ *
+ * Mirrors `AuditEventRead` in `src/wg_manager/schemas.py`. The audit
+ * log is hash-only: `before_hash` / `after_hash` are SHA-256 hex of
+ * the canonical-JSON resource state pre/post-mutation, never the raw
+ * row, so the table is safe to ship in backups.
+ *
+ * The `payload` field is a parsed JSON dict (the backend pre-decodes
+ * the column's compact-JSON string into the wire shape). Callers
+ * strip secret material before persistence; the value here is safe
+ * to render in the dashboard.
+ */
+export interface AuditEvent {
+  id: number;
+  /** ISO-8601 UTC timestamp. */
+  ts: string;
+  /** Slug of the form `<resource>.<action>` (e.g. `server.create`). */
+  event: string;
+  /** CN from the operator's mTLS cert; `null` for system-origin events. */
+  actor_cn: string | null;
+  /** Cert serial as decimal string; `null` for system-origin events. */
+  actor_serial: string | null;
+  /** OperatorRole at action time; `null` for system-origin events. */
+  actor_role: string | null;
+  /** Coarse bucket (`server` / `client` / `ssh_key` / `certificate` / `crypto`). */
+  resource_type: string;
+  /** Row id of the affected resource; `null` for global-scope events. */
+  resource_id: number | null;
+  /** Verb (`create` / `update` / `delete` / `revoke` / `rotate`). */
+  action: string;
+  /** SHA-256 hex of the pre-mutation row; `null` on create. */
+  before_hash: string | null;
+  /** SHA-256 hex of the post-mutation row; `null` on delete. */
+  after_hash: string | null;
+  /** Parsed payload dict; `null` if the row didn't carry one. */
+  payload: Record<string, unknown> | null;
+  /** Correlation id; `null` for system-origin events. */
+  request_id: string | null;
+}
+
+/**
+ * Filters for `GET /audit`. Each field is AND-combined server-side;
+ * `since` / `until` is a half-open window (`ts >= since AND ts < until`)
+ * so adjacent ranges don't double-count the boundary row.
+ */
+export interface AuditEventListParams {
+  event?: string;
+  actor_cn?: string;
+  resource_type?: string;
+  resource_id?: number;
+  /** ISO-8601 lower bound, inclusive. */
+  since?: string;
+  /** ISO-8601 upper bound, exclusive. */
+  until?: string;
+  /** Page size. Default 100; backend caps at 500. */
+  limit?: number;
+  /** Page offset. Default 0. */
+  offset?: number;
+}
+
+/**
+ * Envelope returned by `GET /audit`. Mirrors `AuditEventListResponse`
+ * in `src/wg_manager/schemas.py`. Carries `total` so the dashboard can
+ * render a correct "Showing X-Y of Z" line without a second request.
+ */
+export interface AuditEventList {
+  items: AuditEvent[];
+  /** Count of rows matching the filter across all pages. */
+  total: number;
+  limit: number;
+  offset: number;
+}

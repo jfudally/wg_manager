@@ -1044,11 +1044,18 @@ you'd actually deploy.
   `github-actions`. Weekly schedule.
 - **Vault audit log** is shipped off-host (file sink + a `vector`
   sidecar in compose; production story documented for journald/syslog).
-- **Application audit log.** New `audit_event` table; every mutating
-  endpoint writes one row with operator subject (from the mTLS cert),
-  resource, action, before/after hash. Read-only `/audit` endpoint
-  surfaces it; dashboard page lists recent events filterable by operator
-  and resource.
+- **Application audit log** `[x]` (cycles 1-4 shipped 2026-06-01). New
+  `auditevent` table; every mutating endpoint writes one row with
+  operator subject (from the mTLS cert), resource, action, before/after
+  hash. Read-only `/audit` endpoint surfaces it; dashboard page lists
+  recent events filterable by operator and resource. Cycle 1 added the
+  table (`alembic 0013`); cycle 2 shipped `wg_manager.audit.persist`
+  as the single write seam; cycle 3 wired the helper into the five
+  mutating endpoint families (`server.create / server.update /
+  client.delete / ssh_key.create / certificate.revoke`); cycle 4 added
+  the read surface — `GET /audit` (admin / auditor only, filterable
+  on `event` / `actor_cn` / `resource_type` / `resource_id` /
+  `since` / `until`, paginated) plus the `/audit` dashboard page.
 - **Backup story.** Documented `vault operator raft snapshot save`
   cadence; MySQL dumps documented to be encrypted at rest using the
   Transit data-key flow so a leaked dump is not equivalent to a leaked

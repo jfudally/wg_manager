@@ -10,6 +10,43 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e cycle 4 — `GET /audit` endpoint + dashboard page.** Closes
+  the read side of the application audit log. Cycles 1-3 wrote rows
+  to `auditevent`; cycle 4 exposes them over HTTP and renders them in
+  the dashboard.
+
+  - Backend [`routers/audit.py`](src/wg_manager/routers/audit.py) ships
+    `GET /audit` (admin / auditor only, plain operators get 403 via
+    the same `_RequireAdminOrAuditor` dep `GET /certs` uses). Filters:
+    `event`, `actor_cn`, `resource_type`, `resource_id`, `since`
+    (inclusive), `until` (exclusive). Pagination: `limit` (default
+    100, max 500) + `offset` (≥ 0). Ordering is `ts DESC, id DESC` so
+    the dashboard reads newest-first with a deterministic tiebreaker
+    for rows sharing the same microsecond.
+
+  - Response envelope `AuditEventListResponse` carries `items` +
+    `total` + `limit` + `offset` — the dashboard renders a real
+    "Showing X-Y of Z" line without a second request. Per-row
+    `AuditEventRead` mirrors the storage shape with one intentional
+    difference: `payload` is decoded back into a `dict` (rather than
+    the compact-JSON string the column stores) so every consumer
+    agrees on the wire shape rather than each re-parsing locally.
+
+  - Dashboard [`web/app/audit/page.tsx`](web/app/audit/page.tsx)
+    renders the filter card + paged table. Filter inputs cover the
+    five exact-match filters plus the time window; Prev/Next walk by
+    the server-echoed limit so the buttons stay aligned with the
+    actual page boundary. Added to the left nav as "Audit log".
+
+  - Tests: 19 backend cases in
+    [`tests/test_audit_api.py`](tests/test_audit_api.py) (role gating,
+    response shape, ordering, every filter individually + combined,
+    pagination defaults / walk / validation) and 6 vitest cases in
+    [`web/__tests__/audit.test.tsx`](web/__tests__/audit.test.tsx)
+    (row rendering, empty state, filter wiring for `event` +
+    `actor_cn`, Next advances offset, Prev disabled on page 1).
+    Backend pytest 457/457 (was 438/438); vitest 46/46 (was 40/40).
+
 - **Phase 2e cycle 3 — `audit.persist` wired into mutating endpoints.**
   Cycle 2 shipped the helper; cycle 3 plumbs it into the five mutating
   endpoint families called out in the plan, one per resource:
