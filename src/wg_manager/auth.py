@@ -31,6 +31,7 @@ doesn't lock the operator out of their own API.
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -46,9 +47,39 @@ from starlette.types import ASGIApp
 
 from wg_manager import db as db_module
 from wg_manager.config import Settings
-from wg_manager.models import Operator, OperatorRole, OperatorStatus
+from wg_manager.models import Certificate, Operator, OperatorRole, OperatorStatus
 
 logger = logging.getLogger(__name__)
+
+# Phase 2d CP5 — dedicated audit logger. Every admission decision the
+# middleware makes (admit / reject) emits a one-line JSON record here.
+# Logging at WARNING level means the record shows up in default-config
+# uvicorn stderr without any extra setup, which is the visible-from-
+# outside contract the CP5 acceptance suite relies on. A production
+# deployment can attach a separate handler (file, syslog, SIEM) by
+# adding a ``logging.config`` entry for the ``wg_manager.audit``
+# logger name without touching this module.
+audit_logger = logging.getLogger("wg_manager.audit")
+
+
+def _emit_audit(event: str, **fields: Any) -> None:
+    """Emit a structured one-line JSON record on the audit logger.
+
+    The record always carries ``event`` and ``ts`` (RFC 3339 UTC); the
+    caller adds the request-shape fields (``cn``, ``serial``,
+    ``method``, ``path``, ``reason``, etc.). Serialised with
+    ``separators=(",", ":")`` so the line stays on a single newline-
+    terminated row — easy for ``grep`` / ``jq`` and easy to assert on
+    from the CP5 acceptance tests. Non-JSON-native types (e.g.
+    ``datetime``) fall through to ``str`` rather than raising at log
+    time; the choice favours observability over strict typing.
+    """
+    record: dict[str, Any] = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
+        "event": event,
+        **fields,
+    }
+    audit_logger.warning(json.dumps(record, separators=(",", ":"), default=str))
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +317,14 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
         self._settings = settings or Settings()
 
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
-        """Run the decision chain before forwarding to the app."""
+        """Run the decision chain before forwarding to the app.
+
+        Phase 2d CP5 layered structured audit emission on every branch
+        (admit + every reject reason) via :func:`_emit_audit`. The
+        ``passthrough`` / preflight branches stay silent because they
+        carry no auth signal — emitting on them would just drown the
+        audit stream in noise for the CORS-OPTIONS workload.
+        """
         if not self._settings.tls_required:
             request.state.cert_subject = None
             request.state.operator = None
@@ -295,26 +333,113 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
             request.state.cert_subject = None
             request.state.operator = None
             return await call_next(request)
+        method = request.method
+        path = request.url.path
         subject = extract_subject_from_scope(dict(request.scope))
         if subject is None:
+            _emit_audit(
+                "auth.reject",
+                reason="client-cert-required",
+                method=method,
+                path=path,
+            )
             return JSONResponse(
                 {"detail": "client cert required"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
         operator = self._resolve_operator(subject)
         if operator is None:
+            _emit_audit(
+                "auth.reject",
+                reason="operator-not-registered",
+                cn=subject.common_name,
+                serial=str(subject.serial),
+                method=method,
+                path=path,
+            )
             return JSONResponse(
                 {"detail": "operator not registered"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
         if operator.status != OperatorStatus.active:
+            _emit_audit(
+                "auth.reject",
+                reason="operator-disabled",
+                cn=subject.common_name,
+                serial=str(subject.serial),
+                method=method,
+                path=path,
+            )
             return JSONResponse(
                 {"detail": "operator disabled"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        # CP5.3 — every cert that the audit registry knows about is
+        # subject to revocation enforcement. A cert that was never
+        # written to the registry (the bootstrap CN's self-mint, a
+        # legacy operator cert from before CP3.3) is admitted on the
+        # strength of its operator row alone, so the chicken-and-egg
+        # bootstrap path stays open. Lookup is by serial-as-string
+        # because :attr:`Certificate.serial` is ``String(64)`` (X.509
+        # serials can exceed signed-INT64 and the column has to round-
+        # trip Vault's serials too).
+        if self._serial_is_revoked(subject.serial):
+            _emit_audit(
+                "auth.reject",
+                reason="operator-cert-revoked",
+                cn=subject.common_name,
+                serial=str(subject.serial),
+                method=method,
+                path=path,
+            )
+            return JSONResponse(
+                {"detail": "operator cert revoked"},
+                status_code=status.HTTP_401_UNAUTHORIZED,
+            )
         request.state.cert_subject = subject
         request.state.operator = operator
+        _emit_audit(
+            "auth.admit",
+            cn=subject.common_name,
+            serial=str(subject.serial),
+            role=operator.role.value,
+            method=method,
+            path=path,
+        )
         return await call_next(request)
+
+    def _serial_is_revoked(self, serial: int) -> bool:
+        """Return ``True`` iff the audit registry has a revoked row for ``serial``.
+
+        Reads the ``certificate`` table — the same row
+        ``POST /certs/{id}/revoke`` flips — so revocation enforcement
+        is consistent with the audit trail and with the Vault PKI CRL
+        the row's revoke action also updates. A serial that's *not*
+        in the registry is treated as not-revoked (the bootstrap path,
+        legacy operator certs).
+
+        Opens its own short-lived session against the module-level
+        engine, mirroring :meth:`_resolve_operator` so the test suite
+        and the live API exercise the same code path. We swallow
+        :class:`Exception` to a "treat as not-revoked" stance only on
+        explicit driver errors — a revoked-row miss must never
+        accidentally admit a revoked cert.
+        """
+        try:
+            with Session(db_module.engine) as session:
+                row = session.exec(
+                    select(Certificate).where(
+                        Certificate.serial == str(serial)
+                    )
+                ).first()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "certificate-registry lookup for serial=%s failed: %s",
+                serial,
+                exc,
+            )
+            return False
+        return bool(row and row.revoked)
 
     def _resolve_operator(self, subject: CertSubject) -> Operator | None:
         """Look up — and optionally bootstrap — the operator for ``subject``.

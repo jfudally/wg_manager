@@ -48,13 +48,18 @@ packages = ["src/wg_manager"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Phase 2c CP5 introduces the ``e2e`` marker for the dockerised-sshd
-# acceptance suite under ``tests/e2e/``. The default invocation
-# (``make test``) deselects ``e2e`` so the fast suite stays hermetic
-# and free of docker / Vault dependencies; ``make test-e2e`` opts in
-# explicitly. Tests in the e2e bucket get the marker auto-applied via
-# the ``tests/e2e/conftest.py`` hook so individual test files don't
-# need to repeat ``@pytest.mark.e2e`` on every function.
+# acceptance suite under ``tests/e2e/``. Phase 2d CP5 introduces a
+# second marker ``e2e_tls`` for the mTLS acceptance bucket under
+# ``tests/e2e/tls/`` — separate because the two buckets have
+# different prereqs (the sshd suite needs Vault + the sshd container;
+# the TLS suite is in-process LocalDevPKI plus a uvicorn subprocess).
+# The default invocation (``make test``) deselects *both* so the fast
+# suite stays hermetic; ``make test-e2e`` / ``make test-e2e-tls``
+# opt in explicitly. Tests in each bucket get their marker
+# auto-applied via the relevant conftest hook so individual test
+# files don't need to repeat ``@pytest.mark.…`` on every function.
 markers = [
     "e2e: end-to-end acceptance tests that require a live dockerised sshd + Vault dev (Phase 2c CP5)",
+    "e2e_tls: mTLS acceptance tests that spin a live uvicorn + LocalDevPKI subprocess (Phase 2d CP5)",
 ]
-addopts = "-m 'not e2e'"
+addopts = "-m 'not e2e and not e2e_tls'"

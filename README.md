@@ -497,26 +497,39 @@ make test-e2e                    # Phase 2c CP5 dockerised-sshd
                                  # acceptance suite (needs Vault +
                                  # the sshd-e2e container; see the
                                  # SSH CA section above)
+make test-e2e-tls                # Phase 2d CP5 mTLS acceptance suite:
+                                 # spins a real uvicorn subprocess with
+                                 # LocalDevPKI and pins the four Phase
+                                 # 2d behavioural contracts — plain-HTTP
+                                 # refused, expired client cert refused
+                                 # at TLS handshake, revoked cert → 401
+                                 # + structured audit line, and (opt-in
+                                 # via WGM_CP5_MYSQL=1) MySQL cert
+                                 # rotation under load. No docker / no
+                                 # Vault required for the default subset
 ```
 
 The fast suite (`make test`) uses an in-memory SQLite DB and a fake
-SSH runner; no network or real MySQL/Vault is required. The e2e
-suite is opt-in via the `e2e` pytest marker so the default
-invocation stays under 60 seconds and doesn't drag docker into the
-inner loop.
+SSH runner; no network or real MySQL/Vault is required. Both e2e
+buckets are opt-in via their own pytest markers (`e2e` for sshd,
+`e2e_tls` for the Phase 2d mTLS bucket) so the default invocation
+stays under 60 seconds and doesn't drag docker or live uvicorn
+processes into the inner loop. The Phase 2d mTLS bucket emits
+structured audit lines (one-line JSON per request on the
+`wg_manager.audit` logger) for every admit / reject decision the
+middleware makes — see `wg_manager.auth._emit_audit` for the field
+shape; the acceptance tests assert on it directly.
 
 ## Roadmap, security, and threat model
 
 - [`ROADMAP.md`](ROADMAP.md) lays out the phases. Phase 0 (spike),
   Phase 1 (MVP), Phase 2a (Vault spike), 2b (encryption at rest),
-  and 2c (Vault SSH CA — no more stored SSH keys) are shipped.
-  Phase 2d (TLS / mTLS everywhere via Vault PKI) is in progress;
-  CP1 lands the [`wg_manager.pki`](src/wg_manager/pki.py) module
-  with both backends (`LocalDevPKI` for dev/tests, `VaultPKI` for
-  production) and the `make pki-bootstrap` idempotent setup —
-  see [`docs/vault-cookbook.md`](docs/vault-cookbook.md#4-pki--internal-tls-phase-2d)
-  §4 for the full reference. Phase 2e (supply chain + audit) is
-  the next sub-phase.
+  2c (Vault SSH CA — no more stored SSH keys), and 2d (TLS / mTLS
+  everywhere via Vault PKI) are shipped. Phase 2d CP5 acceptance
+  suite (`make test-e2e-tls`) pins the four behavioural contracts
+  end-to-end against a live uvicorn process — see ROADMAP § Phase
+  2d CP5 for the per-test detail. Phase 2e (supply chain + audit)
+  is the next sub-phase.
 - [`SECURITY.md`](SECURITY.md) lists the current security posture,
   what wg-manager today explicitly does not defend against, and how
   to report a vulnerability.
@@ -524,8 +537,12 @@ inner loop.
   model the roadmap phases are tied to. Every threat in the table
   names the phase that closes (or has closed) it.
 
-**Not yet a finished system.** Phases 2d and 2e are still ahead —
-the API has no auth, the app ↔ MySQL link is plaintext, and there's
-no audit log. See
-[`SECURITY.md`](SECURITY.md#current-posture) for the concrete state
-and the hardening recommendations for production use today.
+**Not yet a finished system.** Phase 2e (supply chain + audit
+storage hardening) is still ahead. Phase 2d shipped the mTLS
+listener, the operator registry, the audit registry + revocation
+gate, MySQL TLS, cert renewal, and the CP5 acceptance suite that
+pins all four behavioural contracts; the structured audit emission
+landed alongside the revoked-cert gate so admit / reject decisions
+ride the `wg_manager.audit` JSON stream. See
+[`SECURITY.md`](SECURITY.md#current-posture) for the concrete
+posture today and the remaining hardening recommendations.

@@ -10,6 +10,83 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2d CP5 — mTLS acceptance suite + audit emission + revoked-cert gate.**
+  Lands as a single checkpoint that closes Phase 2d. Six tests under
+  the new [`tests/e2e/tls/`](tests/e2e/tls/) bucket (separate from
+  the Phase 2c CP5 dockerised-sshd suite) wear the dedicated
+  `e2e_tls` pytest marker and run via `make test-e2e-tls`. The bucket
+  spins a real `uvicorn` subprocess with mTLS enforced (server cert
+  + CA bundle minted from a session-shared
+  [`LocalDevPKI`](src/wg_manager/pki.py) hierarchy pinned into the
+  subprocess env via `PKI_LOCAL_DEV_*` so the test process + the API
+  process share one trust root) against a SQLite-backed schema. The
+  four ROADMAP acceptance criteria split into three
+  always-on tests + one opt-in:
+  - **Plain-HTTP refused** — raw-socket `GET / HTTP/1.1` never
+    produces an HTTP status line; `httpx` against `http://…` raises
+    `httpx.TransportError`.
+  - **Expired client cert** — TLS handshake refuses a 2-second-TTL
+    cert after a 4-second sleep; a follow-up assertion verifies the
+    listener didn't crash. (Implementation note: enforcement happens
+    at the TLS layer, not the middleware, because bypassing
+    OpenSSL's date check requires non-stable Python knobs and TLS
+    rejection terminates the handshake before any app code runs —
+    the audit-line half of the original criterion is reserved for
+    app-layer rejections, which CP5.3 covers.)
+  - **Revoked cert → 401 + audit line** — full lifecycle: bootstrap
+    admin issues a `cli` cert via `POST /certs` (writes a row in the
+    audit registry), uses it (200 + `auth.admit` audit line),
+    revokes it via `POST /certs/{id}/revoke` (CRL + row flip), uses
+    it again (401 `"operator cert revoked"` + `auth.reject` audit
+    line with `reason="operator-cert-revoked"` naming the same
+    serial). The middleware reads `certificate.revoked` by
+    serial-as-string on every request; a cert with no registry row
+    is admitted (keeps the bootstrap chicken-and-egg path open).
+  - **MySQL cert rotation under load** — opt-in via
+    `WGM_CP5_MYSQL=1` because the full shape requires a TLS-enabled
+    mysqld + a wg-manager `mysql-client` cert + admin creds for
+    `ALTER INSTANCE RELOAD TLS`, substantially more bootstrap than
+    the rest of the suite handles in-process. The default
+    `make test-e2e-tls` invocation reports the test as skipped with
+    a one-line runbook pointer.
+  
+  Feature additions that landed in support of CP5:
+  - **`wg_manager.audit` named logger** + `_emit_audit` helper. Every
+    `MTLSAuthMiddleware` decision (admit + every reject reason)
+    emits one JSON record at WARNING level with `ts`, `event`, `cn`,
+    `serial`, `role` (admit only), `reason` (reject only), `method`,
+    `path`. Routable to syslog / SIEM by attaching a handler to the
+    `wg_manager.audit` logger name without touching the module.
+  - **Revoked-cert gate** in `MTLSAuthMiddleware.dispatch`. Consults
+    the `certificate` table after the operator-registry admit, 401s
+    if the row says `revoked=True`. A cert without a registry row
+    is admitted on the strength of its operator row alone (bootstrap
+    + legacy-cert path stays open).
+  - **`tests/e2e/conftest.py` marker tightening** — the auto-tag
+    hook now only marks tests that are *direct children* of
+    `tests/e2e/`, so the `e2e` marker (sshd suite) and the
+    `e2e_tls` marker (Phase 2d) stay cleanly separated.
+  - Backend test suite **396 / 396 passing** in local mode (+7 from
+    `TestAuditEmission` and `TestRevokedCertGate` in
+    `tests/test_auth.py`); 6 e2e_tls tests pass in ~5 s on a warm
+    laptop, 1 skipped pending the opt-in MySQL bootstrap.
+  
+  Docs sweep:
+  - ROADMAP § Phase 2d header flipped to **shipped (2026-05-31)**;
+    CP5 entry flipped to `[x]` with per-test summary + the
+    architectural notes on the expired-cert and rotation-under-load
+    interpretations.
+  - SECURITY.md current-posture table gains three rows
+    (per-request audit emission, revoked-cert gate, end-to-end
+    acceptance suite); the hardening-recommendations preamble flips
+    to "Phase 2d feature-complete".
+  - THREAT_MODEL.md T-7 and T-8 cite CP5 alongside their original
+    closing checkpoints (CP3.2 and CP2 respectively); T-11
+    (audit-log gap) flips from "Phase 2e" to "Phase 2e (storage
+    hardening) — partially mitigated in Phase 2d CP5".
+  - README.md `## Tests` section grows the `make test-e2e-tls`
+    entry; "Roadmap, security, and threat model" section reflects
+    Phase 2d as shipped.
 - **Phase 2d CP4.4 — docs sweep around the renewal flow.** No code
   changes. New
   [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)

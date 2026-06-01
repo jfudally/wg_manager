@@ -49,6 +49,8 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+import json
+
 from wg_manager.auth import (
     AuthError,
     CertSubject,
@@ -59,7 +61,13 @@ from wg_manager.auth import (
     require_subject,
 )
 from wg_manager.config import Settings
-from wg_manager.models import Operator, OperatorRole, OperatorStatus
+from wg_manager.models import (
+    Certificate,
+    CertificateType,
+    Operator,
+    OperatorRole,
+    OperatorStatus,
+)
 from wg_manager.pki import LocalDevPKI
 
 
@@ -716,3 +724,287 @@ class TestRequireRoleDependency:
 
         assert resp.status_code == 401
         assert resp.json() == {"detail": "client cert required"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 2d CP5 — structured audit emission + revoked-cert gate
+# ---------------------------------------------------------------------------
+
+
+def _parse_audit_lines(records: list[logging.LogRecord]) -> list[dict]:
+    """Filter ``caplog`` records to ``wg_manager.audit`` lines + JSON-decode.
+
+    The middleware's audit emission writes one JSON object per
+    decision to the ``wg_manager.audit`` named logger. Tests use
+    ``caplog`` with ``set_level(logging.WARNING, logger="wg_manager.audit")``
+    to capture; this helper picks out *only* the audit records (the
+    suite also configures the module-level ``wg_manager.auth`` logger,
+    which is a different stream) and parses each one as JSON so the
+    assertions read fields by name rather than substring-matching.
+    """
+    out: list[dict] = []
+    for rec in records:
+        if rec.name != "wg_manager.audit":
+            continue
+        try:
+            out.append(json.loads(rec.getMessage()))
+        except json.JSONDecodeError:  # pragma: no cover — defensive
+            continue
+    return out
+
+
+class TestAuditEmission:
+    """Phase 2d CP5 — every admission decision emits one audit line.
+
+    The acceptance suite under ``tests/e2e/tls/`` asserts the audit
+    line shows up on a *live* uvicorn process's stderr; these unit
+    tests pin the contract end-to-end through ``TestClient`` so the
+    e2e suite can rely on a stable JSON shape.
+    """
+
+    def test_admit_path_emits_auth_admit_line(
+        self,
+        ca: LocalDevPKI,
+        session: Session,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A successful auth emits ``event=auth.admit`` with cn/serial/role."""
+        _add_operator(session, "ops@wg.local", role=OperatorRole.admin)
+        cert = ca.issue_client_cert(
+            common_name="ops@wg.local",
+            sans=["ops@wg.local"],
+            ttl_seconds=300,
+        )
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            resp = client.get("/open")
+
+        assert resp.status_code == 200
+        lines = _parse_audit_lines(caplog.records)
+        admits = [r for r in lines if r["event"] == "auth.admit"]
+        assert len(admits) == 1, lines
+        record = admits[0]
+        assert record["cn"] == "ops@wg.local"
+        assert record["serial"] == str(cert.serial)
+        assert record["role"] == "admin"
+        assert record["method"] == "GET"
+        assert record["path"] == "/open"
+
+    def test_no_cert_path_emits_client_cert_required_reject(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Bare no-cert request emits ``reason=client-cert-required``."""
+        client = TestClient(_build_app(tls_required=True))
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            resp = client.get("/open")
+
+        assert resp.status_code == 401
+        lines = _parse_audit_lines(caplog.records)
+        rejects = [r for r in lines if r["event"] == "auth.reject"]
+        assert len(rejects) == 1
+        assert rejects[0]["reason"] == "client-cert-required"
+        assert rejects[0]["method"] == "GET"
+        assert rejects[0]["path"] == "/open"
+
+    def test_unknown_cn_emits_operator_not_registered_reject(
+        self,
+        ca: LocalDevPKI,
+        engine: Any,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unknown-CN cert emits ``reason=operator-not-registered``."""
+        cert = ca.issue_client_cert(
+            common_name="stranger@wg.local",
+            sans=["stranger@wg.local"],
+            ttl_seconds=300,
+        )
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            resp = client.get("/open")
+
+        assert resp.status_code == 401
+        rejects = [
+            r for r in _parse_audit_lines(caplog.records)
+            if r["event"] == "auth.reject"
+        ]
+        assert len(rejects) == 1
+        assert rejects[0]["reason"] == "operator-not-registered"
+        assert rejects[0]["cn"] == "stranger@wg.local"
+        assert rejects[0]["serial"] == str(cert.serial)
+
+    def test_disabled_operator_emits_operator_disabled_reject(
+        self,
+        ca: LocalDevPKI,
+        session: Session,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A disabled-status row emits ``reason=operator-disabled``."""
+        _add_operator(
+            session,
+            "ex-ops@wg.local",
+            role=OperatorRole.operator,
+            status=OperatorStatus.disabled,
+        )
+        cert = ca.issue_client_cert(
+            common_name="ex-ops@wg.local",
+            sans=["ex-ops@wg.local"],
+            ttl_seconds=300,
+        )
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            resp = client.get("/open")
+
+        assert resp.status_code == 401
+        rejects = [
+            r for r in _parse_audit_lines(caplog.records)
+            if r["event"] == "auth.reject"
+        ]
+        assert len(rejects) == 1
+        assert rejects[0]["reason"] == "operator-disabled"
+        assert rejects[0]["cn"] == "ex-ops@wg.local"
+
+
+class TestRevokedCertGate:
+    """Phase 2d CP5 — a revoked audit-registry row produces a 401 + audit line.
+
+    The gate consults the ``certificate`` table by serial. A serial
+    that's *not* in the registry (bootstrap path, legacy cert minted
+    outside the audit registry) is admitted on the strength of the
+    operator row alone — that's the chicken-and-egg-safe stance.
+    """
+
+    def _seed_certificate_row(
+        self,
+        session: Session,
+        operator: Operator,
+        cert: Any,
+        *,
+        revoked: bool,
+    ) -> Certificate:
+        """Insert a Certificate row that mirrors the one ``POST /certs`` writes.
+
+        Set ``revoked=True`` to simulate the post-``POST /certs/{id}/revoke``
+        state without having to mint via the API.
+        """
+        row = Certificate(
+            serial=str(cert.serial),
+            cert_type=CertificateType.cli,
+            operator_id=operator.id,
+            common_name=cert.common_name,
+            sans=",".join(cert.sans),
+            not_before=cert.not_before,
+            not_after=cert.not_after,
+            revoked=revoked,
+            revoked_at=(
+                datetime.now(timezone.utc) if revoked else None
+            ),
+        )
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        return row
+
+    def test_revoked_serial_returns_401_with_audit_line(
+        self,
+        ca: LocalDevPKI,
+        session: Session,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A revoked row → 401 ``operator cert revoked`` + matching audit line."""
+        operator = _add_operator(
+            session, "ops@wg.local", role=OperatorRole.admin
+        )
+        cert = ca.issue_client_cert(
+            common_name="ops@wg.local",
+            sans=["ops@wg.local"],
+            ttl_seconds=300,
+        )
+        self._seed_certificate_row(session, operator, cert, revoked=True)
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            resp = client.get("/open")
+
+        assert resp.status_code == 401
+        assert resp.json() == {"detail": "operator cert revoked"}
+        rejects = [
+            r for r in _parse_audit_lines(caplog.records)
+            if r["event"] == "auth.reject"
+        ]
+        assert len(rejects) == 1
+        assert rejects[0]["reason"] == "operator-cert-revoked"
+        assert rejects[0]["serial"] == str(cert.serial)
+        assert rejects[0]["cn"] == "ops@wg.local"
+
+    def test_unrevoked_registry_row_admits_with_audit_line(
+        self,
+        ca: LocalDevPKI,
+        session: Session,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A non-revoked row is admitted (the gate is opt-out, not opt-in)."""
+        operator = _add_operator(
+            session, "ops@wg.local", role=OperatorRole.admin
+        )
+        cert = ca.issue_client_cert(
+            common_name="ops@wg.local",
+            sans=["ops@wg.local"],
+            ttl_seconds=300,
+        )
+        self._seed_certificate_row(session, operator, cert, revoked=False)
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            resp = client.get("/open")
+
+        assert resp.status_code == 200
+        admits = [
+            r for r in _parse_audit_lines(caplog.records)
+            if r["event"] == "auth.admit"
+        ]
+        assert len(admits) == 1
+
+    def test_cert_without_registry_row_admits(
+        self,
+        ca: LocalDevPKI,
+        session: Session,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """No registry row → admit. Keeps the bootstrap chain open.
+
+        The bootstrap-CN's self-mint and any legacy operator cert
+        from before CP3.3 never wrote a ``certificate`` row, so the
+        gate has to treat "no row" as "not revoked." A future
+        tightening could move this to "strict mode" via a setting,
+        but that would break the chicken-and-egg path on a fresh
+        install.
+        """
+        _add_operator(session, "boot@wg.local", role=OperatorRole.admin)
+        cert = ca.issue_client_cert(
+            common_name="boot@wg.local",
+            sans=["boot@wg.local"],
+            ttl_seconds=300,
+        )
+        # NOTE: deliberately *no* _seed_certificate_row call.
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        with caplog.at_level(logging.WARNING, logger="wg_manager.audit"):
+            resp = client.get("/open")
+
+        assert resp.status_code == 200

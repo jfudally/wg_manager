@@ -66,16 +66,25 @@ shipped for every row.
 | Cert HTTP surface + dashboard    | `/certs/{whoami,list,issue,revoke,renew}` + dashboard inventory + Renew button | **Phase 2d CP3.4 / CP4.3 (shipped)** |
 | App ↔ MySQL traffic              | TLS — pymysql `ssl={ca,cert,key,check_hostname}` against `require_secure_transport=ON` | **Phase 2d CP4 (shipped)** |
 | Cert renewal automation          | `wg-manager certs renew --due` walker + `POST /certs/{id}/renew` + per-row Renew button; systemd-timer pattern in `docs/deploy/systemd-timer.md` | **Phase 2d CP4.3 (shipped)** |
-| Audit logging of API mutations   | None beyond app logs                        | Phase 2e    |
+| Per-request audit emission       | `wg_manager.audit` logger emits one-line JSON for every admit / reject decision (cn / serial / role / reason / method / path) | **Phase 2d CP5 (shipped)** |
+| Revoked-cert enforcement gate    | `MTLSAuthMiddleware` consults `certificate.revoked` by serial on every request — revoked → 401 + reject audit line | **Phase 2d CP5 (shipped)** |
+| End-to-end acceptance suite      | `make test-e2e-tls` — plain-HTTP refused, expired cert handshake refused, revoked cert → 401 + audit line, MySQL rotation (opt-in via `WGM_CP5_MYSQL=1`) | **Phase 2d CP5 (shipped)** |
+| Audit storage hardening          | Append-only / external log shipper          | Phase 2e    |
 | Supply-chain verification (SBOM, signed builds) | None                           | Phase 2e    |
 
 ## Hardening recommendations for current deployments
 
 Phase 2d is now feature-complete: the API listener is mTLS-only
-(CP2), the operator registry tightens authz (CP3), and the MySQL
-hop is TLS + mutually authenticated (CP4). Phase 2e (audit-log
-hardening, SBOM, signed builds) is the next chunk. If you deploy
-today:
+(CP2), the operator registry tightens authz (CP3), the MySQL hop
+is TLS + mutually authenticated (CP4), and the CP5 acceptance suite
+pins all four behavioural contracts (plain-HTTP refused, expired
+cert refused at handshake, revoked cert → 401 + structured audit
+line, MySQL rotation under load — opt-in per the suite README). The
+``wg_manager.audit`` JSON stream rides Python's ``logging`` so an
+operator can route it to an external log shipper today by
+configuring the logger name in their deploy. Phase 2e (audit
+storage hardening, SBOM, signed builds) is the next chunk. If you
+deploy today:
 
 1. **Always set `TLS_REQUIRED=true`** — the default is `false` so the
    test suite stays hermetic, but running without it leaves the API

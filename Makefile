@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -14,6 +14,7 @@ help:
 	@echo "  install        Install project + dev dependencies into .venv"
 	@echo "  test           Run pytest (fast suite — e2e bucket excluded by default)"
 	@echo "  test-e2e       Run the Phase 2c CP5 e2e suite against docker sshd + Vault"
+	@echo "  test-e2e-tls   Run the Phase 2d CP5 mTLS acceptance suite (live uvicorn + LocalDevPKI)"
 	@echo "  e2e-up         Build + start the e2e sshd container (host port 2222)"
 	@echo "  e2e-down       Stop the e2e sshd container and drop its volume"
 	@echo "  e2e-logs       Tail the e2e sshd container logs"
@@ -198,6 +199,21 @@ mysql-tls-issue:
 
 test-e2e:
 	$(PYTEST) tests/e2e -m e2e --override-ini="addopts="
+
+# ---------------------------------------------------------------------------
+# Phase 2d CP5 — mTLS acceptance suite
+# ---------------------------------------------------------------------------
+#
+# The TLS acceptance bucket sits under ``tests/e2e/tls/`` and spins
+# its own live ``uvicorn`` subprocess with ``LocalDevPKI`` as the
+# trust anchor. It does *not* need Vault or the sshd container — the
+# only docker prerequisite is for the CP5.4 MySQL-rotation test,
+# which the conftest gates on a reachable ``mysql`` compose service.
+# ``--override-ini="addopts="`` neutralises the default ``-m 'not e2e
+# and not e2e_tls'`` so the explicit ``-m e2e_tls`` selects in.
+
+test-e2e-tls:
+	$(PYTEST) tests/e2e/tls -m e2e_tls --override-ini="addopts="
 
 e2e-up:
 	docker compose --profile e2e up -d --build sshd-e2e

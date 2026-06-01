@@ -54,13 +54,20 @@ from wg_manager.ssh_ca import VaultSSHCA
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Auto-tag every test under ``tests/e2e/`` with the ``e2e`` marker.
+    """Auto-tag every direct child of ``tests/e2e/`` with the ``e2e`` marker.
 
     ``pytestmark`` in a conftest doesn't propagate to tests (only the
     module/class-level form does), so the hook is the canonical
     pytest seam for "every test under this directory wears this
     marker." Keeps individual test files free of repeated
     ``@pytest.mark.e2e`` decorators.
+
+    Phase 2d CP5 introduces a sibling acceptance bucket under
+    ``tests/e2e/tls/`` with its *own* marker (``e2e_tls``) and prereq
+    profile (no Vault, no sshd container). We restrict the auto-tag
+    here to *direct* children of ``tests/e2e/`` so the CP5 tests
+    under ``tests/e2e/tls/`` are not double-marked — their conftest
+    applies the ``e2e_tls`` marker instead.
     """
     e2e_dir = Path(__file__).parent.resolve()
     for item in items:
@@ -68,7 +75,7 @@ def pytest_collection_modifyitems(
             test_path = Path(item.fspath).resolve()
         except (TypeError, OSError):  # pragma: no cover — defensive
             continue
-        if e2e_dir in test_path.parents or test_path == e2e_dir:
+        if test_path.parent == e2e_dir:
             item.add_marker(pytest.mark.e2e)
 
 
