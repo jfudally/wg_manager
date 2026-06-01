@@ -10,6 +10,39 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e cycle 2 — `wg_manager.audit` module + `persist()` helper.**
+  Cycle 1's table needed a writer; cycle 2 introduces the single seam
+  every mutating endpoint will go through. New module
+  [`wg_manager.audit`](src/wg_manager/audit.py) exposes
+  `audit_logger` (the named logger),
+  [`emit(event, **fields)`](src/wg_manager/audit.py) (log-only, the
+  CP5 path), [`canonical_json_hash(obj)`](src/wg_manager/audit.py)
+  (sorted-key compact-JSON SHA-256), and
+  [`persist(session, …)`](src/wg_manager/audit.py) which inserts one
+  `AuditEvent` row **and** emits the same identity on the audit
+  logger. The caller's session owns the transaction — `persist`
+  flushes but never commits, so an audit failure rolls back the
+  mutation it would have recorded and vice versa.
+
+  Backward compat: [`wg_manager.auth`](src/wg_manager/auth.py)
+  re-exports `audit_logger` and `_emit_audit` from the new module so
+  [`bootstrap_ssh.py`](src/wg_manager/bootstrap_ssh.py) and any
+  in-flight SIEM rule parsing the CP5 stream keep working unchanged.
+  A regression test in
+  [`tests/test_audit_persist.py`](tests/test_audit_persist.py) freezes
+  the timestamp and compares `audit.emit(...)` to
+  `auth._emit_audit(...)` byte-for-byte so the CP5 acceptance suite
+  stays load-bearing.
+
+  Tests: 18 cases — five for `canonical_json_hash` (order independence,
+  hex shape, `None` round-trip, `datetime` fallback, exact-bytes
+  construction), four for `emit` (log line shape, microsecond
+  `ts`, byte-identical with the legacy helper, `_emit_audit`
+  re-export), nine for `persist` (row shape, hashes, the three
+  legitimate row shapes from cycle 1, payload JSON encoding, NULL
+  payload, matching log line, no commit). Backend pytest 430/430
+  (was 412/412).
+
 - **Phase 2e cycle 1 — `auditevent` table.** First slice of the
   application audit log. Phase 2d CP5 ships per-request audit lines
   to stderr via the `wg_manager.audit` named logger (admit / reject /
