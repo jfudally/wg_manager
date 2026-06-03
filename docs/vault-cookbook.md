@@ -702,7 +702,74 @@ Document the AppRole policy alongside the production Vault config; for
 the Phase 2a spike, policy is `root`, which is fine because the
 container is throwaway.
 
-## 6. Open operator concerns (deferred to Phase 2e)
+## 6. Audit logs (Phase 2e)
+
+Vault audit devices are the canonical record of every API call the
+server processes — admin actions, key writes, cert issuance, the lot.
+Phase 2e audit-log work ships off-host audit in three cycles:
+
+- **Cycle 1 (this section)** — enable a Vault file audit device
+  writing to a persistent volume.
+- **Cycle 2** — add a `vector` sidecar to docker-compose that tails
+  the audit file and emits to its own stdout for dev visibility.
+- **Cycle 3** — document production paths (journald, syslog, SIEM
+  connectors) for off-host shipping.
+
+### Cycle 1 — file audit device
+
+`docker-compose.yml` mounts the `wg_manager_vault_audit_logs` named
+volume at `/vault/logs/` on the Vault container so the audit file
+survives container restarts. The dev compose stack does **not** enable
+the device automatically — that lands as an operator-driven step so
+the audit-trail wire-up is visible in the cookbook, not a magic
+container-startup hook the operator never sees.
+
+Enable it:
+
+```bash
+make vault-up                    # if Vault isn't already running
+make vault-audit-bootstrap       # enable the file audit device
+```
+
+The Makefile target wraps [`scripts/vault_audit_bootstrap.py`](../scripts/vault_audit_bootstrap.py)
+which in turn calls [`wg_manager.vault_audit.bootstrap_file_audit_device`](../src/wg_manager/vault_audit.py).
+The helper is **idempotent**: re-running against an already-bootstrapped
+Vault prints `already present` and exits 0. If a non-`file` audit
+device (syslog / socket) is already mounted at the target path, the
+helper refuses to overwrite — operator must migrate manually.
+
+Verify a record was written:
+
+```bash
+# 1. Trigger an audit-worthy operation (anything that writes to Vault):
+docker compose exec vault vault kv put secret/audit-test foo=bar
+
+# 2. Tail the audit file:
+docker compose exec vault tail /vault/logs/audit.log
+```
+
+Each line is a JSON record with the request method, path, client
+token hash, and any response data — Vault's audit log is the
+hash-chained forensic record of who-did-what.
+
+### Reset semantics
+
+Because dev Vault is in-memory, a `docker compose down && up` resets
+Vault's state and the audit device must be re-enabled with another
+`make vault-audit-bootstrap`. The audit file itself **persists** in
+the named volume across restarts; if you want a clean log, also
+`docker volume rm wg_manager_vault_audit_logs`.
+
+### Production wire-up
+
+In production the file audit device is one of several options. The
+matching production-path docs land in cycle 3 of this work-stream.
+Short version: a `vector` / `fluent-bit` / `promtail` sidecar tails
+the file and ships to a tamper-evident store (Loki, CloudWatch,
+S3 + Object Lock). The Vault audit log's hash-chain means downstream
+corruption is detectable by replaying the chain.
+
+## 7. Open operator concerns (deferred to Phase 2e)
 
 The dev container hides these — they need real answers before any
 production rollout.
@@ -716,9 +783,10 @@ production rollout.
   snapshot save` to S3/GCS.
 - **HA.** Three-node Raft cluster for prod; this is the bulk of the
   "Vault in production" operational cost.
-- **Audit log retention.** Vault audit logs are hash-chained — they're
-  the forensic record of who-did-what. Phase 2e ships them to a
-  separate sink (file + `vector`, or directly to Loki/CloudWatch).
+- **Audit log retention.** Cycle 1 (above) enables the dev wire-up;
+  cycles 2-3 ship the off-host story. Production retention is then a
+  question of the downstream sink — how long Loki / CloudWatch holds
+  the chain, with retention tuned to your incident-response window.
 - **Token TTL policy.** AppRole token TTL, secret-id TTL, and
   response-wrap TTL all need real values. Drafts in
   `docs/vault-policies.md` (Phase 2b).
@@ -726,7 +794,7 @@ production rollout.
   Encrypt at rest, restrict to a separate IAM role, and keep snapshots
   on a separate blast radius from app backups.
 
-## 7. Why Vault (and what we considered instead)
+## 8. Why Vault (and what we considered instead)
 
 - **App-layer envelope encryption with a master key in env.** Cheapest;
   defeats T-1 alone. Rejected because the SSH CA flow (Phase 2c)
@@ -739,4 +807,4 @@ production rollout.
 
 Vault is the only single tool we found that covers Transit + SSH CA +
 PKI + audit log under one auth/policy model. The cost is operational
-(unseal, HA, audit retention) and it's a real cost — see §6.
+(unseal, HA, audit retention) and it's a real cost — see §7.

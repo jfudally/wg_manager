@@ -10,6 +10,61 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e audit-log cycle 1 — Vault file audit device + volume.**
+  First slice of the three-cycle Vault-audit work-stream. Vault's
+  audit devices are the canonical record of every API call the server
+  processes; in the Phase 2a dev compose, no device was enabled, so
+  the history was lost on every container restart. Cycle 1 lands the
+  device + the writable volume; cycle 2 will wire a `vector` sidecar
+  for off-host visibility; cycle 3 documents the production sink
+  options.
+
+  - New module
+    [`wg_manager.vault_audit`](src/wg_manager/vault_audit.py) ships
+    `bootstrap_file_audit_device(client, *, device_path, log_file_path)`
+    — idempotent helper that enables a Vault `file` audit device.
+    Pre-checks the existing audit-device list rather than relying on
+    Vault's generic HTTP 400 for double-enable (the error doesn't
+    distinguish "already enabled" from "options conflict"). Refuses
+    to overwrite a non-`file` device at the same path — silent
+    rewiring would lose in-flight records during the file-handle
+    rotation, exactly the failure mode the audit log exists to
+    prevent. Default device path `file`, default in-container log
+    file `/vault/logs/audit.log`. Tolerates both hvac payload shapes
+    (`{"data": {...}}` envelope vs un-wrapped) so a Vault / hvac
+    version bump doesn't silently break the gate.
+
+  - New operator-facing entry point
+    [`scripts/vault_audit_bootstrap.py`](scripts/vault_audit_bootstrap.py)
+    + `make vault-audit-bootstrap` Makefile target. Single-line
+    stdout — `audit device path=file log_file=/vault/logs/audit.log: enabled`
+    or `... already present` — so CI logs read cleanly.
+
+  - docker-compose now mounts a new `wg_manager_vault_audit_logs`
+    named volume at `/vault/logs/` on the Vault container so the
+    audit file survives compose restarts. The dev compose stack does
+    **not** auto-enable the device — that lands as an operator-driven
+    `make vault-audit-bootstrap` step so the wire-up is visible in
+    the cookbook rather than a magic container hook.
+
+  - docs/vault-cookbook.md grows a new §6 "Audit logs (Phase 2e)"
+    walking the cycle-1 wire-up, the verification flow
+    (`docker compose exec vault tail /vault/logs/audit.log`), reset
+    semantics (the in-memory Vault loses its device on restart;
+    re-run `make vault-audit-bootstrap`), and a short production-
+    path preview. Sections 7 and 8 are the renumbered "Open operator
+    concerns" and "Why Vault" sections; the two existing cross-refs
+    (`§6 → §7` in ROADMAP and the cookbook self-ref) are updated in
+    the same commit so navigation stays correct.
+
+  - Tests: 7 cases in
+    [`tests/test_vault_audit.py`](tests/test_vault_audit.py)
+    pinning the four behavioural contracts — enables when empty,
+    idempotent re-run, refuses different device type, respects
+    custom paths — plus tolerance for both hvac payload shapes and
+    two constant-default pins so the docs and the code can't drift.
+    Backend pytest 422 passed (was 415).
+
 - **Phase 2e Dependabot cycle 1 — supply-chain dep automation.** Closes
   the Phase 2e "Dependency hygiene" ROADMAP bullet. New
   [`.github/dependabot.yml`](.github/dependabot.yml) wires three
