@@ -10,6 +10,141 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e audit-log cycle 3 — production sink docs close the
+  Vault-audit work-stream.** Third and final slice of the three-cycle
+  Vault-audit work-stream. Cycle 1 enabled the file audit device,
+  cycle 2 added the dev-visibility sidecar, cycle 3 documents the
+  production off-host shipping options as drop-in vector configs.
+  After this cycle the parent ROADMAP "Vault audit log" bullet
+  flips from `[~]` to `[x]`.
+
+  - New
+    [`docker/vector/production/`](docker/vector/production/)
+    directory with four self-contained vector configs — each a
+    complete source + sink file so an operator can
+    `vector validate` it standalone before swapping it into a
+    deployment. The four configs map to the four remote-sink
+    shapes Phase 2e calls out:
+
+    - [`loki.toml`](docker/vector/production/loki.toml) — Grafana
+      Labs aggregation tenant. Includes a `remap` transform that
+      parses Vault's JSON-per-line records so Loki labels can
+      reference parsed fields. Three fixed low-cardinality labels
+      (`app=vault`, `source=audit`, `cluster=$CLUSTER_NAME`) keep
+      Loki's index cost bounded.
+    - [`cloudwatch.toml`](docker/vector/production/cloudwatch.toml)
+      — AWS CloudWatch Logs. Per-host stream, group/stream
+      auto-create defaults to true (operator-friendly for fresh
+      deploys; flip to false in Terraform-managed environments).
+    - [`s3-object-lock.toml`](docker/vector/production/s3-object-lock.toml)
+      — S3 with bucket-level Object Lock. The **archive-tier closer**
+      for the Phase 2e acceptance criterion ("a compromised app
+      server can't quietly delete records") — Object Lock makes
+      each uploaded object immutable for a configurable retention
+      window. Batches at 10 MiB / 5 min to bound the off-host
+      gap. gzip-compressed, date-partitioned key layout for
+      grep + Athena workflows.
+    - [`syslog.toml`](docker/vector/production/syslog.toml) — TCP
+      socket sink for an existing centralised
+      rsyslog/syslog-ng/Splunk-syslog collector. Defaults to TCP
+      (delivery confirmation + back-pressure) over UDP
+      (silent-drop risk under collector overload).
+
+  - docs/vault-cookbook.md §6 grows a "Cycle 3 — production sinks"
+    subsection walking each of the five options — the four files
+    above plus a `journald` deployment pattern (vector runs under
+    systemd; cycle 2's console-sink stdout lands in journald
+    automatically — vector itself doesn't ship a journald sink in
+    its data model). Adds two cross-cutting subsections:
+
+    - **Hash-chain verification.** Vault's audit log hash-chains
+      every record (HMAC-SHA256 over the canonical JSON encoding,
+      each line's hash incorporates the previous line's), so
+      downstream tampering is detectable by replaying the chain.
+      Documents the recovery flow when the chain breaks.
+    - **Retention.** Per-sink table tying retention to the
+      incident-response window vs storage cost calculus.
+
+    The S3 walkthrough includes the bucket-creation prereq
+    (Object Lock must be enabled at creation time — AWS API
+    constraint, can't be enabled retroactively), the Governance-
+    vs-Compliance mode choice, and the cost calculus (Glacier
+    Instant-Retrieval for >30-day retention).
+
+  - Tests: 22 cases in
+    [`tests/test_vector_production_sinks.py`](tests/test_vector_production_sinks.py)
+    pin the per-file contract — parametrised across all four
+    configs, each one validates: parses as TOML, declares the
+    cycle 1 file source at `/vault/logs/audit.log`, has exactly
+    one production sink of the expected type, sink inputs trace
+    back to the file source (walking the transform graph for the
+    Loki case), no sink writes back into `/vault/logs/`. Plus
+    two cross-cutting tests pinning the directory contents:
+    every documented file is present, no undocumented TOML
+    lurks. Pure parse-and-assert so the fast `make test` stays
+    hermetic — live sink shipping is the operator's
+    responsibility against their own infrastructure; the cookbook
+    walks the smoke flow per sink. Backend pytest 495 passed
+    (+22 cycle 3 cases on top of the cycle 2 baseline of 473
+    against this branch's environment).
+
+  - ROADMAP "Vault audit log" bullet flipped `[~] → [x]`; cycle 3
+    flipped `[ ] → [x]`. No production-code changes — this is the
+    acceptance-criterion closer for the Phase 2e bullet, which is
+    docs-only by design.
+
+- **Phase 2e audit-log cycle 2 — vector sidecar tails Vault audit
+  log.** Second slice of the three-cycle Vault-audit work-stream.
+  Cycle 1 enabled the file audit device and a persistent volume;
+  cycle 2 makes the audit trail visible without an
+  `exec vault tail` round-trip — `docker compose logs vector` is now
+  the live audit feed. Cycle 3 (still open) documents the
+  production-grade off-host sinks (Loki / CloudWatch / S3 + Object
+  Lock).
+
+  - New
+    [`docker/vector/vault-audit.toml`](docker/vector/vault-audit.toml)
+    config: a `file` source tailing `/vault/logs/audit.log` with
+    `read_from = "beginning"`, feeding a `console` sink with
+    `encoding.codec = "text"`. The text codec passes Vault's JSON-
+    per-line records through untouched so the operator-visible
+    stream is byte-for-byte identical to the on-disk audit file —
+    grep-friendly, diff-friendly. JSON-parsing transforms land in
+    cycle 3 when downstream sinks (Loki labels, CloudWatch fields)
+    need structured access.
+
+  - docker-compose now declares a `vector` service
+    (`timberio/vector:0.41.1-alpine`, explicitly pinned — never
+    `:latest`) with `depends_on: vault: condition: service_healthy`
+    so the sidecar starts only after Vault's healthcheck passes and
+    the audit volume is visible. The `wg_manager_vault_audit_logs`
+    named volume is mounted **`:ro`** on the sidecar (defence in
+    depth on top of the kernel-level guarantee — the sidecar must
+    never rewrite the trail it is shipping); the config TOML is
+    bind-mounted `:ro` at `/etc/vector/vector.toml`.
+
+  - docs/vault-cookbook.md §6 grows a new "Cycle 2 — vector sidecar"
+    subsection walking the wire-up, the verification flow
+    (`docker compose up -d vector` → write to Vault → read
+    `docker compose logs vector`), the `:ro` design choice, and the
+    `read_from = "beginning"` restart semantics. The cycle 3 preview
+    in the same section is sharpened from "vector / fluent-bit /
+    promtail" handwaving to "join (not replace) the console sink
+    with the production sink" — the operator path is now concrete.
+
+  - Tests: 9 cases in
+    [`tests/test_vector_sidecar.py`](tests/test_vector_sidecar.py)
+    pinning the operator-facing contract — compose service exists,
+    image is pinned (not `:latest`), audit volume is `:ro`, config
+    is bind-mounted `:ro`, `depends_on vault` (accepting both list
+    and condition-dict syntaxes), cycle 1's named volume survives,
+    plus three cases pinning the TOML shape (file source path,
+    exactly-one console sink fed from the file source, no sink
+    writes back into `/vault/logs`). Pure parse-and-assert so the
+    fast `make test` invocation stays hermetic; the live-vector
+    smoke flow lives in the cookbook. Backend pytest 431 passed
+    (was 422).
+
 - **Phase 2e audit-log cycle 1 — Vault file audit device + volume.**
   First slice of the three-cycle Vault-audit work-stream. Vault's
   audit devices are the canonical record of every API call the server

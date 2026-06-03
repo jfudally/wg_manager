@@ -1,0 +1,55 @@
+# Phase 2e audit-log cycle 3 — production sink: AWS CloudWatch Logs.
+#
+# Ship Vault's file audit device (cycle 1) into a CloudWatch Logs
+# group. The native fit for AWS-hosted deployments where the rest
+# of the platform's logs already land in CloudWatch and IAM is the
+# operator's existing access-control story.
+#
+# Env knobs:
+#
+#   AWS_REGION              Required. The CloudWatch Logs region.
+#   CLOUDWATCH_LOG_GROUP    Log group name. Defaults to
+#                           "/wg-manager/vault-audit"; create it
+#                           with a retention policy before shipping
+#                           or set create_missing_group=true (below)
+#                           to let vector create it on first write.
+#   HOSTNAME                Per-host stream name. ``${HOSTNAME}`` is
+#                           set by most container runtimes; if not,
+#                           override at the systemd unit / compose
+#                           level so each host has its own stream.
+#
+# AWS credentials are picked up from the standard SDK chain:
+# instance-profile (EC2), task role (ECS), web-identity (EKS IRSA),
+# or AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY env vars. Prefer
+# instance/task roles in production — long-lived access keys are an
+# orthogonal supply-chain risk.
+#
+# Trust model: CloudWatch Logs supports log-group retention (1 day
+# to indefinite) and KMS-at-rest encryption (set on the group). For
+# tamper-evident archive, pair this sink with an Object-Lock'd S3
+# subscription destination (s3-object-lock.toml) — CloudWatch
+# subscription filters can copy each record into the immutable
+# bucket without operator action.
+#
+# Operator runbook: docs/vault-cookbook.md §6 cycle 3 § CloudWatch.
+
+[sources.vault_audit]
+type = "file"
+include = ["/vault/logs/audit.log"]
+read_from = "beginning"
+
+[sinks.cloudwatch]
+type = "aws_cloudwatch_logs"
+inputs = ["vault_audit"]
+region = "${AWS_REGION}"
+group_name = "${CLOUDWATCH_LOG_GROUP:-/wg-manager/vault-audit}"
+stream_name = "${HOSTNAME:-vault}"
+encoding.codec = "text"
+
+# vector will create the group/stream on first write rather than
+# erroring out — operator-friendly default for fresh deploys. Flip
+# to false in mature environments where group creation is owned by
+# Terraform / CloudFormation and an unexpected create is itself an
+# audit signal.
+create_missing_group = true
+create_missing_stream = true

@@ -1104,8 +1104,8 @@ you'd actually deploy.
   low-stakes version pins. Commit prefix `chore(deps):` matches the
   existing manual-bump convention so the supply-chain audit trail
   in `git log` stays uniform.
-- **Vault audit log** `[~]` (audit-log cycle 1 shipped 2026-06-03;
-  cycles 2-3 pending). Three-cycle plan:
+- **Vault audit log** `[x]` (audit-log cycles 1-3 shipped 2026-06-03).
+  Three-cycle plan:
   - **Cycle 1 `[x]`** (2026-06-03) — file audit device + persistent
     volume. New module
     [`wg_manager.vault_audit`](src/wg_manager/vault_audit.py) ships
@@ -1126,12 +1126,81 @@ you'd actually deploy.
     (enables-when-empty, idempotent re-run, refuses-different-type,
     respects-custom-paths, tolerates both hvac payload shapes,
     pins the two default-path constants).
-  - **Cycle 2 `[ ]`** — `vector` sidecar in compose, tails
-    `/vault/logs/audit.log` and emits to its own stdout for dev
-    visibility. Same named volume mounted read-only.
-  - **Cycle 3 `[ ]`** — Production-path docs (journald, syslog,
-    Loki / CloudWatch / S3+Object-Lock sinks). Acceptance-criterion
-    closer for the Phase 2e Vault-audit bullet.
+  - **Cycle 2 `[x]`** (2026-06-03) — `vector` sidecar in compose.
+    New [`docker/vector/vault-audit.toml`](docker/vector/vault-audit.toml)
+    config: a `file` source tails `/vault/logs/audit.log` with
+    `read_from = "beginning"`, feeding a `console` sink with
+    `encoding.codec = "text"` so the operator-visible stream is
+    byte-for-byte identical to the on-disk audit file
+    (grep-friendly, diff-friendly; JSON-parsing transforms land in
+    cycle 3 when downstream sinks need structured access). New
+    `vector` compose service (`timberio/vector:0.41.1-alpine`,
+    explicitly pinned — never `:latest`) with `depends_on: vault:
+    condition: service_healthy` so the sidecar waits for Vault's
+    healthcheck before opening the file; the cycle 1 named volume
+    mounted **`:ro`** at `/vault/logs/` (defence in depth on top of
+    the kernel-level guarantee — the sidecar must never rewrite the
+    trail it is shipping); the config TOML bind-mounted `:ro` at
+    `/etc/vector/vector.toml`. `docker compose logs vector` is now
+    the live audit feed — no `docker compose exec vault tail …`
+    ceremony. Cookbook §6 grew a new "Cycle 2 — vector sidecar"
+    subsection walking the bring-up, verification flow, the `:ro`
+    design choice, and the `read_from = "beginning"` restart
+    semantics (a `compose down && up` re-emits the whole audit
+    history because vector's data_dir lives in the container
+    filesystem; a plain `compose restart vector` keeps the
+    checkpoint). Tests: 9 cases in
+    [`tests/test_vector_sidecar.py`](tests/test_vector_sidecar.py)
+    pin the operator-facing contract — compose service exists,
+    image pinned (not `:latest`), audit volume `:ro`, config `:ro`,
+    `depends_on vault` (accepting both list and condition-dict
+    syntaxes), cycle 1's named volume survives, file source path is
+    correct, exactly-one console sink fed from the file source, no
+    sink writes back into `/vault/logs/`. Pure parse-and-assert so
+    the fast `make test` invocation stays hermetic; the live-vector
+    smoke flow lives in the cookbook. Backend pytest 431 passed
+    (was 422).
+  - **Cycle 3 `[x]`** (2026-06-03) — Production sink docs +
+    drop-in vector configs under
+    [`docker/vector/production/`](docker/vector/production/). Four
+    self-contained TOML files (each runnable through
+    `vector validate`) cover the remote-sink shapes — `loki.toml`,
+    `cloudwatch.toml`, `s3-object-lock.toml`, `syslog.toml` — and
+    the cookbook §6 cycle 3 section walks each one plus a
+    `journald` deployment pattern (vector runs under systemd; the
+    cycle 2 console-sink stdout is captured by journald
+    automatically — vector itself doesn't ship a journald sink in
+    its data model). Each config is a full file (source + sink),
+    not a sink-only snippet, so an operator can swap the cycle 2
+    `vault-audit.toml` bind-mount path on the compose service
+    directly. Trust-model framing: the Vault hash-chain at the
+    *source* makes tamper-evidence a chain property, not a sink
+    property, so any of the five satisfies the Phase 2e acceptance
+    criterion ("a compromised app server can't quietly delete
+    records") — `s3-object-lock.toml` is the archive-tier closer
+    because S3 Object Lock makes each uploaded object immutable for
+    a configurable retention window. The S3 config walks the
+    bucket-creation prereq (Object Lock must be enabled at creation
+    time — AWS API constraint), the Governance-vs-Compliance mode
+    choice, and the 10 MiB / 5 min batching that bounds the window
+    between an audit write and its appearance off-host. New cookbook
+    subsections "Hash-chain verification" (HMAC-SHA256 over
+    canonical JSON; recovery flow when the chain breaks) and
+    "Retention" (per-sink table tying retention to IR window vs
+    storage cost). Tests: 22 cases in
+    [`tests/test_vector_production_sinks.py`](tests/test_vector_production_sinks.py)
+    pin the per-file contract — each config parses, declares the
+    cycle 1 file source at `/vault/logs/audit.log`, has exactly one
+    production sink of the expected type, sink inputs trace back to
+    the file source (walking the transform graph), no sink writes
+    back into `/vault/logs/` — plus two cross-cutting checks
+    (every documented file present, no undocumented TOML lurking).
+    Pure parse-and-assert so the fast `make test` invocation stays
+    hermetic — live sink shipping is the operator's responsibility
+    against their own infrastructure. Closes the parent Vault audit
+    log bullet; the Phase 2e bullet flips from `[~]` to `[x]`.
+    Backend pytest 495 passed (+22 cycle 3 cases on top of the
+    cycle 2 baseline of 473 against this branch's environment).
 - **Application audit log** `[x]` (cycles 1-4 shipped 2026-06-01). New
   `auditevent` table; every mutating endpoint writes one row with
   operator subject (from the mTLS cert), resource, action, before/after
