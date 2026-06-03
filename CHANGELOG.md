@@ -10,6 +10,52 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e runbooks cycle 1 — operator runbooks for key compromise
+  and Vault outage.** First slice of the Phase 2e ops-hygiene
+  closeout. Two operator-facing runbooks under
+  [`docs/runbooks/`](docs/runbooks/) that an on-call engineer can
+  follow at 3am — both organised around the IR-standard frame
+  (symptoms → triage → mitigation/recovery → verification →
+  postmortem) and naming concrete commands rather than abstract
+  steps.
+
+  - [`docs/runbooks/key-compromise.md`](docs/runbooks/key-compromise.md)
+    scopes the trust roots in play (Vault root token, unseal /
+    recovery keys, Transit master key, SSH CA, PKI root +
+    intermediate, operator client certs, service certs, manual-
+    client WireGuard keys) and ships a per-key-class mitigation
+    section naming `wg-manager certs revoke / list / renew`,
+    `wg-manager crypto rewrap`,
+    `vault write -f transit/keys/wg-manager/rotate`,
+    `make ssh-ca-bootstrap`, `make pki-bootstrap`, and
+    `wg-manager clients reprovision`. Verification section ties
+    closure to observable artefacts in the
+    [`wg_manager.audit`](src/wg_manager/auth.py) JSON stream and
+    [`GET /crypto/status`](src/wg_manager/routers/crypto.py).
+  - [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md)
+    names the symptoms (`hvac.exceptions.VaultError` at the
+    encrypted-column touch point, `SSHCAError` at user-cert mint,
+    `PKIError` at the renewal walker), triage (`vault status`,
+    `docker compose logs vault`, audit-log snapshot before
+    recovery), and four recovery branches — A: container down
+    (`make vault-up` + state-loss caveat); B: sealed
+    (`vault operator unseal` quorum); C: app can't reach (token /
+    AppRole / network diagnosis); D: raft quorum lost
+    (`vault operator raft snapshot restore`).
+  - Discoverability: README's "Roadmap, security, and threat
+    model" section + SECURITY.md's reporting section both link the
+    runbooks. ROADMAP's Phase 2e acceptance bullet for the
+    runbooks now reads "shipped 2026-06-03".
+  - Tests: 40 cases in
+    [`tests/test_runbooks.py`](tests/test_runbooks.py) pin file
+    existence at the documented paths, the IR section frame, per-
+    key-class coverage, the concrete commands the runbook tells
+    the operator to run (so a rename in `cli` / Makefile that
+    breaks the runbook trips the test), and the cookbook +
+    threat-model + README + SECURITY cross-references. Pure
+    parse-and-assert so the fast `make test` invocation stays
+    hermetic.
+
 - **Phase 2e audit-log cycle 3 — production sink docs close the
   Vault-audit work-stream.** Third and final slice of the three-cycle
   Vault-audit work-stream. Cycle 1 enabled the file audit device,
