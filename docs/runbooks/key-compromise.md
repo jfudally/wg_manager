@@ -167,6 +167,23 @@ The Transit master key never leaves Vault, so a "leak" here means
 either the Vault server was rooted or a snapshot of the storage
 backend was exfiltrated. Either way:
 
+> **Pre-step on a fresh dev stack.** If `vault read
+> transit/keys/wg-manager` reports `No value found`, the Transit key
+> has not been bootstrapped yet — re-create it before proceeding.
+> The bootstrap is a one-liner (idempotent — skip the
+> `vault secrets enable` line if it reports `path is already in
+> use`):
+>
+> ```bash
+> docker compose exec -e VAULT_TOKEN=dev-only-root vault sh -c '
+>     vault secrets enable -path=transit transit
+>     vault write -f transit/keys/wg-manager
+> '
+> ```
+>
+> See [`docs/vault-cookbook.md`](../vault-cookbook.md) §1 for the
+> canonical bootstrap.
+
 1. Rotate the Transit key — bumps the version, new writes use the
    new version:
 

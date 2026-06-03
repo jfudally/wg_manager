@@ -128,6 +128,21 @@ restart is gone. You will need to:
 - Re-run `make ssh-ca-bootstrap` (recreates `wg-manager-provision` +
   `wg-manager-hosts` SSH roles).
 - Re-run `make pki-bootstrap` (recreates the PKI mounts + roles).
+- Re-create the Transit engine + master key — there is no
+  `make transit-bootstrap` target today, so the bootstrap is a
+  one-liner against the Vault container:
+
+  ```bash
+  docker compose exec -e VAULT_TOKEN=dev-only-root vault sh -c '
+      vault secrets enable -path=transit transit
+      vault write -f transit/keys/wg-manager
+  '
+  ```
+
+  Skip the `vault secrets enable` line if it reports
+  `path is already in use` — both halves are idempotent. The
+  canonical reference for this bootstrap is
+  [`docs/vault-cookbook.md`](../vault-cookbook.md) §1.
 - Re-issue service certs the app + worker need
   (`wg-manager certs issue --type api`, `--type mysql-client`).
 
