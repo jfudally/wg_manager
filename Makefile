@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -53,6 +53,7 @@ help:
 	@echo "  security       Run every Phase 2e security gate locally"
 	@echo "  lockfiles      Verify pyproject.toml/uv.lock + web/package*.json parity (Phase 2e cycle 3)"
 	@echo "  evidence       Generate SOC 2-style evidence pack into evidence/ (Phase 2e cycle 4)"
+	@echo "  release-notes  Preview the release-notes body for VERSION=vX.Y.Z (Phase 2f cycle 2)"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -328,3 +329,11 @@ evidence:
 		--output evidence/evidence-pack-$$ts.tar.gz \
 		--since-days 30 \
 		&& echo "evidence pack written to evidence/evidence-pack-$$ts.tar.gz"
+
+# Phase 2f cycle 2 — preview the release-notes body the Release
+# workflow would extract for a given tag. Operator-facing pre-flight
+# check before `git push origin v<X.Y.Z>` fires the workflow. See
+# docs/release.md for the full release walkthrough.
+release-notes:
+	@if [ -z "$(VERSION)" ]; then echo "usage: make release-notes VERSION=vX.Y.Z"; exit 2; fi
+	$(PYTHON) scripts/extract_changelog.py "$(VERSION)"

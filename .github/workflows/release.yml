@@ -1,0 +1,193 @@
+# Phase 2f cycle 2: tagged release publish.
+#
+# Triggered by a ``git push origin v<X.Y.Z>``:
+#  1. ``extract-notes`` walks CHANGELOG.md, finds the matching
+#     ``## [vX.Y.Z]`` section, sets it as a job output for the
+#     downstream ``release`` job.
+#  2. ``build-and-push-api`` + ``build-and-push-web`` build the two
+#     Dockerfiles from cycle 1 and push them to GHCR. Tags are
+#     derived by ``docker/metadata-action`` from the git ref —
+#     ``v<X.Y.Z>``, ``vX.Y``, ``vX``, ``latest``, and the commit SHA.
+#  3. ``release`` waits for both pushes and creates the GitHub release
+#     with the extracted notes as its body.
+#
+# Permissions:
+#  * ``contents: write`` for the GitHub release.
+#  * ``packages: write`` for the GHCR publish.
+#  * ``id-token: write`` so cycle 3 can layer cosign keyless signing
+#    on top without a permissions refactor — cycles 3 + 4 extend this
+#    workflow rather than creating sibling ones.
+#
+# Concurrency is **not** ``cancel-in-progress`` — letting a partially
+# completed publish get killed leaves GHCR in an inconsistent state
+# (one image at vX.Y.Z, the other still at vX.Y.Z-1). Two concurrent
+# releases of the same tag are illegal at the git layer (tag push
+# fails), so the natural mutex is upstream.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_API: ${{ github.repository }}
+  IMAGE_WEB: ${{ github.repository }}-web
+
+jobs:
+  extract-notes:
+    name: Extract release notes from CHANGELOG
+    runs-on: ubuntu-latest
+    outputs:
+      notes: ${{ steps.extract.outputs.notes }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Extract section for ${{ github.ref_name }}
+        id: extract
+        run: |
+          set -euo pipefail
+          # github.ref_name is the tag (e.g. ``v0.1.0``). The extractor
+          # accepts either the v-prefixed or bare form.
+          NOTES=$(python scripts/extract_changelog.py "${GITHUB_REF_NAME}")
+          # Multi-line outputs use the heredoc form so newlines survive.
+          {
+            echo "notes<<EOF"
+            echo "${NOTES}"
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+  build-and-push-api:
+    name: Build + push API + worker image
+    runs-on: ubuntu-latest
+    needs: extract-notes
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_API }}
+          # ``type=semver`` parses the tag into vX, vX.Y, vX.Y.Z so a
+          # consumer can pin to whatever granularity they want.
+          # ``type=sha`` adds the commit SHA so an operator can always
+          # trace an image back to the exact source state.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build + push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+  build-and-push-web:
+    name: Build + push dashboard image
+    runs-on: ubuntu-latest
+    needs: extract-notes
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image tags + labels
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_WEB }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build + push dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          file: web/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max
+
+  release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - extract-notes
+      - build-and-push-api
+      - build-and-push-web
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Create release ${{ github.ref_name }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ needs.extract-notes.outputs.notes }}
+        run: |
+          set -euo pipefail
+          # The release body is the CHANGELOG section, plus a footer
+          # pointing at the published images.
+          cat > release-body.md <<'BODY'
+          ${{ needs.extract-notes.outputs.notes }}
+
+          ---
+
+          ### Published images
+
+          - `ghcr.io/${{ github.repository }}:${{ github.ref_name }}` — API + worker
+          - `ghcr.io/${{ github.repository }}-web:${{ github.ref_name }}` — dashboard
+
+          Pull either with a granularity-appropriate tag (`vX.Y.Z`, `vX.Y`, `vX`, or `latest`).
+          BODY
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-body.md \
+            --verify-tag

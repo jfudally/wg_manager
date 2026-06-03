@@ -10,6 +10,43 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2f cycle 2 — tagged release workflow + GHCR publish.**
+  Closes the second of four Phase 2f cycles. A `git push origin
+  v<X.Y.Z>` now produces published images at
+  `ghcr.io/<owner>/wg-manager:v<X.Y.Z>` (and `-web`) plus a GitHub
+  release with notes extracted from `CHANGELOG.md`'s matching
+  `## [v<X.Y.Z>]` section.
+
+  - New `.github/workflows/release.yml` with four jobs:
+    `extract-notes` (parses CHANGELOG via the new helper), two
+    parallel build-and-push jobs for the API + web Dockerfiles,
+    and a `release` job that creates the GitHub release via
+    `gh release create --verify-tag`. `docker/metadata-action`
+    derives semver / SHA / latest tags from the git ref.
+    Permissions: `contents: write` + `packages: write` +
+    `id-token: write` (cycle 3 layers cosign keyless signing on
+    the same workflow). Concurrency is **not**
+    `cancel-in-progress` — partial GHCR pushes are messier than
+    a stuck job.
+  - New `scripts/extract_changelog.py` walks `CHANGELOG.md` and
+    returns the body of the `## [vX.Y.Z]` section matching the tag
+    being released. Fails the workflow loudly when the heading is
+    missing — operators promote `## [Unreleased]` to the versioned
+    heading before tagging.
+  - New `make release-notes VERSION=vX.Y.Z` wraps the extractor
+    for local preview.
+  - New `docs/release.md` operator runbook walks the
+    promote-Unreleased → tag → workflow flow and two recovery
+    paths for a mid-flight failure.
+  - 24 new test cases:
+    [`tests/test_extract_changelog.py`](tests/test_extract_changelog.py)
+    × 8 (section matching, version-prefix normalisation,
+    missing-version exit, CLI happy + error paths);
+    [`tests/test_release_workflow.py`](tests/test_release_workflow.py)
+    × 16 (workflow shape, triggers, permissions, GHCR target,
+    metadata-action, push: true, both Dockerfiles, extractor
+    shell-out, release creation, no cancel-in-progress).
+
 - **Phase 2f cycle 1 — Dockerfiles + image-build CI gate.** Opens
   the release-engineering work-stream that Phase 2e deferred (signed
   Docker image publish, cosign verify, SBOM attachment). Cycle 1

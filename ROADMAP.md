@@ -1419,12 +1419,38 @@ plan:
   contents-read least-privilege permissions). Local smoke: both
   ``docker build`` invocations succeed; vitest 46/46; backend
   pytest 632/632 (was 606 on Phase 2e cycle 4).
-- **Cycle 2 `[ ]`** — Tagged release workflow + GHCR publish.
-  New ``.github/workflows/release.yml`` triggered by ``v*.*.*`` git
-  tags. Builds both images, pushes to GHCR with semver + commit
-  SHA tags, auto-generates the GitHub release notes from
-  ``CHANGELOG.md``'s top section. After cycle 2 there is a
-  published artefact for cycles 3 + 4 to operate on.
+- **Cycle 2 `[x]`** (2026-06-03) — Tagged release workflow + GHCR
+  publish. New
+  [`.github/workflows/release.yml`](.github/workflows/release.yml)
+  triggered by ``v*.*.*`` git tags. Four-job pipeline:
+  ``extract-notes`` shells out to
+  [`scripts/extract_changelog.py`](scripts/extract_changelog.py)
+  to find the matching ``## [vX.Y.Z]`` section in CHANGELOG.md
+  (fails the whole workflow if missing, so a half-published release
+  with empty notes is impossible); ``build-and-push-api`` and
+  ``build-and-push-web`` build cycle 1's Dockerfiles and push to
+  GHCR with ``docker/metadata-action``-derived semver + SHA +
+  latest tags; ``release`` waits for both pushes and creates a
+  GitHub release via ``gh release create --verify-tag``. Permissions
+  ``contents: write`` + ``packages: write`` + ``id-token: write``
+  (cycle 3 layers cosign keyless signing on the same workflow).
+  Concurrency is **not** ``cancel-in-progress`` — partial GHCR
+  pushes are messier than a stuck job. New
+  [`docs/release.md`](docs/release.md) operator runbook walks the
+  promote-Unreleased → tag → workflow flow plus the two specific
+  recovery paths for a mid-flight failure. New `make release-notes
+  VERSION=vX.Y.Z` wraps the extractor for local preview. 24 tests
+  in
+  [`tests/test_extract_changelog.py`](tests/test_extract_changelog.py)
+  (8 — section matching, version-prefix normalisation, missing-
+  version exit, CLI happy + error paths) and
+  [`tests/test_release_workflow.py`](tests/test_release_workflow.py)
+  (16 — workflow exists, triggers on tag push only / not branches /
+  not PRs, contents+packages+id-token write perms, ghcr.io target,
+  uses metadata-action, push: true, references both Dockerfiles,
+  shells out to the extractor, creates a GitHub release, does NOT
+  cancel-in-progress). After cycle 2 there is a published artefact
+  for cycles 3 + 4 to operate on.
 - **Cycle 3 `[ ]`** — Cosign keyless signing + verify gate. The
   release workflow signs each pushed image with cosign using
   GitHub's OIDC token (no key management); new
