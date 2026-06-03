@@ -130,3 +130,65 @@ make release-notes VERSION=v0.1.0
 
 Wraps `python scripts/extract_changelog.py` so the operator can
 preview the body the workflow will use before pushing the tag.
+
+## Verifying a published image (Phase 2f cycle 3)
+
+Every image the release workflow publishes is signed via
+[cosign](https://github.com/sigstore/cosign) keyless OIDC against
+GitHub Actions' Fulcio issuer. The signature lives in GHCR as a
+sibling artefact (the same registry/digest, with the
+``.sig`` tag suffix).
+
+Two ways to verify:
+
+### From a downstream environment
+
+Before pulling an image into production:
+
+```bash
+cosign verify \
+    --certificate-identity-regexp \
+        'https://github.com/<owner>/wg_manager/.github/workflows/release.yml@.*' \
+    --certificate-oidc-issuer \
+        'https://token.actions.githubusercontent.com' \
+    ghcr.io/<owner>/wg-manager:v0.1.0
+```
+
+A successful verification returns the signature payload + a
+``Verification for ghcr.io/...`` confirmation line. A failed
+verification (tampered image, identity mismatch, wrong issuer)
+exits non-zero with a clear error — the consumer pipeline should
+gate the pull behind this check.
+
+### From CI
+
+[`.github/workflows/image-verify.yml`](../.github/workflows/image-verify.yml)
+runs the same verify against both the API + web images on:
+
+- **`workflow_dispatch`** — operator-driven, takes a ``tag`` input
+  (defaults to ``latest``). Useful before a planned production
+  rollout: queue the workflow against the rollout target tag, watch
+  it pass, then push the deploy.
+- **Daily cron** (14:00 UTC) — catches supply-chain attacks
+  against already-published images (the GHCR artefact gets
+  replaced server-side; the replacement's signature doesn't match
+  the canonical identity).
+
+The cron failure mode is exactly the alerting trigger an operator
+wants: a previously-verified image no longer verifies → someone
+tampered with it after the fact. Wire the workflow's failure
+notification into your usual on-call channel.
+
+### What the identity binding catches
+
+The verify step pins two things:
+
+- ``--certificate-identity-regexp`` — the Fulcio cert's identity
+  must reference the canonical release workflow path in this repo.
+  Catches: a signature from a fork's workflow, a stolen-token
+  attack from a different repo, a malicious mirror that signed
+  with their own OIDC identity.
+- ``--certificate-oidc-issuer`` — the Fulcio cert must come from
+  GitHub Actions' OIDC issuer. Catches: a Fulcio cert from a
+  different OIDC provider (Google, GitLab, ...) being passed off
+  as a release signature.

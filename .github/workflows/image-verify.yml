@@ -1,0 +1,88 @@
+# Phase 2f cycle 3: cosign verify gate for published images.
+#
+# The release workflow signs each pushed image with cosign keyless
+# OIDC; this workflow proves the signatures verify against the
+# canonical identity (the release workflow path in this repo). It
+# runs on:
+#
+#  * workflow_dispatch — operator-driven, with a ``tag`` input so a
+#    specific release can be verified on demand (e.g. before a
+#    production rollout).
+#  * Daily cron — catches supply-chain attacks against already-
+#    published images (the image is replaced server-side but the
+#    signature for the replacement doesn't match our identity).
+#
+# **Not** on push/pull_request: verification before the first release
+# is cut would always fail (no signed image to verify), which is
+# noise. After the first release lands the dispatch/cron rhythm gives
+# the same posture without the false negatives.
+#
+# Verification pins both:
+#  * ``--certificate-identity-regexp`` to the release workflow path —
+#    a Fulcio-issued cert with any other identity (e.g. from a
+#    different repo or a malicious mirror) fails.
+#  * ``--certificate-oidc-issuer`` to GitHub Actions' Fulcio issuer —
+#    a Fulcio cert from a different OIDC provider fails.
+
+name: Image verify (cosign)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to verify (default: latest)'
+        type: string
+        required: false
+        default: latest
+  schedule:
+    # Daily at 14:00 UTC — same supply-chain Monday rhythm the
+    # Phase 2e deps-audit workflow uses, but daily because a signing-
+    # breaking incident is higher-priority than a CVE-disclosure
+    # weekly check.
+    - cron: '0 14 * * *'
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_API: ${{ github.repository }}
+  IMAGE_WEB: ${{ github.repository }}-web
+  # Fulcio identity. The regexp anchors to this repo's release.yml so
+  # a signature from a fork's workflow (or a stolen-token attack from
+  # a different repo) fails verification.
+  IDENTITY_REGEXP: https://github.com/${{ github.repository }}/.github/workflows/release.yml@.*
+  OIDC_ISSUER: https://token.actions.githubusercontent.com
+
+jobs:
+  verify-api:
+    name: Verify API + worker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify API image signature
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_API }}:${{ inputs.tag || 'latest' }}
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "${IDENTITY_REGEXP}" \
+            --certificate-oidc-issuer "${OIDC_ISSUER}" \
+            "${IMAGE}"
+
+  verify-web:
+    name: Verify dashboard image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify dashboard image signature
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_WEB }}:${{ inputs.tag || 'latest' }}
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "${IDENTITY_REGEXP}" \
+            --certificate-oidc-issuer "${OIDC_ISSUER}" \
+            "${IMAGE}"

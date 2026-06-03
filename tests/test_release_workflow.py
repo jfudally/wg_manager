@@ -176,3 +176,55 @@ class TestConcurrency:
                 "release workflow must not cancel-in-progress — a "
                 "partial push leaves GHCR in an inconsistent state"
             )
+
+
+# ---------------------------------------------------------------------------
+# Cosign keyless signing (Phase 2f cycle 3)
+# ---------------------------------------------------------------------------
+
+
+class TestCosignSigning:
+    """Each pushed image must be signed via cosign keyless OIDC. The
+    signature lands in the OCI registry as a sibling artefact; the
+    cycle 3 image-verify workflow consumes it.
+
+    Keyless signing requires:
+      * ``sigstore/cosign-installer`` action in each build job.
+      * A ``cosign sign --yes`` step that signs the image digest after
+        push (signing the digest lets all tags pointing at it inherit
+        the signature — a re-tag doesn't invalidate verification).
+      * ``id-token: write`` workflow permission (cycle 2 already pins
+        this).
+    """
+
+    def test_installs_cosign(self, body: str) -> None:
+        assert "sigstore/cosign-installer" in body, (
+            "release workflow must install cosign via "
+            "sigstore/cosign-installer in each build job"
+        )
+
+    def test_signs_pushed_images(self, body: str) -> None:
+        """``cosign sign`` must run after each ``build-push-action``
+        push step. The canonical idiom is signing the digest the push
+        emits as an output."""
+        assert "cosign sign" in body, (
+            "release workflow must call `cosign sign` against each "
+            "pushed image"
+        )
+
+    def test_sign_uses_yes_flag(self, body: str) -> None:
+        """The ``--yes`` flag tells cosign to skip the interactive
+        confirmation (which would block the workflow forever in CI)."""
+        assert "--yes" in body, (
+            "cosign sign must pass --yes — interactive confirmation "
+            "would block the workflow"
+        )
+
+    def test_signs_by_digest_not_tag(self, body: str) -> None:
+        """Signing by digest (``image@sha256:...``) is the correct
+        idiom: it pins the signature to the immutable artefact rather
+        than the floating tag. Pin the ``@`` reference."""
+        assert "@${{ steps." in body or "@$" in body or "DIGEST" in body, (
+            "cosign sign must sign the digest reference "
+            "(image@sha256:...) not the tag — tags are mutable"
+        )
