@@ -10,6 +10,57 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2f cycle 1 — Dockerfiles + image-build CI gate.** Opens
+  the release-engineering work-stream that Phase 2e deferred (signed
+  Docker image publish, cosign verify, SBOM attachment). Cycle 1
+  ships the foundation; cycles 2-4 publish, sign, and SBOM on top.
+
+  - Multi-stage [`Dockerfile`](Dockerfile) — Python 3.13-slim-
+    bookworm builder runs ``uv sync --frozen --no-dev`` against the
+    locked deps, slim runtime carries only ``.venv`` + ``src/`` and
+    drops to non-root ``wgmanager`` user UID 1001.
+    ``python -m wg_manager`` is the default CMD.
+  - Multi-stage [`web/Dockerfile`](web/Dockerfile) — Node 22-slim
+    builder runs ``npm ci`` + ``npm run build``, runtime copies the
+    ``.next/standalone`` bundle and runs as non-root ``nextjs`` UID
+    1001. ``web/next.config.ts`` flipped to ``output: "standalone"``
+    so the standalone copy has something to copy.
+  - New [`.github/workflows/image-build.yml`](.github/workflows/image-build.yml)
+    builds both images on every PR + push to ``main`` via
+    ``docker/build-push-action@v6`` with GHA layer cache. ``push:
+    false`` pinned so cycle 1 explicitly does not publish (cycle 2
+    territory). Path-filtered to dep manifests + source dirs so
+    code-only PRs skip the ~3-min image build.
+  - **Latent build bugs surfaced + fixed**: the tailwindcss v3→v4
+    dependabot bump left ``next dev`` working but ``next build``
+    broken. (a) PostCSS plugin moved to ``@tailwindcss/postcss`` —
+    [`web/postcss.config.mjs`](web/postcss.config.mjs) updated.
+    (b) v3 ``@tailwind base/components/utilities`` directives
+    dropped — [`web/app/globals.css`](web/app/globals.css)
+    migrated to ``@import "tailwindcss"`` + ``@theme`` block with
+    ``--color-*`` tokens replacing the ``tailwind.config.ts``
+    ``theme.extend.colors`` block. (c) Pre-existing
+    ``web/lib/proxy.ts:124`` ``Uint8Array<ArrayBufferLike>`` ↔
+    ``BodyInit`` complaint (flagged out-of-scope in 2d CP3.4)
+    blocks ``next build`` — patched with the documented type
+    workaround. None of this regressed before cycle 1 because the
+    existing CI runs vitest only (not ``next build``).
+  - 26 new test cases: [`tests/test_dockerfile.py`](tests/test_dockerfile.py)
+    × 18 (Dockerfile existence, multi-stage shape, slim base,
+    Python 3.13 pin, uv ``--frozen``, non-root user, WORKDIR,
+    default CMD; same shape for web/Dockerfile + standalone-output
+    check on next.config.ts); [`tests/test_image_build_workflow.py`](tests/test_image_build_workflow.py)
+    × 8 (workflow exists with descriptive name, triggers on PR +
+    push to main, path-filtered, uses ``docker/build-push-action``,
+    references both Dockerfiles by path, pins ``push: false``,
+    cancels-in-progress concurrency, contents-read least-privilege
+    permissions). Pure parse-and-assert — the live ``docker build``
+    is what the CI workflow runs.
+
+  Backend pytest 632/632 green (was 606 on Phase 2e cycle 4).
+  Vitest 46/46. Local smoke: both ``docker build`` invocations
+  succeed.
+
 - **Phase 2e cycle 4 — `wg-manager evidence pack` SOC 2 evidence
   tarball.** Closes the ROADMAP Phase 2e stretch acceptance bullet.
   New `wg-manager evidence pack --output PATH --since-days N
