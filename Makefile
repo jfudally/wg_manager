@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit security
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -45,6 +45,8 @@ help:
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
 	@echo "  npm-audit      Run npm audit --omit=dev against the dashboard deps"
+	@echo "  bandit         Run bandit -ll over src/ (Python SAST)"
+	@echo "  semgrep        Run semgrep p/python over src/"
 	@echo "  security       Run every Phase 2e security gate locally"
 	@echo "  clean          Remove caches and build artifacts"
 
@@ -257,6 +259,18 @@ pip-audit:
 npm-audit:
 	cd web && npm audit --omit=dev --audit-level=high
 
-# Aggregate target. Extended as cycle 4 lands (bandit, semgrep).
-# Order is cheapest-first so a fast failure short-circuits the rest.
-security: gitleaks pip-audit npm-audit
+# Bandit reads its config from [tool.bandit] in pyproject.toml — match
+# the CI step exactly so a local repro is byte-for-byte.
+bandit:
+	uv run --frozen --with bandit bandit -ll -c pyproject.toml -r src/
+
+# Semgrep p/python ruleset. ``--error`` flips findings into a non-zero
+# exit so the gate behaves as a gate rather than a printout.
+semgrep:
+	uv run --frozen --with semgrep semgrep \
+		--config=p/python --error --metrics=off src/
+
+# Aggregate target. Order is cheapest-first so a fast failure short-
+# circuits the rest. gitleaks/bandit are sub-second; the audits and
+# semgrep are seconds-to-tens-of-seconds depending on caches.
+security: gitleaks bandit pip-audit npm-audit semgrep

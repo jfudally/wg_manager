@@ -1,0 +1,62 @@
+# Phase 2e gate: static-analysis security testing. Two jobs:
+#
+# - bandit: ``bandit -ll -r src/`` per the Phase 2e ROADMAP — medium-
+#   or-high severity AND medium-or-high confidence. Config in
+#   pyproject.toml ``[tool.bandit]`` skips B601 (paramiko exec_command
+#   is the SSH layer's whole purpose) and leaves B507 enabled, with two
+#   inline ``# nosec B507`` markers for the known-safe TOFU bootstrap
+#   site and the legacy-fallback path.
+# - semgrep: ``p/python`` ruleset over the whole repo. 0 findings on
+#   the current tree.
+#
+# Runs on every push to ``main`` and PR; both jobs are cheap (semgrep
+# ~30s, bandit <5s) so no path-filter optimisation.
+
+name: SAST
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: sast-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  bandit:
+    name: bandit (Python SAST)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Run bandit
+        run: >
+          uv run --frozen --with bandit
+          bandit -ll -c pyproject.toml -r src/
+
+  semgrep:
+    name: semgrep (p/python)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Run semgrep
+        run: semgrep --config=p/python --error --metrics=off src/

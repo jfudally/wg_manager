@@ -189,7 +189,7 @@ class BootstrapSSHRunner:
         # The bootstrap call is the *one* place wg-manager intentionally
         # allows TOFU: we are seeding the host with the CA + host cert
         # that the production runner subsequently uses to refuse TOFU.
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # nosec B507 — intentional TOFU; CP4.5 design
         pkey = _load_pkey_from_path(self.key_path, self.passphrase)
         try:
             client.connect(

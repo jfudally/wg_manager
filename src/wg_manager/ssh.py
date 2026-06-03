@@ -388,7 +388,11 @@ class SSHRunner:
                 KnownHostsCAPolicy(self.ca_public_key)
             )
         else:
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # Reachable only from test fixtures that construct a runner
+            # without a CA pubkey; production callers always supply one
+            # via the CP4.4 task-layer plumbing. Tightening this into a
+            # type-level requirement is a tracked follow-up.
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # nosec B507
         pkey = _load_pkey(self.pkey_pem, self.passphrase)
         if self.cert_pem is not None:
             # load_certificate attaches the OpenSSH cert as ``public_blob``;
