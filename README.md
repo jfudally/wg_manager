@@ -583,10 +583,11 @@ shape; the acceptance tests assert on it directly.
   [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md),
   [`docs/runbooks/backup-restore.md`](docs/runbooks/backup-restore.md)),
   encrypted DB backups (`wg-manager db backup --encrypt` + Vault
-  raft snapshots), and the lockfile-parity gate (`make lockfiles`,
-  matching `.github/workflows/lockfile.yml`) are shipped; the
-  release-engineering slice (signed Docker publish, cosign verify,
-  SBOM attachment) remains.
+  raft snapshots), the lockfile-parity gate (`make lockfiles`,
+  matching `.github/workflows/lockfile.yml`), and the SOC 2-style
+  evidence pack (`make evidence` / `wg-manager evidence pack`) are
+  shipped; the release-engineering slice (signed Docker publish,
+  cosign verify, SBOM attachment) remains.
 - [`SECURITY.md`](SECURITY.md) lists the current security posture,
   what wg-manager today explicitly does not defend against, and how
   to report a vulnerability.

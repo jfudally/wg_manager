@@ -201,6 +201,13 @@ restored from is a backup you do not know works.
   snapshot restore`` + ``wg-manager db restore --decrypt`` cycle
   against an *isolated* environment (not your production deployment).
   Document the runtime + any gaps in your incident file.
+- For a SOC 2-style audit trail of "what state was the system in at
+  recovery", run ``make evidence`` (Phase 2e cycle 4) after the
+  drill. The pack captures the cert + operator inventory, the last
+  30 days of application audit events, a Vault audit log slice with
+  a structural integrity report, and a deployment-context snapshot
+  into a tarball with per-file SHA-256 — file it with the incident
+  writeup.
 
 ---
 

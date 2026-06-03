@@ -51,3 +51,12 @@ tls/mysql/*
 *.log
 *.sqlite
 *.sqlite3
+
+# Phase 2e cycle 2: Vault raft snapshots written by `make backup-vault`.
+# Snapshots may include sensitive Vault state — never commit.
+backups/
+
+# Phase 2e cycle 4: SOC 2 evidence packs written by `make evidence` /
+# `wg-manager evidence pack`. Each pack carries the cert + operator
+# inventory, audit events, and a Vault audit log slice — never commit.
+evidence/

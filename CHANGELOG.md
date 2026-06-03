@@ -10,6 +10,44 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e cycle 4 — `wg-manager evidence pack` SOC 2 evidence
+  tarball.** Closes the ROADMAP Phase 2e stretch acceptance bullet.
+  New `wg-manager evidence pack --output PATH --since-days N
+  --vault-audit-log PATH` CLI command + `wg_manager.evidence`
+  module assemble a tar.gz an auditor can verify end-to-end.
+
+  - Pack contents: `audit_events.json` (auditevent table filtered
+    to last N days), `certificates.json` + `operators.json` (full
+    registry dumps — current state, no date filter), `vault_audit.log`
+    (Vault audit file sliced to the same window by parsing each
+    line's `time` field), `vault_audit_integrity.json` (per-line
+    JSON parseability + `time` field presence + request/response
+    `request.id` pairing — honest about being **structural only**
+    because Vault does not ship a cryptographic chain across audit
+    records), `system.json` (wg-manager version, git commit,
+    alembic head), `MANIFEST.md` (operator-facing index), and
+    `SHA256SUMS` (gnu-coreutils-shape file enumerating per-file
+    sha256 so the tarball is internally self-verifying via
+    `sha256sum -c`).
+  - New `make evidence` Make target wraps the CLI with a timestamped
+    output path under `evidence/`. The default `--vault-audit-log`
+    path matches the docker-compose `vault` service mount; production
+    deployments override.
+  - Graceful handling of a missing Vault audit log file (a production
+    stack may not co-locate the log with the host running
+    `make evidence`): the integrity report flags `ok: false` with
+    `reason: "missing"` rather than crashing the pack.
+  - 18 new test cases:
+    [`tests/test_evidence_pack.py`](tests/test_evidence_pack.py) × 13
+    pin tarball shape (7 required files), content (since-days
+    filter on auditevent + Vault audit log, certs + operators full
+    dump, system info keys), integrity report (well-formed log,
+    malformed JSON, missing file), and MANIFEST + SHA256SUMS self-
+    verification (every artifact listed, hashes match actual file
+    bytes).
+    [`tests/test_makefile_evidence.py`](tests/test_makefile_evidence.py)
+    × 5 pin the make target's shape.
+
 - **Phase 2e reproducible-builds cycle 3 — lockfile parity CI gate.**
   Closes the "refuses unpinned upgrades" half of the ROADMAP
   reproducible-builds bullet. The release-workflow half (and the
