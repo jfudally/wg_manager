@@ -1087,8 +1087,23 @@ you'd actually deploy.
     land together when the release-engineering slice opens.
 - **SBOM.** `cyclonedx-py` and `cyclonedx-npm` emit SBOMs in the release
   workflow; attached to the GitHub release.
-- **Dependency hygiene.** Dependabot enabled for `pip`, `npm`, and
-  `github-actions`. Weekly schedule.
+- **Dependency hygiene** `[x]` (Dependabot cycle 1 shipped 2026-06-03).
+  [`.github/dependabot.yml`](.github/dependabot.yml) enables weekly
+  Mondays 14:00 UTC scans for three ecosystems:
+  - `uv` (Python — `pyproject.toml` + `uv.lock`)
+  - `npm` (dashboard — `web/package.json`)
+  - `github-actions` (version pins across the four CI-gate workflows)
+
+  Schedule aligns with the deps-audit cron (`'0 14 * * 1'` in
+  [`.github/workflows/deps-audit.yml`](.github/workflows/deps-audit.yml))
+  so Dependabot's PRs and the scheduled scan share a single
+  "supply-chain Monday" rhythm. Grouping: minor + patch versions
+  collapsed into one PR per ecosystem; majors split out for
+  individual review (FastAPI 1.0, Pydantic v3, Next 15→16 all need
+  real attention). github-actions grouped wholesale since those are
+  low-stakes version pins. Commit prefix `chore(deps):` matches the
+  existing manual-bump convention so the supply-chain audit trail
+  in `git log` stays uniform.
 - **Vault audit log** is shipped off-host (file sink + a `vector`
   sidecar in compose; production story documented for journald/syslog).
 - **Application audit log** `[x]` (cycles 1-4 shipped 2026-06-01). New

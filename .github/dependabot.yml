@@ -1,0 +1,91 @@
+# Dependabot — Phase 2e supply-chain hygiene.
+#
+# Three ecosystems mirror the three dependency surfaces the
+# ``deps-audit.yml`` gate scans on every push:
+# - ``uv``           — Python deps (``pyproject.toml`` + ``uv.lock``)
+# - ``npm``          — Dashboard deps (``web/package.json``)
+# - ``github-actions`` — Pinned action versions across the four workflows
+#
+# Schedule: Mondays 14:00 UTC, matching the deps-audit weekly cron
+# (``'0 14 * * 1'`` in ``.github/workflows/deps-audit.yml``). One
+# "supply-chain Monday" rhythm — Dependabot's PRs land first, then the
+# scheduled scan re-verifies the same surface a few hours later in
+# case anything new dropped overnight.
+#
+# Grouping strategy: minor + patch versions grouped so a single PR
+# covers the routine upkeep; majors split out for individual review
+# (FastAPI 1.0, Pydantic v3, Next 15 → 16 etc. all need real attention).
+# github-actions runners update together since they're low-stakes
+# version pins.
+#
+# Open PR limit: 5 per ecosystem (Dependabot default). github-actions
+# capped at 3 since those mostly bump version pins.
+#
+# Commit messages use the ``chore(deps):`` prefix matching the
+# existing manual bumps (e.g. ``fc6796f chore(deps): add pyyaml to
+# dev dependencies in uv.lock``) so the supply-chain audit trail in
+# ``git log`` stays uniform.
+
+version: 2
+updates:
+  # Python / FastAPI control plane.
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "14:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "python"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      python-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # Next.js dashboard.
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "14:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "javascript"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      npm-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions runners — version pins across the four workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "14:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore(deps)"
+      include: "scope"
+    groups:
+      actions-all:
+        patterns:
+          - "*"
