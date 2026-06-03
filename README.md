@@ -586,10 +586,11 @@ shape; the acceptance tests assert on it directly.
   raft snapshots), the lockfile-parity gate (`make lockfiles`,
   matching `.github/workflows/lockfile.yml`), and the SOC 2-style
   evidence pack (`make evidence` / `wg-manager evidence pack`) are
-  shipped. Phase 2f (release engineering) is in progress: cycle 1
-  ships the API/worker + dashboard Dockerfiles and the build-on-PR
-  CI gate (no publish yet); cycles 2–4 layer on GHCR publish on
-  git tag, cosign keyless signing + verify, and SBOM attachment.
+  shipped. **Phase 2f (release engineering) is shipped** — every
+  `git push origin v<X.Y.Z>` produces a signed, SBOM-attached
+  Docker image on GHCR plus a verifiable GitHub release. **Phase 2
+  is closed**; Phase 3 (multi-tenant / HA / observability) is the
+  next named work-stream.
 - [`SECURITY.md`](SECURITY.md) lists the current security posture,
   what wg-manager today explicitly does not defend against, and how
   to report a vulnerability.
@@ -614,12 +615,10 @@ hygiene) is in progress. Shipped pieces: the application audit
 log (`auditevent` table + `GET /audit` + dashboard page wired
 into the five mutating endpoint families) and the five CI
 security gates (gitleaks, pip-audit, npm audit, bandit, semgrep)
-running on every push to `main` and every PR. Phase 2f cycle 1
-opened the release-engineering slice — the API/worker + dashboard
-Dockerfiles plus the build-on-PR CI gate are shipped. Still ahead:
-GHCR publish on git tag (cycle 2), cosign keyless signing + verify
-(cycle 3), and SBOM attachment (cycle 4). Dependabot and the
-off-host Vault audit log are already on `main`. Phase 2d shipped the mTLS listener, the operator
+running on every push to `main` and every PR. **Phase 2f shipped
+the release-engineering slice end-to-end**: a `git push origin
+v<X.Y.Z>` produces signed, SBOM-attached Docker images on GHCR
+plus a verifiable GitHub release. Phase 2 is closed. Phase 2d shipped the mTLS listener, the operator
 registry, the audit registry + revocation gate, MySQL TLS, cert
 renewal, and the CP5 acceptance suite that pins all four
 behavioural contracts; the structured audit emission landed

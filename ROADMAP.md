@@ -1083,8 +1083,15 @@ you'd actually deploy.
     sign`` (keyless OIDC) on the publish + ships a separate
     [`.github/workflows/image-verify.yml`](.github/workflows/image-verify.yml)
     consumer gate. See Phase 2f § Cycle 3 for the full detail.
-- **SBOM.** `cyclonedx-py` and `cyclonedx-npm` emit SBOMs in the release
-  workflow; attached to the GitHub release.
+- **SBOM `[x]`** (Phase 2f cycle 4 shipped 2026-06-03). Was
+  deferred to Phase 2f's release-engineering slice — both
+  ``cyclonedx-py`` (Python deps) and ``@cyclonedx/cyclonedx-npm``
+  (Node deps) run in the release workflow, emit CycloneDX 1.5 JSON
+  SBOMs, and the SBOMs are delivered two ways: attached to the
+  GitHub release as ``sbom-api.cdx.json`` + ``sbom-web.cdx.json``
+  assets, and bound to each image digest via
+  ``cosign attest --type cyclonedx`` for in-toto provenance. See
+  Phase 2f § Cycle 4 for the full detail.
 - **Dependency hygiene** `[x]` (Dependabot cycle 1 shipped 2026-06-03).
   [`.github/dependabot.yml`](.github/dependabot.yml) enables weekly
   Mondays 14:00 UTC scans for three ecosystems:
@@ -1359,7 +1366,7 @@ you'd actually deploy.
 
 ---
 
-### Phase 2f — Release engineering `[~]`
+### Phase 2f — Release engineering `[x]` (shipped 2026-06-03)
 
 **Closes.** T-10 (extends Phase 2e's CI-gate posture from "the code
 we test" to "the artefacts we ship"); unblocks the deferred Phase 2e
@@ -1494,11 +1501,55 @@ plan:
     [`tests/test_release_workflow.py`](tests/test_release_workflow.py)'s
     ``TestCosignSigning`` (installs cosign, signs pushed images,
     ``--yes`` flag, signs by digest not tag).
-- **Cycle 4 `[ ]`** — SBOM attachment. ``cyclonedx-py`` +
-  ``cyclonedx-npm`` emit per-component SBOMs in the release job;
-  attached to the GitHub release as build artefacts. The
-  Phase 2e SBOM bullet flips to shipped here. After cycle 4 every
-  remaining Phase 2 bullet is ``[x]``.
+- **Cycle 4 `[x]`** (2026-06-03) — SBOM attachment. Closes the
+  Phase 2e SBOM bullet and the final Phase 2f cycle. After cycle 4
+  every Phase 2 bullet is `[x]` and Phase 2 is closed.
+  - Release workflow extended: each ``build-and-push-*`` job
+    generates a CycloneDX 1.5 JSON SBOM after the cosign sign
+    step. The API + worker SBOM walks the synced ``.venv``
+    (``uv sync --frozen --no-dev`` matches the production image's
+    dep set) via ``cyclonedx-py environment``; the dashboard SBOM
+    walks ``web/node_modules`` (``npm ci`` from the lockfile,
+    ``--omit dev``) via ``@cyclonedx/cyclonedx-npm``.
+  - **Two delivery paths**:
+    - **In-toto attestation on the image.** ``cosign attest --yes
+      --type cyclonedx --predicate sbom-*.cdx.json
+      "${IMAGE}@${DIGEST}"`` binds the SBOM to the immutable image
+      digest as an OCI sibling artefact. Same Fulcio identity as
+      the cycle 3 signature, so a future
+      ``cosign verify-attestation`` gate can prove SBOM provenance
+      from the canonical workflow path.
+    - **Release asset.** Both SBOMs upload as workflow artifacts
+      (``actions/upload-artifact``) and the ``release`` job
+      downloads + attaches them to the GitHub release via
+      ``gh release create … ./sbom/sbom-api.cdx.json ./sbom/sbom-web.cdx.json``.
+      The explicit Phase 2e ROADMAP wording: SBOMs attached to the
+      release.
+  - The release body grew a ``Supply-chain attestation`` section
+    with the canonical ``cosign verify`` invocation + the SBOM
+    asset filenames so a downstream operator has the verification
+    recipe at the top of the release page.
+  - [`docs/release.md`](docs/release.md) grew a "Software Bill of
+    Materials" section covering the two delivery paths, the
+    ``cosign verify-attestation --type cyclonedx`` verification
+    flow, and a ``jq``-based recipe for diffing the SBOMs between
+    two releases (added / removed deps).
+  - 7 new test cases extending
+    [`tests/test_release_workflow.py`](tests/test_release_workflow.py)'s
+    ``TestSbomGeneration``: python + node SBOM generators present,
+    ``cosign attest`` step with ``--type cyclonedx`` predicate,
+    SBOMs uploaded as workflow artifacts, release job downloads
+    them, ``gh release create`` references the ``.cdx.json`` files
+    as positional asset arguments.
+
+---
+
+**Phase 2 closed (2026-06-03).** Every sub-phase is shipped:
+2a (Vault spike) → 2b (encryption at rest) → 2c (SSH CA) →
+2d (mTLS everywhere) → 2e (supply-chain + ops hygiene) →
+2f (release engineering). The next named work-stream is Phase 3
+(multi-tenant / HA / observability) below, which is no longer
+blocked by anything in Phase 2.
 
 **Acceptance.**
 - A ``git push origin v0.x.y`` produces a published image at

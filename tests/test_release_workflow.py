@@ -228,3 +228,78 @@ class TestCosignSigning:
             "cosign sign must sign the digest reference "
             "(image@sha256:...) not the tag — tags are mutable"
         )
+
+
+# ---------------------------------------------------------------------------
+# SBOM generation + attestation (Phase 2f cycle 4)
+# ---------------------------------------------------------------------------
+
+
+class TestSbomGeneration:
+    """Each pushed image gets a CycloneDX SBOM. Two delivery paths:
+      * `cosign attest --type cyclonedx --predicate <sbom> <image>@<digest>`
+        attaches the SBOM to the image as an in-toto attestation — same
+        canonical identity as the signature, so the image-verify
+        workflow can gate on SBOM provenance in a future cycle.
+      * The SBOM file is uploaded as a workflow artifact + attached to
+        the GitHub release as a downloadable asset (the explicit
+        Phase 2e ROADMAP requirement).
+    """
+
+    def test_python_sbom_generated(self, body: str) -> None:
+        """``cyclonedx-py`` walks the synced Python environment and
+        emits a CycloneDX JSON SBOM."""
+        assert "cyclonedx-py" in body or "cyclonedx_py" in body, (
+            "release workflow must generate the Python image's SBOM via "
+            "cyclonedx-py (or the matching pip package)"
+        )
+
+    def test_node_sbom_generated(self, body: str) -> None:
+        """``@cyclonedx/cyclonedx-npm`` walks the dashboard's
+        package-lock and emits a CycloneDX JSON SBOM."""
+        assert "cyclonedx-npm" in body or "@cyclonedx/cyclonedx-npm" in body, (
+            "release workflow must generate the dashboard image's SBOM "
+            "via @cyclonedx/cyclonedx-npm"
+        )
+
+    def test_attests_via_cosign(self, body: str) -> None:
+        """``cosign attest --type cyclonedx`` ties the SBOM to the
+        image's immutable digest via an in-toto attestation. The
+        attestation rides the same Fulcio identity the cycle 3 sign
+        step uses, so cosign verify-attestation can gate on the SBOM's
+        provenance from the same workflow path."""
+        assert "cosign attest" in body, (
+            "release workflow must call cosign attest to bind each SBOM "
+            "to the matching image digest"
+        )
+
+    def test_attest_uses_cyclonedx_predicate_type(self, body: str) -> None:
+        assert "--type cyclonedx" in body or "--type=cyclonedx" in body, (
+            "cosign attest must pass --type cyclonedx so the in-toto "
+            "predicate type matches the SBOM format"
+        )
+
+    def test_sboms_uploaded_as_artifacts(self, body: str) -> None:
+        """``actions/upload-artifact`` is the cross-job handoff —
+        each build job uploads its SBOM, the release job downloads
+        them all and passes to ``gh release create`` as assets."""
+        assert "actions/upload-artifact" in body, (
+            "release workflow must upload SBOMs as workflow artifacts "
+            "for the release job to consume"
+        )
+
+    def test_release_job_downloads_sboms(self, body: str) -> None:
+        assert "actions/download-artifact" in body, (
+            "release job must download the SBOM artifacts uploaded by "
+            "the build jobs"
+        )
+
+    def test_release_attaches_sboms(self, body: str) -> None:
+        """The Phase 2e ROADMAP wording: SBOMs ``attached to the
+        GitHub release``. ``gh release create … <files>`` is how that
+        attachment works."""
+        assert ".cdx.json" in body, (
+            "release workflow must reference the SBOM file names "
+            "(*.cdx.json) somewhere — gh release create needs them as "
+            "positional asset arguments"
+        )

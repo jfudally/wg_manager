@@ -10,6 +10,41 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2f cycle 4 — SBOM generation + attestation + release-asset
+  attachment.** Closes the Phase 2e SBOM bullet and the final
+  Phase 2f cycle. **Phase 2 is closed.** Every published release now
+  ships with two CycloneDX 1.5 JSON SBOMs covering the runtime dep
+  closure of each image, delivered two ways for the verify path the
+  consumer prefers.
+
+  - The release workflow's API job runs `cyclonedx-py environment`
+    against the synced `.venv` (`uv sync --frozen --no-dev` matches
+    the production image content) and emits `sbom-api.cdx.json`.
+    The web job runs `@cyclonedx/cyclonedx-npm --omit dev` against
+    `web/node_modules` after `npm ci` and emits `sbom-web.cdx.json`.
+  - **In-toto attestation on the image**: `cosign attest --yes
+    --type cyclonedx --predicate sbom-*.cdx.json
+    "${IMAGE}@${DIGEST}"` binds each SBOM to the immutable image
+    digest. Same Fulcio identity as the cycle 3 signature, so a
+    future `cosign verify-attestation` gate proves SBOM provenance
+    from the canonical workflow path.
+  - **Release asset**: both SBOMs upload as workflow artifacts and
+    the `release` job downloads + attaches them via
+    `gh release create … sbom-*.cdx.json`. The release page now
+    leads with a "Supply-chain attestation" section covering the
+    canonical `cosign verify` invocation + SBOM filenames.
+  - `docs/release.md` grows a "Software Bill of Materials" section
+    covering both delivery paths, the `cosign verify-attestation
+    --type cyclonedx` flow, and a `jq`-based recipe for diffing
+    SBOMs between two releases.
+  - 7 new test cases extending
+    `tests/test_release_workflow.py`'s `TestSbomGeneration`:
+    cyclonedx-py + cyclonedx-npm referenced, `cosign attest` step
+    with `--type cyclonedx` predicate, SBOMs uploaded via
+    `actions/upload-artifact`, release job uses
+    `actions/download-artifact`, `gh release create` lists the
+    `.cdx.json` files as positional asset arguments.
+
 - **Phase 2f cycle 3 — cosign keyless signing + verify gate.**
   Closes Phase 2e's "Deferred — cosign verify" bullet. Every image
   the release workflow publishes is now signed with cosign keyless
