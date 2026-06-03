@@ -10,6 +10,47 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3a cycle 2 — OTLP trace exporter on the provisioning path.**
+  Three span families covering the full provisioning trace: Celery
+  task root spans (auto-instrumented), Vault round-trip sub-spans
+  (cycle 1's `vault_call` extended to start a span at the same
+  wrap site), and SSH command sub-spans (new `ssh_span` helper
+  wrapped around `SSHRunner.run` / `.sudo`).
+
+  - New `wg_manager.tracing` module sets up the OTel SDK with four
+    exporter modes (`none` default = zero overhead, `console` for
+    dev, `otlp-http` for production, `memory` for tests).
+  - Cycle 1's `vault_call` context manager extended to also start
+    a `vault.<engine>.<operation>` span — one wrap site, two
+    streams. A metric-only deployment and a metric+trace
+    deployment never drift apart.
+  - New `ssh_span(operation, **attrs)` helper wraps
+    `SSHRunner.run` and `SSHRunner.sudo` so the trace shows every
+    command-exec as a sub-span under the parent Celery task.
+  - `CeleryInstrumentor()` instruments every task automatically.
+  - `setup_tracing` invoked at import time from both
+    `wg_manager.main` (API) and `wg_manager.celery_app` (worker)
+    so spans land under whichever process executed them.
+  - **Cycle 1 gap closure**: `tests/test_call_sites_traced.py`
+    greps the source for every expected `vault_call(...)` +
+    `ssh_span(...)` + `setup_tracing` invocation. The cycle 1
+    commit shipped a gap where the ROADMAP claimed Vault wraps
+    were in place but no test pinned the source-level contract;
+    cycle 2 closes that gap so the same drift can't recur silently.
+  - `docs/observability.md` grew a Tracing section: span topology
+    diagram, sample OTLP collector config, Honeycomb / Jaeger /
+    Tempo pointers, worker-vs-API setup parity.
+  - 21 new test cases: `tests/test_tracing.py` × 11 (behavioural —
+    exporter selection, vault_call span emission + attributes +
+    ERROR status, ssh_span helper, Celery instrumentor); plus
+    `tests/test_call_sites_traced.py` × 10 (source-level grep
+    pinning every wrap site).
+  - New runtime deps: `opentelemetry-api`, `opentelemetry-sdk`,
+    `opentelemetry-exporter-otlp-proto-http`,
+    `opentelemetry-instrumentation-celery`.
+  - New Settings fields: `otel_exporter`,
+    `otel_exporter_otlp_endpoint`, `otel_service_name`.
+
 - **Phase 3a cycle 1 — Prometheus metrics + Grafana dashboard.**
   Opens Phase 3 (Scale / Polish). v0.1.0 operators can now answer
   "is wg-manager healthy right now?" from Prometheus + Grafana,

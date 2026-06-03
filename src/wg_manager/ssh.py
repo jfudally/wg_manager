@@ -456,22 +456,25 @@ class SSHRunner:
         :raises SSHCommandError: If ``check`` is true and the command failed.
         :raises RuntimeError: If the runner is used outside a ``with`` block.
         """
+        from wg_manager.tracing import ssh_span
+
         if self._client is None:
             raise RuntimeError("SSHRunner must be used as a context manager")
-        stdin, stdout, stderr = self._client.exec_command(cmd)
-        stdin.close()
-        out_bytes: bytes = stdout.read()
-        err_bytes: bytes = stderr.read()
-        rc: int = stdout.channel.recv_exit_status()
-        result = CommandResult(
-            cmd=cmd,
-            rc=rc,
-            stdout=out_bytes.decode("utf-8", errors="replace"),
-            stderr=err_bytes.decode("utf-8", errors="replace"),
-        )
-        if check and rc != 0:
-            raise SSHCommandError(cmd, rc, result.stdout, result.stderr)
-        return result
+        with ssh_span("run", host=self.host, cmd=cmd):
+            stdin, stdout, stderr = self._client.exec_command(cmd)
+            stdin.close()
+            out_bytes: bytes = stdout.read()
+            err_bytes: bytes = stderr.read()
+            rc: int = stdout.channel.recv_exit_status()
+            result = CommandResult(
+                cmd=cmd,
+                rc=rc,
+                stdout=out_bytes.decode("utf-8", errors="replace"),
+                stderr=err_bytes.decode("utf-8", errors="replace"),
+            )
+            if check and rc != 0:
+                raise SSHCommandError(cmd, rc, result.stdout, result.stderr)
+            return result
 
     def sudo(self, cmd: str, check: bool = True) -> CommandResult:
         """Execute a command under ``sudo -n``.
@@ -483,7 +486,10 @@ class SSHRunner:
         :return: Captured command output.
         :rtype: CommandResult
         """
-        return self.run(f"sudo -n {cmd}", check=check)
+        from wg_manager.tracing import ssh_span
+
+        with ssh_span("sudo", host=self.host, cmd=cmd):
+            return self.run(f"sudo -n {cmd}", check=check)
 
     def write_file(
         self,

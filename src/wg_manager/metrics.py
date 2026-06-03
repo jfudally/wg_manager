@@ -244,7 +244,7 @@ def _on_task_postrun(
 
 @contextmanager
 def vault_call(*, engine: str, operation: str) -> Iterator[None]:
-    """Wrap a Vault round-trip with timing + outcome metrics.
+    """Wrap a Vault round-trip with timing + outcome metrics + span.
 
     Usage::
 
@@ -254,13 +254,36 @@ def vault_call(*, engine: str, operation: str) -> Iterator[None]:
     The context manager records ``result="ok"`` on a clean exit and
     ``result="error"`` on any exception (then re-raises). The
     duration histogram observes regardless of outcome.
+
+    Phase 3a cycle 2 extends the wrap to also start an OpenTelemetry
+    span named ``vault.<engine>.<operation>`` with ``vault.engine``
+    and ``vault.operation`` attributes. The two streams share one
+    call site so a metric-only deployment and a metric+trace
+    deployment don't drift apart.
     """
+    # Local import: the tracing module imports the OTel SDK, which
+    # itself takes a measurable startup cost. Production deployments
+    # with OTEL_EXPORTER=none don't pay that cost on cold paths that
+    # never hit vault_call (e.g. /metrics itself).
+    from opentelemetry.trace import Status, StatusCode
+
+    from wg_manager.tracing import get_tracer
+
+    tracer = get_tracer()
+    span_ctx = tracer.start_as_current_span(f"vault.{engine}.{operation}")
+    span = span_ctx.__enter__()
+    span.set_attribute("vault.engine", engine)
+    span.set_attribute("vault.operation", operation)
+
     start = time.perf_counter()
     result = "ok"
     try:
         yield
-    except BaseException:
+    except BaseException as exc:
         result = "error"
+        span.set_status(
+            Status(StatusCode.ERROR, description=type(exc).__name__)
+        )
         raise
     finally:
         duration = time.perf_counter() - start
@@ -270,6 +293,10 @@ def vault_call(*, engine: str, operation: str) -> Iterator[None]:
         vault_request_duration_seconds.labels(
             engine=engine, operation=operation
         ).observe(duration)
+        # Pass no exception info to __exit__ since we've already
+        # tagged the span status above; OTel only needs to know the
+        # context is closing.
+        span_ctx.__exit__(None, None, None)
 
 
 # ---------------------------------------------------------------------------

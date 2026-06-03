@@ -232,6 +232,22 @@ class Settings(BaseSettings):
     # ``config.py`` is careful to avoid).
     auth_bootstrap_operator_role: str = "admin"
 
+    # ----- Tracing (Phase 3a cycle 2, see wg_manager.tracing) -----
+    # Which OTLP exporter to install at startup. ``none`` (default)
+    # ships a NoOp tracer with zero overhead — wg-manager v0.1.0
+    # operators who don't run a collector pay nothing. ``console``
+    # prints finished spans to stderr (local dev). ``otlp-http``
+    # POSTs to :attr:`otel_exporter_otlp_endpoint` — typically a
+    # local collector that fans out to Jaeger / Tempo / Honeycomb.
+    otel_exporter: str = "none"
+    # OTLP/HTTP collector endpoint. Default matches the standard
+    # OpenTelemetry collector port (``/v1/traces`` is appended by
+    # the SDK).
+    otel_exporter_otlp_endpoint: str = "http://localhost:4318"
+    # Service name carried on every span. Pinned at module level so
+    # all spans (API, worker, CLI) share one resource identity.
+    otel_service_name: str = "wg-manager"
+
     @field_validator("default_subnet")
     @classmethod
     def _validate_default_subnet(cls, value: str) -> str:
