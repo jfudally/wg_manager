@@ -1,0 +1,56 @@
+# Phase 2e audit-log cycle 3 — production sink: Grafana Loki.
+#
+# Ship Vault's file audit device (cycle 1) into a Loki tenant for
+# correlation with the rest of the operator's log fabric. Pair with
+# the cycle 1 file audit device + the cycle 2 read-only volume
+# mount: this config is a drop-in replacement for the cycle 2 dev
+# config (the file source half is identical; the sink half swaps
+# the console for Loki).
+#
+# Env knobs (all optional; defaults are dev-mode):
+#
+#   LOKI_ENDPOINT     Loki push URL, e.g. https://loki.example.com
+#                     Required in production.
+#   CLUSTER_NAME      Label value distinguishing per-cluster audit
+#                     streams in a multi-cluster Loki tenant.
+#                     Defaults to "default".
+#
+# Trust model: Loki is an aggregation store, not a tamper-evident
+# one. Vault's audit log is hash-chained at the source, so a Loki
+# operator who edits past records is detectable by replaying the
+# chain (cookbook §6 "Hash-chain verification"). Pair this sink
+# with s3-object-lock.toml if you want belt-and-braces — Loki for
+# query, S3+Object-Lock for the immutable archive.
+#
+# Operator runbook: docs/vault-cookbook.md §6 cycle 3 § Loki.
+
+[sources.vault_audit]
+type = "file"
+include = ["/vault/logs/audit.log"]
+read_from = "beginning"
+
+# Parse Vault's JSON-per-line records so Loki labels can reference
+# parsed fields (auth.client_token, request.path, etc.). The remap
+# transform's parse_json! aborts the pipeline if a line isn't valid
+# JSON — that's the right posture for an audit chain: a malformed
+# line is a signal worth investigating, not data to drop silently.
+[transforms.parse_audit]
+type = "remap"
+inputs = ["vault_audit"]
+source = '. = parse_json!(.message)'
+
+[sinks.loki]
+type = "loki"
+inputs = ["parse_audit"]
+endpoint = "${LOKI_ENDPOINT:-http://loki:3100}"
+encoding.codec = "json"
+
+# Labels chosen for low cardinality + high filter value. ``cluster``
+# is the per-deployment differentiator; ``app`` / ``source`` are
+# fixed so the audit stream is greppable in a shared tenant. Avoid
+# adding high-cardinality labels (per-token, per-request-id) here
+# — Loki's index cost is proportional to label cardinality.
+[sinks.loki.labels]
+app = "vault"
+source = "audit"
+cluster = "${CLUSTER_NAME:-default}"
