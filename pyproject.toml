@@ -21,6 +21,11 @@ dependencies = [
     # The LocalDevBackend path doesn't call into hvac, but the import
     # happens at module load — so this is runtime, not dev.
     "hvac>=2.3.0",
+    # prometheus_client powers wg_manager.metrics (Phase 3a cycle 1) —
+    # ASGI middleware, Celery signal handlers, and the /metrics
+    # endpoint. Pinning the registry and Counter/Histogram primitives
+    # to the canonical Python client keeps Grafana dashboards portable.
+    "prometheus-client>=0.20.0",
 ]
 
 [project.scripts]

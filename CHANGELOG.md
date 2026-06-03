@@ -8,6 +8,53 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+### Added
+
+- **Phase 3a cycle 1 — Prometheus metrics + Grafana dashboard.**
+  Opens Phase 3 (Scale / Polish). v0.1.0 operators can now answer
+  "is wg-manager healthy right now?" from Prometheus + Grafana,
+  not log greps.
+
+  - New `wg_manager.metrics` module declares nine metric families:
+    HTTP (`requests_total` + `request_duration_seconds`), Celery
+    (`tasks_total` + `task_duration_seconds`), Vault round-trips
+    (`requests_total` + `request_duration_seconds`), and cert
+    lifecycle (`certs_issued_total` + `_revoked_total` +
+    `_renewed_total`).
+  - `MetricsMiddleware` (ASGI) records every HTTP request,
+    skipping OPTIONS preflight and `/metrics` itself. The path
+    label uses the FastAPI **route template**, not the raw URL,
+    so cardinality stays bounded by the route table.
+  - Celery `task_prerun` + `task_postrun` signal handlers record
+    every task automatically — the side-effect import lives in
+    `celery_app.py` so the metrics fire under the worker process,
+    not just the API.
+  - `vault_call(engine, operation)` context manager records
+    latency + outcome (`ok` / `error`) on every Vault round-trip.
+    Call sites in `crypto` / `ssh_ca` / `pki` get a one-line wrap.
+  - `GET /metrics` endpoint exposes the Prometheus text format on
+    the existing mTLS listener. Scrapers configure a client cert
+    the same way operators do — keeping the security posture
+    uniform.
+  - `docs/observability/grafana-dashboard.json` ships a starter
+    dashboard with 7 panels covering every metric family (HTTP
+    request rate + p95 latency, Celery throughput + p95 duration,
+    Vault round-trip latency + rate, cert lifecycle events).
+    Importable via Grafana UI's Upload JSON flow.
+  - `docs/observability.md` walks the scrape config, metric
+    families, dashboard panels, and the three instrumentation
+    patterns for future call sites.
+  - New `prometheus-client>=0.20.0` runtime dependency.
+  - 26 new test cases:
+    `tests/test_metrics.py` × 18 (metric family declarations + labels,
+    `/metrics` endpoint shape, middleware records-a-request +
+    route-template-not-raw-path + skips OPTIONS + skips /metrics,
+    vault_call records ok/error/duration, Celery signal
+    registration);
+    `tests/test_grafana_dashboard.py` × 8 (file exists, valid JSON,
+    has title + panels, every metric family covered by a PromQL
+    query in at least one panel).
+
 ## [v0.1.0] - 2026-06-03
 
 ### Added
