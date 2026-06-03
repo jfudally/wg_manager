@@ -1,0 +1,66 @@
+# Phase 2e audit-log cycle 3 — production sink: S3 + Object Lock.
+#
+# Ship Vault's file audit device (cycle 1) into an S3 bucket with
+# Object Lock enabled. Object Lock makes each uploaded object
+# immutable for a configurable retention period (Governance mode
+# allows privileged override; Compliance mode is irrevocable even
+# by the root account — pick based on your incident-response
+# tolerance for "we need to delete one record").
+#
+# Env knobs:
+#
+#   AWS_REGION    Required. The S3 bucket's region.
+#   S3_BUCKET     Required. Bucket name. **Must already have Object
+#                 Lock enabled at creation time** — Object Lock
+#                 cannot be enabled on an existing bucket after the
+#                 fact (AWS API constraint). Bucket lifecycle:
+#                   aws s3api create-bucket --bucket NAME \
+#                       --object-lock-enabled-for-bucket
+#                   aws s3api put-object-lock-configuration \
+#                       --bucket NAME --object-lock-configuration \
+#                       'ObjectLockEnabled=Enabled,Rule={...}'
+#   HOSTNAME      Per-host key prefix component.
+#
+# Trust model: this is the *tamper-evident archive* tier of the
+# Vault-audit shipping story. Vault's hash-chain catches in-flight
+# tampering; Object Lock catches at-rest tampering. Together they
+# satisfy the Phase 2e acceptance criterion ("a compromised app
+# server can't quietly delete records") — the records are gone from
+# the app server's volume on the next rotation, but the S3 copy is
+# immutable for the retention window.
+#
+# Cost note: every audit record lands as part of a gzipped batch.
+# At 10 MiB / 5 min batching defaults, an audit-heavy deployment
+# writes ~280 objects/day. PUT costs are negligible at that scale;
+# storage cost is dominated by retention (Glacier-Instant-Retrieval
+# is a sensible tier for >30-day retention).
+#
+# Operator runbook: docs/vault-cookbook.md §6 cycle 3 § S3 + Object Lock.
+
+[sources.vault_audit]
+type = "file"
+include = ["/vault/logs/audit.log"]
+read_from = "beginning"
+
+[sinks.s3_archive]
+type = "aws_s3"
+inputs = ["vault_audit"]
+region = "${AWS_REGION}"
+bucket = "${S3_BUCKET}"
+
+# Key layout puts each host in its own date-partitioned prefix so
+# CLI explorations (``aws s3 ls`` / Athena queries) are trivially
+# date- and host-scoped. The ``%Y/%m/%d`` placeholders are
+# expanded by vector against the record's ingestion time.
+key_prefix = "vault-audit/${HOSTNAME:-vault}/%Y/%m/%d/"
+compression = "gzip"
+encoding.codec = "text"
+
+# Batch tuning: 10 MiB or 5 min, whichever first. Tightens the
+# upper bound on the gap between a Vault audit-record write and
+# its appearance in S3 — that gap is the window during which a
+# fast-acting attacker could delete the on-host audit.log before
+# the corresponding S3 object exists.
+[sinks.s3_archive.batch]
+max_bytes = 10485760
+timeout_secs = 300

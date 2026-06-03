@@ -712,8 +712,8 @@ Phase 2e audit-log work ships off-host audit in three cycles:
   persistent volume.
 - **Cycle 2** — add a `vector` sidecar to docker-compose that tails
   the audit file and emits to its own stdout for dev visibility.
-- **Cycle 3** (open) — document production paths (journald, syslog,
-  SIEM connectors) for off-host shipping.
+- **Cycle 3** — document production off-host sinks (Loki, CloudWatch,
+  S3 + Object Lock, syslog, journald) as drop-in vector configs.
 
 ### Cycle 1 — file audit device
 
@@ -813,14 +813,211 @@ record from the start of the volume rather than a silent gap. A
 plain `docker compose restart vector` keeps the checkpoint and
 resumes from where it left off.
 
-### Production wire-up
+### Cycle 3 — production sinks
 
-Production swaps in (or joins, alongside the console sink) a sink
-that ships to a tamper-evident store: Loki, CloudWatch, S3 +
-Object Lock are all reasonable. The Vault audit log's hash-chain
-means downstream corruption is detectable by replaying the chain.
-The matching production-path docs — with concrete vector sink
-stanzas for each — land in cycle 3 of this work-stream.
+Cycle 2 ships the dev-visibility sidecar (echo to stdout). Production
+either replaces — or, more often, *joins* — the console sink with
+one that ships the audit chain to a tamper-evident store. Five
+options ship as self-contained drop-in vector configs under
+[`docker/vector/production/`](../docker/vector/production/); each is
+a complete file you can `vector validate` standalone before swapping
+it into a deployment. Pick the one that matches your existing log
+fabric — the Vault hash-chain (next subsection) means tamper-
+evidence is a property of the *chain*, not the *sink*, so any of the
+five satisfies the Phase 2e acceptance criterion once deployed.
+
+Deployment shape is identical to cycle 2: a vector container (or
+host-side systemd unit) tails the `wg_manager_vault_audit_logs`
+volume **read-only** and ships records off-host. Swap the config
+bind-mount path on the cycle 2 compose service from
+`./docker/vector/vault-audit.toml` to e.g.
+`./docker/vector/production/loki.toml` and `compose up -d vector`
+picks the new sink up on its next restart.
+
+#### Loki — Grafana Labs log aggregation
+
+[`docker/vector/production/loki.toml`](../docker/vector/production/loki.toml)
+ships an `aws_audit` JSON parse-and-push pipeline at a Loki tenant.
+Required env: `LOKI_ENDPOINT` (push URL); optional `CLUSTER_NAME`
+for per-cluster label scoping in a multi-cluster tenant. Vault's
+JSON records are parsed (so Loki labels can reference
+`auth.client_token`, `request.path`, etc.) then pushed with three
+fixed labels — `app=vault`, `source=audit`, `cluster=$CLUSTER_NAME`.
+
+Keep label cardinality low: avoid adding `request_id` or per-token
+labels here — Loki's index cost is proportional to label cardinality
+and an audit-record-per-label fanout will blow up the index. Use
+LogQL field-level filters for query-time slicing instead.
+
+#### CloudWatch — AWS log groups
+
+[`docker/vector/production/cloudwatch.toml`](../docker/vector/production/cloudwatch.toml)
+pushes each audit record into a CloudWatch Logs group + per-host
+stream. Required env: `AWS_REGION`; optional
+`CLOUDWATCH_LOG_GROUP` (default `/wg-manager/vault-audit`),
+`HOSTNAME` (default `vault`). AWS creds come from the standard SDK
+chain (instance-profile, task role, web-identity for EKS IRSA, or
+key-pair env vars — strongly prefer the instance/task role paths in
+production).
+
+The config sets `create_missing_group = true` / `create_missing_stream = true`
+so a fresh deployment writes successfully without operator handholding
+— flip both to `false` in mature environments where group/stream
+creation is owned by Terraform/CloudFormation and an unexpected
+create is itself an audit signal worth investigating.
+
+For tamper-evident archive, pair this sink with an Object-Lock'd S3
+subscription destination — CloudWatch subscription filters copy each
+record into the immutable bucket without operator action.
+
+#### S3 + Object Lock — tamper-evident archive
+
+[`docker/vector/production/s3-object-lock.toml`](../docker/vector/production/s3-object-lock.toml)
+is the **archive tier** of the audit shipping story. Object Lock
+makes each uploaded object immutable for a configurable retention
+window — pick **Governance mode** if you want an explicit operator
+override path, or **Compliance mode** if even the root account
+should be unable to delete records inside the window.
+
+Bucket must be created with Object Lock enabled at creation time —
+AWS doesn't let you enable Object Lock on an existing bucket
+post-hoc:
+
+```bash
+aws s3api create-bucket --bucket wg-manager-vault-audit \
+    --object-lock-enabled-for-bucket \
+    --create-bucket-configuration LocationConstraint=$AWS_REGION
+aws s3api put-object-lock-configuration --bucket wg-manager-vault-audit \
+    --object-lock-configuration '{
+        "ObjectLockEnabled": "Enabled",
+        "Rule": {
+            "DefaultRetention": {
+                "Mode": "COMPLIANCE",
+                "Days": 365
+            }
+        }
+    }'
+```
+
+Required env: `AWS_REGION`, `S3_BUCKET`. Optional `HOSTNAME` for
+key-prefix scoping. Vector batches into 10 MiB / 5 min chunks — the
+upper bound on the gap between an audit record being written and
+appearing in S3 (which is the window during which a fast-acting
+attacker could delete records on the app server before the
+corresponding S3 object exists). Cost calculus: at 10 MiB/batch the
+audit stream is ~280 objects/day at the high end; PUT costs are
+negligible, storage cost is dominated by retention. Glacier
+Instant-Retrieval is a sensible tier for retention windows >30 days.
+
+This is the closer for the Phase 2e acceptance criterion ("a
+compromised app server can't quietly delete records"). The records
+are gone from the app server's volume on the next rotation, but the
+S3 copy is immutable for the retention window.
+
+#### Syslog — RFC 3164 / RFC 5424
+
+[`docker/vector/production/syslog.toml`](../docker/vector/production/syslog.toml)
+ships to a syslog collector via TCP (RFC 6587 octet-stream). The
+right fit for deployments with an existing centralised
+rsyslog/syslog-ng/Splunk-syslog collector — the audit stream joins
+whatever fabric already carries the rest of the infrastructure's
+logs.
+
+Required env: `SYSLOG_ADDRESS` (host:port of the collector).
+Optional `SYSLOG_MODE` (default `tcp` — TCP gives delivery
+confirmation and back-pressure; UDP can silently drop records under
+collector overload, which is the worst failure mode for an audit
+pipeline so the default deliberately steers you away from it).
+
+The shipped config does **plain TCP**. For RFC 5425 TLS-wrapped
+syslog, swap `type = "socket"` for `type = "syslog"` and add a
+`[sinks.syslog.tls]` block pointing at a Vault-issued client cert
+— the audit shipping path inherits the same trust root as the rest
+of the Phase 2d control plane, no second PKI to manage.
+
+#### journald — host-local via systemd
+
+Vector doesn't ship a `journald` *sink* (journald is a source, not a
+sink, in vector's data model). The right deployment pattern for
+"ship to journald" is to run vector under systemd as a host-side
+service — vector's stdout (already the `console` sink from cycle 2)
+is captured by journald automatically and joins the
+`journalctl -u vector` stream alongside the rest of the host's
+service logs.
+
+Unit-file shape:
+
+```ini
+# /etc/systemd/system/vector-vault-audit.service
+[Unit]
+Description=Vector — Vault audit-log shipper
+After=vault.service
+Wants=vault.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/vector --config /etc/vector/vault-audit.toml
+Restart=on-failure
+RestartSec=5s
+# Read-only access to Vault's audit volume — defence in depth on top
+# of the file-mode bits the audit device sets (vault user, mode 600
+# by default; vector reads via a shared group).
+ReadOnlyPaths=/vault/logs
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Pair with `/etc/vector/vault-audit.toml` set to the cycle 2 console-
+sink config (or any of the four production configs above — they all
+inherit the systemd-stdout-to-journald property because vector
+writes its own logs to stdout regardless of sink configuration).
+
+For shipping the *audit records themselves* to journald rather than
+just vector's operational logs, use a `socket` sink targeting
+`/run/systemd/journal/socket` with `mode = "unix_datagram"` — but
+the practical pattern is the systemd-unit-stdout one above, which is
+why the file under `docker/vector/production/` is one of the four
+*remote* sinks rather than a journald snippet.
+
+### Hash-chain verification
+
+Vault's file audit device hash-chains every record: each line's
+hash incorporates the previous line's hash, so a downstream
+mutation (whether by a malicious operator or a buggy log shipper)
+is detectable by replaying the chain from any known-good anchor.
+
+The chain is part of the JSON payload Vault writes — there's no
+separate verification artefact to manage. The recovery flow when
+the chain breaks:
+
+1. Pull the audit records from the off-host sink (S3, CloudWatch,
+   Loki, syslog archive — whichever you deployed).
+2. Walk the chain forward from the most-recent known-good record.
+3. The first record whose `hmac` field doesn't match the
+   recomputed chain is the tamper point — investigate from there.
+
+A short verification script is left to the operator's incident-
+response toolkit; the hash function (HMAC-SHA256 over the canonical
+JSON encoding) is documented in Vault's
+[audit log docs](https://developer.hashicorp.com/vault/docs/audit/file).
+
+### Retention
+
+Per-sink retention is the operator's choice and ties to the
+incident-response window. Reasonable defaults:
+
+| Sink                | Default        | Tune-it-when                    |
+| ------------------- | -------------- | ------------------------------- |
+| Loki                | tenant policy  | Investigation window > tenant default |
+| CloudWatch          | log-group prop | Compliance horizon > 30 days    |
+| S3 + Object Lock    | 1 year         | Regulatory regime mandates 7y   |
+| Syslog              | collector      | Collector backlog ≪ IR window   |
+| journald (systemd)  | host-local     | Always pair with off-host sink  |
+
+The hash-chain is end-to-end across the retention window, so
+extending retention extends the back-in-time investigation reach —
+the calculus is incident-response horizon vs. storage cost.
 
 ## 7. Open operator concerns (deferred to Phase 2e)
 
@@ -836,10 +1033,10 @@ production rollout.
   snapshot save` to S3/GCS.
 - **HA.** Three-node Raft cluster for prod; this is the bulk of the
   "Vault in production" operational cost.
-- **Audit log retention.** Cycle 1 (above) enables the dev wire-up;
-  cycles 2-3 ship the off-host story. Production retention is then a
-  question of the downstream sink — how long Loki / CloudWatch holds
-  the chain, with retention tuned to your incident-response window.
+- **Audit log retention.** Cycles 1-3 ship the wire-up; production
+  retention is then a question of the downstream sink — how long
+  Loki / CloudWatch / S3 holds the chain, with retention tuned to
+  your incident-response window (cookbook §6 cycle 3 § Retention).
 - **Token TTL policy.** AppRole token TTL, secret-id TTL, and
   response-wrap TTL all need real values. Drafts in
   `docs/vault-policies.md` (Phase 2b).

@@ -1,0 +1,49 @@
+# Phase 2e audit-log cycle 3 — production sink: syslog.
+#
+# Ship Vault's file audit device (cycle 1) to a syslog daemon. The
+# right fit for deployments with an existing centralised
+# rsyslog/syslog-ng/Splunk-syslog collector — the audit stream
+# joins whatever fabric already carries the rest of the
+# infrastructure's logs.
+#
+# Env knobs:
+#
+#   SYSLOG_ADDRESS    Required. host:port of the syslog collector.
+#                     Example: "syslog.internal:6514" (TLS-wrapped
+#                     RFC 5425 default port) or "127.0.0.1:514"
+#                     (plain UDP, dev/local-collector only).
+#   SYSLOG_MODE       "tcp" (default — recommended) or "udp". TCP
+#                     gives delivery confirmation and back-pressure;
+#                     UDP can silently drop records under collector
+#                     overload, which is the worst possible failure
+#                     mode for an audit pipeline.
+#
+# Hardening: this snippet does **plain TCP**. For RFC 5425
+# TLS-wrapped syslog, swap ``type = "socket"`` for
+# ``type = "syslog"`` and add a ``[sinks.syslog.tls]`` block with
+# ``ca_file`` / ``crt_file`` / ``key_file`` pointing at a
+# Vault-issued client cert (matches the Phase 2d PKI pattern —
+# audit shipping inherits the same trust root as the rest of the
+# control plane).
+#
+# Trust model: syslog is a transport, not a store. Pair this sink
+# with whatever retention the collector enforces (rsyslog
+# imuxsock + outforward to S3, Splunk index retention,
+# fluent-bit + Loki, etc.). The collector's tamper-evidence story
+# is the operator's choice — same calculus as the CloudWatch
+# sink's "ship into CloudWatch then subscribe into Object-Lock'd
+# S3" recommendation.
+#
+# Operator runbook: docs/vault-cookbook.md §6 cycle 3 § Syslog.
+
+[sources.vault_audit]
+type = "file"
+include = ["/vault/logs/audit.log"]
+read_from = "beginning"
+
+[sinks.syslog]
+type = "socket"
+inputs = ["vault_audit"]
+address = "${SYSLOG_ADDRESS:-127.0.0.1:6514}"
+mode = "${SYSLOG_MODE:-tcp}"
+encoding.codec = "text"
