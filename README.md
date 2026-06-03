@@ -577,12 +577,16 @@ shape; the acceptance tests assert on it directly.
   is in progress: the application audit log (cycles 1-4), the
   five CI security gates — gitleaks / pip-audit / npm audit / bandit
   / semgrep — (`make security` runs them locally), the Vault audit
-  log (file device → vector sidecar → production sink configs), and
+  log (file device → vector sidecar → production sink configs),
   the operator runbooks
   ([`docs/runbooks/key-compromise.md`](docs/runbooks/key-compromise.md),
-  [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md))
-  are shipped; encrypted backups and reproducible-build enforcement
-  remain.
+  [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md),
+  [`docs/runbooks/backup-restore.md`](docs/runbooks/backup-restore.md)),
+  encrypted DB backups (`wg-manager db backup --encrypt` + Vault
+  raft snapshots), and the lockfile-parity gate (`make lockfiles`,
+  matching `.github/workflows/lockfile.yml`) are shipped; the
+  release-engineering slice (signed Docker publish, cosign verify,
+  SBOM attachment) remains.
 - [`SECURITY.md`](SECURITY.md) lists the current security posture,
   what wg-manager today explicitly does not defend against, and how
   to report a vulnerability.

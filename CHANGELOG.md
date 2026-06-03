@@ -10,6 +10,36 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e reproducible-builds cycle 3 — lockfile parity CI gate.**
+  Closes the "refuses unpinned upgrades" half of the ROADMAP
+  reproducible-builds bullet. The release-workflow half (and the
+  blocked cosign + SBOM acceptance criteria) stays deferred to a
+  future release-engineering slice — no Docker publish flow exists
+  on `main` yet to bolt a release job onto.
+
+  - New
+    [`.github/workflows/lockfile.yml`](.github/workflows/lockfile.yml)
+    runs `uv lock --check` against pyproject.toml + uv.lock and
+    `npm ci --dry-run` against web/package.json +
+    web/package-lock.json on every push to main + every PR that
+    touches a dep manifest (path-filtered so code-only PRs don't
+    re-run the gate). The triple drift pattern that landed at merge
+    time on dependabot PRs #15/#16/#17 (tailwindcss / tailwind-
+    merge / jsdom bumped in sibling PRs leaving the three open PRs'
+    lockfiles stale) is now caught at PR-open time.
+  - New `make lockfiles` target runs the same two commands locally
+    so a pre-push hand-spin reproduces a CI failure byte-for-byte.
+    Slots alongside `make security` as the pre-push gate set.
+  - 13 cases in
+    [`tests/test_lockfile_workflow.py`](tests/test_lockfile_workflow.py)
+    pin the workflow's shape (file existence, descriptive name,
+    triggers on push + path-filtered PRs, two jobs running the
+    `uv lock --check` + `npm ci --dry-run` commands,
+    cancels-in-progress concurrency, contents-read least-privilege
+    permissions) and the Makefile target (declaration + recipe body
+    + help frame). Pure parse-and-assert so the fast `make test`
+    invocation stays hermetic.
+
 - **Phase 2e backup cycle 2 — encrypted DB dumps + Vault raft
   snapshots + restore runbook.** Closes a residual variant of T-1
   (a leaked MySQL dump is no longer equivalent to a leaked database)

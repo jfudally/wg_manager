@@ -1291,9 +1291,42 @@ you'd actually deploy.
     [`tests/test_runbooks.py`](tests/test_runbooks.py) pin the
     runbook's IR section frame, required commands, cross-references,
     and the systemd-timer doc's backup subsection.
-- **Reproducible builds.** `pyproject.toml` is locked via `uv lock`; the
-  release workflow builds from the lockfile and refuses unpinned
-  upgrades.
+- **Reproducible builds** `[x]` (reproducible-builds cycle 3 shipped
+  2026-06-03). The "refuses unpinned upgrades" half of the bullet
+  lands as a CI gate; the "release workflow builds from the
+  lockfile" half stays deferred alongside cosign + SBOM until the
+  release-engineering slice opens (no Docker publish flow on `main`
+  yet means no signed release artefact for cosign to verify and no
+  release job to bolt SBOM onto).
+  - New
+    [`.github/workflows/lockfile.yml`](.github/workflows/lockfile.yml)
+    with two jobs: `uv lock --check` against pyproject.toml +
+    uv.lock, and `npm ci --dry-run` against web/package.json +
+    web/package-lock.json. Either returning non-zero — a dep added
+    or bumped without re-locking, a lockfile pinned to a version no
+    longer in package.json — fails the gate. Path-filtered to the
+    dep manifests + the workflow file itself so code-only PRs don't
+    re-run the gate.
+  - New `make lockfiles` Makefile target runs the same two
+    commands locally so a pre-push hand-spin reproduces the CI
+    failure shape byte-for-byte without round-tripping through
+    GitHub. Slots alongside `make security` as the pre-push gate
+    set.
+  - The dependabot triple PR #15/#16/#17 surfaced exactly this drift
+    pattern at merge time: tailwindcss, tailwind-merge, and jsdom
+    were each bumped by a sibling PR that landed in main, leaving
+    the three open PRs' lockfiles stale. The new gate turns that
+    "discovered at merge" pain into "rejected at PR-open" — closes
+    the supply-chain hole prospectively.
+  - Tests: 13 cases in
+    [`tests/test_lockfile_workflow.py`](tests/test_lockfile_workflow.py)
+    pin the workflow's shape (file exists, descriptive name, runs
+    on push to main + path-filtered PRs, two jobs declaring the
+    actual `uv lock --check` + `npm ci --dry-run` commands,
+    cancels-in-progress concurrency, contents-read least-privilege
+    permissions) and the Makefile target (declaration + recipe
+    body + help frame). Pure parse-and-assert so the fast `make
+    test` invocation stays hermetic.
 
 **Acceptance.**
 - The CI badge in the README is green and the `security` job exists.
