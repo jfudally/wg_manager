@@ -10,6 +10,78 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e CI-gate cycles 1-5 — GitHub Actions security gates.**
+  Five workflows landed across two days (2026-06-02 → 2026-06-03)
+  closing the Phase 2e "CI gates" ROADMAP bullet — every push to
+  `main` and every PR now runs five independent jobs that bisect
+  cleanly to a single workflow file when one trips. `make security`
+  runs the same five gates locally in cheapest-first order so a
+  pre-push hand-spin matches CI byte-for-byte.
+
+  - **Cycle 1** —
+    [`ci.yml`](.github/workflows/ci.yml). Backend job: `uv sync
+    --extra dev --frozen` + `uv run pytest -q` on Python 3.13.
+    Dashboard job: `npm ci` + `npm run test` (vitest) on Node 22.
+    README badge added to surface workflow status. Side fix:
+    `tests/test_main_tls_wiring.py::test_options_preflight_succeeds_under_tls_required`
+    was depending on a local `.env` for `CORS_ORIGINS`; pinned via
+    `monkeypatch.setenv` so the test is hermetic.
+  - **Cycle 2** —
+    [`gitleaks.yml`](.github/workflows/gitleaks.yml). Gitleaks
+    v8.30.1 pinned via direct curl + tar (no third-party action);
+    `--source . --no-banner --redact --verbose`; full-history scan
+    (`fetch-depth: 0`). New [`.gitleaks.toml`](.gitleaks.toml)
+    extends the default ruleset with a nine-file allowlist (seven
+    tests with ephemeral PEMs, `tests/e2e/tls/conftest.py` Fernet
+    dev key, `web/app/ssh-keys/page.tsx` placeholder) — deliberately
+    file-scoped, no blanket `tests/` carve-out so a real leak in a
+    test still trips the gate.
+  - **Cycle 3** —
+    [`deps-audit.yml`](.github/workflows/deps-audit.yml). pip-audit
+    job (`uv run --frozen --with pip-audit pip-audit --strict
+    --ignore-vuln CVE-2026-44405`) + npm audit job (`npm audit
+    --omit=dev --audit-level=high`). Path-filtered on
+    `pyproject.toml` / `uv.lock` / `web/package*.json` so unrelated
+    PRs skip the network fetch; weekly Monday cron + manual
+    `workflow_dispatch` for the unprompted scan. Landed alongside
+    a dep bump (cryptography 46.0.6→48.0.0, idna 3.11→3.18,
+    mako 1.3.10→1.3.12, starlette 1.0.0→1.2.1) to close four of
+    the five CVEs the strict run flagged; the fifth
+    (paramiko CVE-2026-44405) has no upstream fix yet and is
+    explicitly ignored with the inline rationale.
+  - **Cycle 4** — [`sast.yml`](.github/workflows/sast.yml). bandit
+    job (`bandit -ll -c pyproject.toml -r src/` — medium+/medium+)
+    + semgrep job (`semgrep --config=p/python --error
+    --metrics=off src/` in the official `semgrep/semgrep:latest`
+    container). New `[tool.bandit]` config in
+    [`pyproject.toml`](pyproject.toml) skips B601 globally
+    (paramiko exec IS the SSH layer's purpose — keeping the rule
+    on would burn ~6 markers across two files for zero signal)
+    with documented rationale in the section header. B507 stays
+    enabled and catches genuine `AutoAddPolicy` regressions; the
+    two known-safe sites carry per-line `# nosec B507`:
+    `bootstrap_ssh.py:192` (the one legitimate TOFU site per
+    CP4.5) and `ssh.py:391` (legacy fallback). semgrep `p/python`
+    is clean on the current tree — no allowlist needed.
+  - **Cycle 5** — ROADMAP sweep + cosign deferral. Flips the
+    Phase 2e header from `[ ]` to `[~]` (CI gates + audit log
+    shipped; SBOM / Dependabot / Vault audit off-host / Backup
+    story / Reproducible builds still open). The CI-gates bullet
+    is now `[x]` with a per-cycle breakdown; cosign verify is
+    documented as **deferred** with the reason — no Docker
+    publish flow exists on `main`, so there is no signed image
+    for cosign to verify and no release workflow to bolt the
+    gate onto. Tracked alongside the SBOM bullet (same blocker:
+    cyclonedx tools need a release artefact to attach to). Both
+    land when the release-engineering slice opens. Docs-only;
+    no production-code changes.
+
+  Local invocations: `make gitleaks`, `make pip-audit`,
+  `make npm-audit`, `make bandit`, `make semgrep`, and
+  `make security` (runs all five in cheapest-first order:
+  gitleaks → bandit → pip-audit → npm-audit → semgrep). All five
+  workflows green on `main` as of the cycle 5 push.
+
 - **Phase 2e cycle 4 — `GET /audit` endpoint + dashboard page.** Closes
   the read side of the application audit log. Cycles 1-3 wrote rows
   to `auditevent`; cycle 4 exposes them over HTTP and renders them in

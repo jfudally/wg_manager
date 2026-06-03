@@ -1024,7 +1024,7 @@ considered it.
 
 ---
 
-### Phase 2e — Supply-chain & ops hygiene `[ ]`
+### Phase 2e — Supply-chain & ops hygiene `[~]`
 
 **Closes.** T-10, T-11.
 
@@ -1032,12 +1032,59 @@ considered it.
 you'd actually deploy.
 
 **Work.**
-- **CI gates** (`.github/workflows/ci.yml`):
-  - `gitleaks` on every push (catches accidental key commits).
-  - `pip-audit` and `npm audit --omit=dev` on every dependency lockfile
-    change.
-  - `bandit -ll` over `src/`; `semgrep` with the `p/python` ruleset.
-  - `cosign verify` of the published Docker image in the release job.
+- **CI gates** `[x]` (CI-gate cycles 1-5 shipped 2026-06-03). Five
+  GitHub Actions workflows, each owning one concern so a red run
+  bisects to a single workflow file. `make security` runs the same
+  five gates locally in cheapest-first order (`gitleaks`,
+  `bandit`, `pip-audit`, `npm-audit`, `semgrep`) for the
+  pre-push hand-spin. The cosign acceptance criterion is **deferred**
+  to Phase 2e's release-engineering slice — see the "Deferred" note
+  below.
+  - CI-gate cycle 1 (2026-06-02) — baseline
+    [`.github/workflows/ci.yml`](.github/workflows/ci.yml): backend
+    `uv sync --extra dev --frozen` + `uv run pytest -q` on Python
+    3.13; dashboard `npm ci` + `npm run test` (vitest) on Node 22.
+    README CI badge added in the same commit.
+  - CI-gate cycle 2 (2026-06-02) — gitleaks v8.30.1 pinned via
+    direct curl + tar in
+    [`.github/workflows/gitleaks.yml`](.github/workflows/gitleaks.yml)
+    (no third-party action). Default ruleset + a
+    [`.gitleaks.toml`](.gitleaks.toml) allowlist of nine specific
+    files (seven tests with ephemeral PEMs, `tests/e2e/tls/conftest.py`
+    Fernet dev key, `web/app/ssh-keys/page.tsx` placeholder); no
+    blanket `tests/` directory carve-out so a real leak in a test
+    still trips the gate.
+  - CI-gate cycle 3 (2026-06-03) — dependency audit in
+    [`.github/workflows/deps-audit.yml`](.github/workflows/deps-audit.yml):
+    `pip-audit --strict` + `npm audit --omit=dev --audit-level=high`,
+    path-filtered on `pyproject.toml` / `uv.lock` /
+    `web/package*.json` so unrelated PRs don't re-run the network
+    fetch. Weekly Monday cron + manual `workflow_dispatch`. Bumped
+    four deps (cryptography 46→48, idna 3.11→3.18, mako 1.3.10→1.3.12,
+    starlette 1.0→1.2.1) to land green; `--ignore-vuln CVE-2026-44405`
+    for paramiko (no upstream fix; documented inline).
+  - CI-gate cycle 4 (2026-06-03) — SAST in
+    [`.github/workflows/sast.yml`](.github/workflows/sast.yml):
+    `bandit -ll -c pyproject.toml -r src/` (medium+/medium+) and
+    `semgrep --config=p/python --error src/` in the official
+    semgrep container. New `[tool.bandit] skips = ["B601"]` in
+    [`pyproject.toml`](pyproject.toml) with documented rationale —
+    every `paramiko.exec_command()` trips B601, and `ssh.py` /
+    `bootstrap_ssh.py` ARE the SSH execution layer. B507 stays on
+    with two inline `# nosec B507` markers on the known-safe TOFU
+    bootstrap site (CP4.5) and the legacy fallback. semgrep
+    `p/python` is clean (0 findings) so no allowlist needed.
+  - CI-gate cycle 5 (2026-06-03) — ROADMAP sweep + cosign deferral
+    (this slice). No production-code changes; docs only.
+  - **Deferred — cosign verify.** The Phase 2e ROADMAP also called
+    for `cosign verify` of the published Docker image in the
+    release job. Blocked on a release job existing in the first
+    place: there is no Docker publish flow on `main` today, so
+    there is no signed image for cosign to verify and no release
+    workflow to bolt the gate onto. Tracked alongside the SBOM
+    bullet (which has the same blocker — `cyclonedx-py` /
+    `cyclonedx-npm` need a release artefact to attach to). Both
+    land together when the release-engineering slice opens.
 - **SBOM.** `cyclonedx-py` and `cyclonedx-npm` emit SBOMs in the release
   workflow; attached to the GitHub release.
 - **Dependency hygiene.** Dependabot enabled for `pip`, `npm`, and

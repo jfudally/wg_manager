@@ -574,7 +574,11 @@ shape; the acceptance tests assert on it directly.
   suite (`make test-e2e-tls`) pins the four behavioural contracts
   end-to-end against a live uvicorn process — see ROADMAP § Phase
   2d CP5 for the per-test detail. Phase 2e (supply chain + audit)
-  is the next sub-phase.
+  is in progress: the application audit log (cycles 1-4) and the
+  five CI security gates — gitleaks / pip-audit / npm audit / bandit
+  / semgrep — are shipped (`make security` runs them locally);
+  SBOM, cosign verify, Dependabot, off-host Vault audit, encrypted
+  backups, and reproducible-build enforcement remain.
 - [`SECURITY.md`](SECURITY.md) lists the current security posture,
   what wg-manager today explicitly does not defend against, and how
   to report a vulnerability.
@@ -582,12 +586,21 @@ shape; the acceptance tests assert on it directly.
   model the roadmap phases are tied to. Every threat in the table
   names the phase that closes (or has closed) it.
 
-**Not yet a finished system.** Phase 2e (supply chain + audit
-storage hardening) is still ahead. Phase 2d shipped the mTLS
-listener, the operator registry, the audit registry + revocation
-gate, MySQL TLS, cert renewal, and the CP5 acceptance suite that
-pins all four behavioural contracts; the structured audit emission
-landed alongside the revoked-cert gate so admit / reject decisions
-ride the `wg_manager.audit` JSON stream. See
+**Not yet a finished system.** Phase 2e (supply chain + ops
+hygiene) is in progress. Shipped pieces: the application audit
+log (`auditevent` table + `GET /audit` + dashboard page wired
+into the five mutating endpoint families) and the five CI
+security gates (gitleaks, pip-audit, npm audit, bandit, semgrep)
+running on every push to `main` and every PR. Still ahead:
+cosign verify of the published image, SBOM emission, Dependabot,
+off-host Vault audit log, encrypted backups, and the
+reproducible-build enforcement bullet — the first two are
+blocked on a release-engineering slice landing the Docker
+publish flow. Phase 2d shipped the mTLS listener, the operator
+registry, the audit registry + revocation gate, MySQL TLS, cert
+renewal, and the CP5 acceptance suite that pins all four
+behavioural contracts; the structured audit emission landed
+alongside the revoked-cert gate so admit / reject decisions ride
+the `wg_manager.audit` JSON stream. See
 [`SECURITY.md`](SECURITY.md#current-posture) for the concrete
 posture today and the remaining hardening recommendations.
