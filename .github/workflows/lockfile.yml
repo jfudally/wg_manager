@@ -1,0 +1,91 @@
+# Phase 2e gate: reproducible-builds lockfile parity. Two jobs:
+#
+# - uv-lock-check: runs `uv lock --check` against pyproject.toml +
+#   uv.lock. Fails if the lockfile is stale (a dep was added or
+#   bumped in pyproject.toml without re-locking) or if a dep is
+#   pinned in pyproject.toml but absent from the lock. Closes the
+#   "refuses unpinned upgrades" half of the ROADMAP Phase 2e
+#   reproducible-builds bullet.
+# - npm-lock-check: runs `npm ci --dry-run` against
+#   web/package.json + web/package-lock.json. `--dry-run` validates
+#   the lock against package.json without touching node_modules,
+#   so the check is hermetic + cheap. Fails on the same drift
+#   shapes the deps-audit workflow already saw (#15 / #16 / #17)
+#   where a sibling dependabot bump rewrote the lock but left an
+#   unrelated PR's package.json out of sync.
+#
+# Triggers: every push to main + path-filtered PRs that touch the
+# dep manifests (or this workflow file itself). Code-only PRs that
+# don't touch pyproject.toml / uv.lock / web/package*.json don't
+# need to re-validate — the gate runs again on every push to main
+# after they merge.
+
+name: Lockfile parity
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - '.github/workflows/lockfile.yml'
+
+concurrency:
+  group: lockfile-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  uv-lock-check:
+    name: uv lock --check (Python deps)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Verify uv.lock is in sync with pyproject.toml
+        # `uv lock --check` returns non-zero if the lockfile is stale
+        # (a dep was added or bumped without re-locking) or if a dep
+        # is pinned in pyproject.toml without a matching entry in
+        # uv.lock. Re-run `uv lock` locally to regenerate.
+        run: uv lock --check
+
+  npm-lock-check:
+    name: npm ci --dry-run (Node deps)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Install Node 22
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Verify package-lock.json is in sync with package.json
+        # `npm ci --dry-run` validates the lock against package.json
+        # without writing node_modules. Same `EUSAGE` failure shape
+        # that surfaced on the cycle-3 fix to dependabot PRs #15/#16/#17
+        # — that pattern is now a CI gate rather than something an
+        # operator only sees at merge time.
+        run: npm ci --dry-run

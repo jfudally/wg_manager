@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -51,6 +51,7 @@ help:
 	@echo "  bandit         Run bandit -ll over src/ (Python SAST)"
 	@echo "  semgrep        Run semgrep p/python over src/"
 	@echo "  security       Run every Phase 2e security gate locally"
+	@echo "  lockfiles      Verify pyproject.toml/uv.lock + web/package*.json parity (Phase 2e cycle 3)"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -302,3 +303,12 @@ semgrep:
 # circuits the rest. gitleaks/bandit are sub-second; the audits and
 # semgrep are seconds-to-tens-of-seconds depending on caches.
 security: gitleaks bandit pip-audit npm-audit semgrep
+
+# Phase 2e reproducible-builds cycle 3 — verify pyproject.toml /
+# uv.lock and web/package.json / web/package-lock.json haven't drifted
+# apart. Matches the .github/workflows/lockfile.yml gate byte-for-byte
+# so a local pre-push reproduces a CI failure without round-tripping
+# through GitHub.
+lockfiles:
+	uv lock --check
+	cd web && npm ci --dry-run
