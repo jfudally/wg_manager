@@ -40,10 +40,11 @@ services:
   # volume is mounted at ``/vault/logs/`` so that ``make
   # vault-audit-bootstrap`` (which enables a Vault file audit device
   # writing to ``/vault/logs/audit.log``) has a writable path that
-  # survives container restarts. Cycle 2 mounts the same volume into a
-  # ``vector`` sidecar that tails the file off-host. A production Vault
-  # story (file/raft storage, auto-unseal, off-host audit shipping) is
-  # tracked in docs/vault-cookbook.md.
+  # survives container restarts. Cycle 2 (below, ``vector`` service)
+  # mounts the same volume read-only into a sidecar that tails the file
+  # and echoes records to its own stdout for dev visibility. A
+  # production Vault story (file/raft storage, auto-unseal, off-host
+  # audit shipping) is tracked in docs/vault-cookbook.md.
   vault:
     image: hashicorp/vault:1.18
     container_name: wg_manager_vault
@@ -65,6 +66,29 @@ services:
       timeout: 3s
       retries: 10
       start_period: 5s
+
+  # Phase 2e audit-log cycle 2 — vector sidecar that tails the Vault
+  # file audit device (cycle 1) and echoes every record to its own
+  # stdout. ``docker compose logs vector`` is then the live audit
+  # feed. The audit volume is mounted **read-only** so the sidecar
+  # can never rewrite the trail it is shipping (defence in depth on
+  # top of the kernel-level :ro guarantee). Cycle 3 swaps in
+  # production-grade sinks (Loki / CloudWatch / S3 + Object Lock)
+  # alongside the console sink — see docs/vault-cookbook.md §6.
+  #
+  # Image pin: bump via the dependabot ``docker`` ecosystem (added in
+  # the same cycle this service lands) so a supply-chain swap is
+  # PR-reviewable rather than a silent ``compose pull``.
+  vector:
+    image: timberio/vector:0.41.1-alpine
+    container_name: wg_manager_vector
+    restart: unless-stopped
+    depends_on:
+      vault:
+        condition: service_healthy
+    volumes:
+      - wg_manager_vault_audit_logs:/vault/logs:ro
+      - ./docker/vector/vault-audit.toml:/etc/vector/vector.toml:ro
 
   # Phase 2c CP5 — dockerised sshd that the ``tests/e2e/`` suite
   # provisions against. Gated behind the ``e2e`` compose profile so

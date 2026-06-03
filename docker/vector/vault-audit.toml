@@ -1,0 +1,40 @@
+# Phase 2e audit-log cycle 2 — vector sidecar config.
+#
+# Tail the Vault file audit device (cycle 1 wires
+# /vault/logs/audit.log via the wg_manager_vault_audit_logs named
+# volume) and echo every record to the sidecar's own stdout. Pair
+# with the read-only mount of the audit volume in docker-compose.yml:
+# the sidecar can READ the audit file but never WRITE to it, so the
+# trail it is shipping cannot be corrupted by this process.
+#
+# Dev-visibility shape: ``docker compose logs vector`` becomes the
+# live audit feed an operator can watch during a session, without
+# having to ``docker compose exec vault tail /vault/logs/audit.log``
+# by hand. Production sinks (Loki, CloudWatch, S3 + Object Lock)
+# land in cycle 3 — that is when the ``[sinks.stdout]`` block is
+# joined (not replaced) by a remote sink.
+#
+# Restart semantics: vector's default data_dir lives inside the
+# container filesystem, so a ``docker compose down && up`` resets
+# the file-tail checkpoint and ``read_from = "beginning"`` re-emits
+# the full audit history to stdout. That is intentional for dev:
+# the audit volume persists (cycle 1) so on a fresh ``up`` the
+# operator sees every record from the start of the volume rather
+# than a silent gap. A simple ``docker compose restart vector``
+# keeps the checkpoint and resumes from where it left off.
+
+[sources.vault_audit]
+type = "file"
+include = ["/vault/logs/audit.log"]
+read_from = "beginning"
+
+# Vault writes one JSON record per line. We pass them through as-is
+# (encoding.codec = "text") so the operator-visible stream stays
+# byte-for-byte identical to the on-disk audit file — easy to grep,
+# easy to diff against tail output. JSON-parsing transforms land in
+# cycle 3 when downstream sinks (Loki labels, CloudWatch fields)
+# need structured access.
+[sinks.stdout]
+type = "console"
+inputs = ["vault_audit"]
+encoding.codec = "text"

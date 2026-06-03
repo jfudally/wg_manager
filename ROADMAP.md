@@ -1104,8 +1104,8 @@ you'd actually deploy.
   low-stakes version pins. Commit prefix `chore(deps):` matches the
   existing manual-bump convention so the supply-chain audit trail
   in `git log` stays uniform.
-- **Vault audit log** `[~]` (audit-log cycle 1 shipped 2026-06-03;
-  cycles 2-3 pending). Three-cycle plan:
+- **Vault audit log** `[~]` (audit-log cycles 1-2 shipped 2026-06-03;
+  cycle 3 pending). Three-cycle plan:
   - **Cycle 1 `[x]`** (2026-06-03) — file audit device + persistent
     volume. New module
     [`wg_manager.vault_audit`](src/wg_manager/vault_audit.py) ships
@@ -1126,9 +1126,40 @@ you'd actually deploy.
     (enables-when-empty, idempotent re-run, refuses-different-type,
     respects-custom-paths, tolerates both hvac payload shapes,
     pins the two default-path constants).
-  - **Cycle 2 `[ ]`** — `vector` sidecar in compose, tails
-    `/vault/logs/audit.log` and emits to its own stdout for dev
-    visibility. Same named volume mounted read-only.
+  - **Cycle 2 `[x]`** (2026-06-03) — `vector` sidecar in compose.
+    New [`docker/vector/vault-audit.toml`](docker/vector/vault-audit.toml)
+    config: a `file` source tails `/vault/logs/audit.log` with
+    `read_from = "beginning"`, feeding a `console` sink with
+    `encoding.codec = "text"` so the operator-visible stream is
+    byte-for-byte identical to the on-disk audit file
+    (grep-friendly, diff-friendly; JSON-parsing transforms land in
+    cycle 3 when downstream sinks need structured access). New
+    `vector` compose service (`timberio/vector:0.41.1-alpine`,
+    explicitly pinned — never `:latest`) with `depends_on: vault:
+    condition: service_healthy` so the sidecar waits for Vault's
+    healthcheck before opening the file; the cycle 1 named volume
+    mounted **`:ro`** at `/vault/logs/` (defence in depth on top of
+    the kernel-level guarantee — the sidecar must never rewrite the
+    trail it is shipping); the config TOML bind-mounted `:ro` at
+    `/etc/vector/vector.toml`. `docker compose logs vector` is now
+    the live audit feed — no `docker compose exec vault tail …`
+    ceremony. Cookbook §6 grew a new "Cycle 2 — vector sidecar"
+    subsection walking the bring-up, verification flow, the `:ro`
+    design choice, and the `read_from = "beginning"` restart
+    semantics (a `compose down && up` re-emits the whole audit
+    history because vector's data_dir lives in the container
+    filesystem; a plain `compose restart vector` keeps the
+    checkpoint). Tests: 9 cases in
+    [`tests/test_vector_sidecar.py`](tests/test_vector_sidecar.py)
+    pin the operator-facing contract — compose service exists,
+    image pinned (not `:latest`), audit volume `:ro`, config `:ro`,
+    `depends_on vault` (accepting both list and condition-dict
+    syntaxes), cycle 1's named volume survives, file source path is
+    correct, exactly-one console sink fed from the file source, no
+    sink writes back into `/vault/logs/`. Pure parse-and-assert so
+    the fast `make test` invocation stays hermetic; the live-vector
+    smoke flow lives in the cookbook. Backend pytest 431 passed
+    (was 422).
   - **Cycle 3 `[ ]`** — Production-path docs (journald, syslog,
     Loki / CloudWatch / S3+Object-Lock sinks). Acceptance-criterion
     closer for the Phase 2e Vault-audit bullet.

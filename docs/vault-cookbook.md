@@ -708,12 +708,12 @@ Vault audit devices are the canonical record of every API call the
 server processes — admin actions, key writes, cert issuance, the lot.
 Phase 2e audit-log work ships off-host audit in three cycles:
 
-- **Cycle 1 (this section)** — enable a Vault file audit device
-  writing to a persistent volume.
+- **Cycle 1** — enable a Vault file audit device writing to a
+  persistent volume.
 - **Cycle 2** — add a `vector` sidecar to docker-compose that tails
   the audit file and emits to its own stdout for dev visibility.
-- **Cycle 3** — document production paths (journald, syslog, SIEM
-  connectors) for off-host shipping.
+- **Cycle 3** (open) — document production paths (journald, syslog,
+  SIEM connectors) for off-host shipping.
 
 ### Cycle 1 — file audit device
 
@@ -760,14 +760,61 @@ Vault's state and the audit device must be re-enabled with another
 the named volume across restarts; if you want a clean log, also
 `docker volume rm wg_manager_vault_audit_logs`.
 
+### Cycle 2 — vector sidecar
+
+Cycle 2 adds a [`timberio/vector`](https://vector.dev/)-based sidecar
+to `docker-compose.yml` that tails `/vault/logs/audit.log` and echoes
+every record to its own stdout. `docker compose logs vector` is then
+the live audit feed an operator can watch during a session —
+no `docker compose exec vault tail …` ceremony.
+
+Bring it up (after cycle 1's `make vault-audit-bootstrap`):
+
+```bash
+docker compose up -d vector
+
+# Write to Vault to generate an audit record:
+docker compose exec vault vault kv put secret/cycle-2-test foo=bar
+
+# Read the audit feed off the sidecar's stdout:
+docker compose logs vector
+```
+
+Each line is one JSON record straight from Vault's audit log — the
+sidecar uses `encoding.codec = "text"` so the operator-visible stream
+is byte-for-byte identical to the on-disk file. That keeps `grep`
+and `diff` workflows trivial; the JSON parsing that downstream sinks
+need (Loki labels, CloudWatch fields) lands in cycle 3 as a
+`transforms.parse` block, not as a swap of this sink.
+
+The config lives at
+[`docker/vector/vault-audit.toml`](../docker/vector/vault-audit.toml)
+and is bind-mounted into the container at
+`/etc/vector/vector.toml` (`:ro`). The `wg_manager_vault_audit_logs`
+named volume is mounted into the sidecar at `/vault/logs/`
+**read-only** — defence in depth on top of the kernel-level guarantee
+so the sidecar can never rewrite the trail it is shipping. The
+`depends_on: vault: condition: service_healthy` clause means vector
+waits for Vault's healthcheck to pass before starting, avoiding a
+race against the audit-log file's appearance.
+
+Restart semantics: vector's default `data_dir` lives inside the
+container filesystem, so a `docker compose down && up` resets the
+file-tail checkpoint and `read_from = "beginning"` re-emits the full
+audit history to stdout. That is **intentional** for dev: the audit
+volume persists (cycle 1) so on a fresh `up` the operator sees every
+record from the start of the volume rather than a silent gap. A
+plain `docker compose restart vector` keeps the checkpoint and
+resumes from where it left off.
+
 ### Production wire-up
 
-In production the file audit device is one of several options. The
-matching production-path docs land in cycle 3 of this work-stream.
-Short version: a `vector` / `fluent-bit` / `promtail` sidecar tails
-the file and ships to a tamper-evident store (Loki, CloudWatch,
-S3 + Object Lock). The Vault audit log's hash-chain means downstream
-corruption is detectable by replaying the chain.
+Production swaps in (or joins, alongside the console sink) a sink
+that ships to a tamper-evident store: Loki, CloudWatch, S3 +
+Object Lock are all reasonable. The Vault audit log's hash-chain
+means downstream corruption is detectable by replaying the chain.
+The matching production-path docs — with concrete vector sink
+stanzas for each — land in cycle 3 of this work-stream.
 
 ## 7. Open operator concerns (deferred to Phase 2e)
 
