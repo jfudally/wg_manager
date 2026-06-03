@@ -192,3 +192,53 @@ The verify step pins two things:
   GitHub Actions' OIDC issuer. Catches: a Fulcio cert from a
   different OIDC provider (Google, GitLab, ...) being passed off
   as a release signature.
+
+## Software Bill of Materials (Phase 2f cycle 4)
+
+Every release ships two CycloneDX 1.5 SBOMs — one per image —
+covering the runtime dep closure of each image. The SBOMs are
+delivered two ways:
+
+- **As release assets.** Each GitHub release attaches
+  ``sbom-api.cdx.json`` (Python deps from the synced ``.venv``,
+  ``--no-dev``) and ``sbom-web.cdx.json`` (Node deps from
+  ``web/package-lock.json``, ``--omit dev``). Click the asset link
+  on the release page, or `gh release download v0.1.0 --pattern '*.cdx.json'`.
+- **As in-toto attestations on the image.** The release workflow
+  runs ``cosign attest --type cyclonedx --predicate sbom-*.cdx.json
+  <image>@<digest>`` against each pushed image. Same Fulcio
+  identity as the signature, so a future verify-attestation gate
+  can prove SBOM provenance from the canonical workflow path.
+
+### Verifying the SBOM attestation
+
+```bash
+cosign verify-attestation \
+    --type cyclonedx \
+    --certificate-identity-regexp \
+        'https://github.com/<owner>/wg_manager/.github/workflows/release.yml@.*' \
+    --certificate-oidc-issuer \
+        'https://token.actions.githubusercontent.com' \
+    ghcr.io/<owner>/wg-manager:v0.1.0
+```
+
+A successful verify returns the in-toto envelope with the
+embedded CycloneDX payload — pipe through ``jq -r
+'.payload | @base64d | fromjson | .predicate'`` to see the SBOM
+itself.
+
+### Diffing two releases
+
+The CycloneDX SBOM round-trips through any SBOM tool that
+consumes CycloneDX. To compare two releases for added /
+removed deps:
+
+```bash
+gh release download v0.1.0 --pattern 'sbom-api.cdx.json' --dir /tmp/old
+gh release download v0.2.0 --pattern 'sbom-api.cdx.json' --dir /tmp/new
+jq -r '.components[] | "\(.name)@\(.version)"' /tmp/old/sbom-api.cdx.json | sort > /tmp/old.txt
+jq -r '.components[] | "\(.name)@\(.version)"' /tmp/new/sbom-api.cdx.json | sort > /tmp/new.txt
+diff /tmp/old.txt /tmp/new.txt
+```
+
+Same shape for ``sbom-web.cdx.json``.

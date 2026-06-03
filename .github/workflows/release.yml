@@ -129,6 +129,51 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
+      - name: Install Python 3.13 (for cyclonedx-py)
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Sync runtime deps for SBOM walk
+        # ``uv sync --frozen --no-dev`` matches the production image's
+        # dep set — the SBOM describes the running-image content, not
+        # the dev environment.
+        run: uv sync --frozen --no-dev
+
+      - name: Generate Python SBOM (cyclonedx-py)
+        # ``cyclonedx-py environment`` walks the .venv we just synced
+        # and emits a CycloneDX 1.5 JSON SBOM matching the API +
+        # worker image's runtime closure.
+        run: |
+          uv run --with cyclonedx-bom cyclonedx-py environment .venv \
+            --output-format JSON \
+            --output-file sbom-api.cdx.json
+
+      - name: Attest API image SBOM (cosign in-toto)
+        # ``cosign attest --type cyclonedx`` binds the SBOM to the
+        # image digest as an in-toto attestation. Same Fulcio identity
+        # the sign step uses, so a future cosign verify-attestation
+        # gate can prove SBOM provenance from the canonical workflow
+        # path without re-authenticating.
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_API }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign attest --yes \
+            --type cyclonedx \
+            --predicate sbom-api.cdx.json \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Upload API SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-api
+          path: sbom-api.cdx.json
+          retention-days: 30
+
   build-and-push-web:
     name: Build + push dashboard image
     runs-on: ubuntu-latest
@@ -180,6 +225,43 @@ jobs:
           DIGEST: ${{ steps.push.outputs.digest }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
 
+      - name: Install Node 22 (for cyclonedx-npm)
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+
+      - name: Install npm deps for SBOM walk
+        # cyclonedx-npm reads from the resolved node_modules tree —
+        # ``npm ci`` against the lockfile matches the production
+        # image's dep set.
+        working-directory: web
+        run: npm ci
+
+      - name: Generate Node SBOM (cyclonedx-npm)
+        working-directory: web
+        run: |
+          npx --yes @cyclonedx/cyclonedx-npm \
+            --omit dev \
+            --output-format JSON \
+            --output-file ../sbom-web.cdx.json
+
+      - name: Attest dashboard image SBOM (cosign in-toto)
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_WEB }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          cosign attest --yes \
+            --type cyclonedx \
+            --predicate sbom-web.cdx.json \
+            "${IMAGE}@${DIGEST}"
+
+      - name: Upload dashboard SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-web
+          path: sbom-web.cdx.json
+          retention-days: 30
+
   release:
     name: Create GitHub release
     runs-on: ubuntu-latest
@@ -191,14 +273,27 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v6
 
+      - name: Download API SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-api
+          path: ./sbom
+
+      - name: Download dashboard SBOM
+        uses: actions/download-artifact@v4
+        with:
+          name: sbom-web
+          path: ./sbom
+
       - name: Create release ${{ github.ref_name }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES: ${{ needs.extract-notes.outputs.notes }}
         run: |
           set -euo pipefail
-          # The release body is the CHANGELOG section, plus a footer
-          # pointing at the published images.
+          # The release body is the CHANGELOG section + a footer that
+          # points at the published images and explains the bundled
+          # SBOM + cosign attestation surface.
           cat > release-body.md <<'BODY'
           ${{ needs.extract-notes.outputs.notes }}
 
@@ -210,9 +305,34 @@ jobs:
           - `ghcr.io/${{ github.repository }}-web:${{ github.ref_name }}` — dashboard
 
           Pull either with a granularity-appropriate tag (`vX.Y.Z`, `vX.Y`, `vX`, or `latest`).
+
+          ### Supply-chain attestation
+
+          Both images are signed via cosign keyless OIDC and carry an
+          in-toto CycloneDX SBOM attestation. Verify with:
+
+          ```bash
+          cosign verify \
+              --certificate-identity-regexp \
+                  'https://github.com/${{ github.repository }}/.github/workflows/release.yml@.*' \
+              --certificate-oidc-issuer \
+                  'https://token.actions.githubusercontent.com' \
+              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          ```
+
+          The SBOMs are also attached as release assets:
+
+          - `sbom-api.cdx.json` — CycloneDX SBOM of the API + worker image's Python deps
+          - `sbom-web.cdx.json` — CycloneDX SBOM of the dashboard image's Node deps
           BODY
 
+          # ``gh release create … <files…>`` attaches every positional
+          # file as a release asset — the SBOMs land alongside the
+          # release notes for direct download (the explicit Phase 2e
+          # ROADMAP requirement).
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --notes-file release-body.md \
-            --verify-tag
+            --verify-tag \
+            ./sbom/sbom-api.cdx.json \
+            ./sbom/sbom-web.cdx.json
