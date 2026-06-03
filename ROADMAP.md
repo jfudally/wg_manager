@@ -1335,7 +1335,29 @@ you'd actually deploy.
   (shipped 2026-06-03 — runbooks cycle 1).
 - A SOC 2-style "evidence pack" is generatable via `make evidence` —
   pulls last 30 days of audit logs, current cert inventory, and Vault
-  audit hash chain into a tarball. (Stretch; useful for the showcase.)
+  audit log slice + structural integrity report into a tarball.
+  Shipped 2026-06-03 (evidence cycle 4): new
+  [`wg-manager evidence pack`](src/wg_manager/cli.py) CLI command +
+  [`wg_manager.evidence`](src/wg_manager/evidence.py) module assemble
+  a tar.gz containing ``audit_events.json`` (auditevent table
+  filtered to last N days), ``certificates.json`` + ``operators.json``
+  (full inventory of the cert and operator registries),
+  ``vault_audit.log`` (Vault audit file sliced to the same window),
+  ``vault_audit_integrity.json`` (per-line JSON parseability +
+  ``time`` field presence + request/response ``request.id`` pairing
+  report — Vault does not ship a cryptographic chain across audit
+  records, so the report is honest about being structural-only),
+  ``system.json`` (wg-manager version, git commit, alembic head),
+  ``MANIFEST.md`` (operator-facing index), and ``SHA256SUMS`` (gnu-
+  coreutils-shape per-file hashes so the tarball is internally
+  self-verifying via ``sha256sum -c``). New ``make evidence`` Make
+  target wraps the CLI with a timestamped output path under
+  ``evidence/``. 18 tests across
+  [`tests/test_evidence_pack.py`](tests/test_evidence_pack.py) (13
+  cases) + [`tests/test_makefile_evidence.py`](tests/test_makefile_evidence.py)
+  (5 cases) pin tarball shape, content, since-days filter, integrity
+  failure modes (malformed JSON, missing file), and MANIFEST +
+  SHA256SUMS self-verification.
 
 ---
 

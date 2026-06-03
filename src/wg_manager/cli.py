@@ -57,6 +57,14 @@ operators_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+evidence_app = typer.Typer(
+    help=(
+        "Generate SOC 2-style evidence packs (Phase 2e cycle 4). "
+        "Pulls audit events, cert + operator inventory, Vault audit "
+        "log slice, and deployment context into a tarball."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(keys_app, name="keys")
 app.add_typer(servers_app, name="servers")
 app.add_typer(clients_app, name="clients")
@@ -65,6 +73,7 @@ app.add_typer(db_app, name="db")
 app.add_typer(crypto_app, name="crypto")
 app.add_typer(certs_app, name="certs")
 app.add_typer(operators_app, name="operators")
+app.add_typer(evidence_app, name="evidence")
 
 
 def _make_http_client(api_url: str) -> httpx.Client:
@@ -2043,6 +2052,71 @@ def bootstrap_host_cmd(
         f"cert serial={cert.serial} "
         f"valid_until={cert.valid_before.isoformat()}"
     )
+
+
+# ---------------------------------------------------------------------------
+# evidence pack — Phase 2e cycle 4
+# ---------------------------------------------------------------------------
+
+
+@evidence_app.command("pack")
+def evidence_pack(
+    output: Path = typer.Option(
+        ...,
+        "--output",
+        "-o",
+        help="Path to write the tar.gz evidence pack.",
+    ),
+    since_days: int = typer.Option(
+        30,
+        "--since-days",
+        help=(
+            "Window applied to time-filtered sources (auditevent table + "
+            "Vault audit log slice). The ROADMAP default is 30."
+        ),
+    ),
+    vault_audit_log: Path = typer.Option(
+        Path("/vault/logs/audit.log"),
+        "--vault-audit-log",
+        help=(
+            "Path to the Vault audit log file. Default matches the path "
+            "the docker-compose ``vault`` service mounts. A missing file "
+            "is recorded in vault_audit_integrity.json rather than "
+            "failing the pack — production stacks may not co-locate the "
+            "log with the host running ``make evidence``."
+        ),
+    ),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Generate a SOC 2-style evidence pack as a tar.gz.
+
+    Pulls together four sources — auditevent table (last N days), the
+    full certificate + operator registries, and a Vault audit log
+    slice with a structural integrity report — plus a deployment-
+    context snapshot and a MANIFEST + SHA256SUMS for tamper-evidence.
+
+    The tarball is self-contained: extract and run ``sha256sum -c
+    SHA256SUMS`` inside the pack directory to verify every file.
+    """
+    from sqlmodel import Session
+
+    from wg_manager.evidence import build_pack
+
+    engine = _get_engine(database_url)
+    with Session(engine) as session:
+        build_pack(
+            output,
+            session=session,
+            since_days=since_days,
+            vault_audit_log=vault_audit_log,
+        )
+
+    typer.echo(f"evidence pack written to {output}")
 
 
 def main() -> None:  # pragma: no cover - thin entrypoint

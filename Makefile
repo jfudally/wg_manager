@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -52,6 +52,7 @@ help:
 	@echo "  semgrep        Run semgrep p/python over src/"
 	@echo "  security       Run every Phase 2e security gate locally"
 	@echo "  lockfiles      Verify pyproject.toml/uv.lock + web/package*.json parity (Phase 2e cycle 3)"
+	@echo "  evidence       Generate SOC 2-style evidence pack into evidence/ (Phase 2e cycle 4)"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -312,3 +313,18 @@ security: gitleaks bandit pip-audit npm-audit semgrep
 lockfiles:
 	uv lock --check
 	cd web && npm ci --dry-run
+
+# Phase 2e cycle 4 — SOC 2-style evidence pack. Walks the auditevent
+# table (last 30 days), the certificate + operator registries, and the
+# Vault audit log slice into a tar.gz under evidence/. The output is
+# timestamped so successive invocations don't clobber each other; an
+# operator's cron drops them onto an external store via their own
+# shipper. The default --vault-audit-log path matches the docker-
+# compose vault service mount; production deployments override.
+evidence:
+	@mkdir -p evidence
+	@ts=$$(date -u +%Y%m%dT%H%M%SZ); \
+	$(WG_MANAGER) evidence pack \
+		--output evidence/evidence-pack-$$ts.tar.gz \
+		--since-days 30 \
+		&& echo "evidence pack written to evidence/evidence-pack-$$ts.tar.gz"
