@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks security
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -42,6 +42,8 @@ help:
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
+	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
+	@echo "  security       Run every Phase 2e security gate locally"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -223,3 +225,27 @@ e2e-down:
 
 e2e-logs:
 	docker compose --profile e2e logs -f sshd-e2e
+
+# ---------------------------------------------------------------------------
+# Phase 2e — security gates
+# ---------------------------------------------------------------------------
+#
+# Each gate has its own target so a developer can repro a single CI
+# failure locally without paying the rest. ``make security`` runs the
+# full set. Targets prefer a locally-installed binary and bail out with
+# an install hint rather than silently no-op-ing.
+
+gitleaks:
+	@if ! command -v gitleaks >/dev/null 2>&1; then \
+		echo "ERROR: gitleaks not installed."; \
+		echo "       macOS:  brew install gitleaks"; \
+		echo "       Linux:  https://github.com/gitleaks/gitleaks#installing"; \
+		echo "       The CI workflow pins v8.30.1; match locally if you want byte-for-byte parity."; \
+		exit 2; \
+	fi
+	gitleaks detect --source . --no-banner --redact
+
+# Aggregate target. Extended as cycles 3+ land (pip-audit, npm-audit,
+# bandit, semgrep). Order is cheapest-first so a fast failure short-
+# circuits the rest.
+security: gitleaks
