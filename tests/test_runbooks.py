@@ -215,6 +215,14 @@ KEY_COMPROMISE_REQUIRED_COMMANDS = (
     "transit/keys/wg-manager/rotate",
     "make ssh-ca-bootstrap",
     "make pki-bootstrap",
+    # Surfaced by the cycle 1 smoke test: the Transit key
+    # ``transit/keys/wg-manager`` is not auto-created by any current
+    # ``make`` target. On a fresh dev stack the rotation command above
+    # fails with ``no key`` until the engine + key are bootstrapped.
+    # Pin the bootstrap command + cookbook pointer so a future
+    # refactor that removes either trips the test.
+    "vault secrets enable -path=transit transit",
+    "vault write -f transit/keys/wg-manager",
 )
 
 VAULT_DOWN_REQUIRED_COMMANDS = (
@@ -223,6 +231,12 @@ VAULT_DOWN_REQUIRED_COMMANDS = (
     "vault operator raft snapshot",
     "make vault-up",
     "docker compose",
+    # Same Transit-bootstrap gap surfaced in the cycle 1 smoke test:
+    # Recovery A (container down → state wiped) leaves Transit
+    # uninitialised, so the runbook must walk the operator through
+    # re-creating it before any encrypted-row touch will succeed.
+    "vault secrets enable -path=transit transit",
+    "vault write -f transit/keys/wg-manager",
 )
 
 
