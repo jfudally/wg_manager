@@ -1645,7 +1645,7 @@ provisioning path are the three deliverables.
   reference the canonical metrics, every alert has expr +
   annotations.summary).
 
-### Phase 3b — Multi-tenant operator model `[~]`
+### Phase 3b — Multi-tenant operator model `[~]` (cycles 1-2 shipped)
 
 **Design decisions** (locked 2026-06-03):
 
@@ -1665,19 +1665,76 @@ provisioning path are the three deliverables.
 
 Five cycles:
 
-- **Cycle 1 `[~]`** — Schema groundwork. New ``Tenant`` SQLModel
-  + Alembic 0014 creates the table, inserts a ``default`` tenant
-  (id=1), adds nullable ``tenant_id`` FK to ``operator`` /
-  ``server`` / ``client`` / ``sshkey`` / ``certificate`` /
-  ``auditevent``, backfills every existing row to the default
-  tenant. **Zero behaviour change** — no auth filter, no routing
-  change. Operators upgrade without re-issuing certs or
-  re-bootstrapping.
-- **Cycle 2 `[ ]`** — ``OperatorTenant`` join table. Per-tenant
-  role (``admin`` / ``operator`` / ``auditor``). CLI + API
-  (admin-only) to attach / detach operators to / from tenants.
+- **Cycle 1 `[x]`** (2026-06-03) — Schema groundwork. New
+  ``Tenant`` SQLModel + Alembic 0014 creates the table, inserts a
+  ``default`` tenant (id=1), adds nullable ``tenant_id`` FK to
+  ``operator`` / ``server`` / ``client`` / ``sshkey`` /
+  ``certificate`` / ``auditevent``, backfills every existing row
+  to the default tenant. **Zero behaviour change** — no auth
+  filter, no routing change. Operators upgrade without re-issuing
+  certs or re-bootstrapping.
+- **Cycle 2 `[x]`** (2026-06-03) — ``OperatorTenant`` join table.
+  Per-tenant role (``admin`` / ``operator`` / ``auditor``). CLI +
+  API (admin-only) to attach / detach operators to / from tenants.
   Default tenant gets every existing operator with their existing
   global role mirrored as the per-tenant role.
+
+  Shipped:
+  - **Model + Alembic 0015.** New
+    [`OperatorTenant`](src/wg_manager/models.py) SQLModel —
+    surrogate PK + ``operator_id`` / ``tenant_id`` FKs + per-row
+    :class:`OperatorRole` + ``created_at``. Unique constraint on
+    ``(operator_id, tenant_id)`` so a duplicate attach is rejected
+    at the DB layer as the last line of defence. Alembic 0015
+    creates the join table and back-fills one row per existing
+    operator pointing at the default tenant (id=1) and mirroring
+    the operator's existing global role.
+  - **CLI surface.** New ``wg-manager tenants create/list/get`` +
+    ``wg-manager operators attach-tenant/detach-tenant/list-tenants``
+    direct-DB subcommands. Mirrors the ``wg-manager operators
+    add/list`` shape Phase 2d CP3.3 established as the canonical
+    bootstrap path — works before the API listener is up.
+  - **HTTP surface.** New
+    [`wg_manager.routers.tenants`](src/wg_manager/routers/tenants.py)
+    router: ``GET /tenants``, ``GET /tenants/{slug}`` (admin or
+    auditor); ``POST /tenants`` (admin); ``POST /tenants/{slug}/operators``,
+    ``DELETE /tenants/{slug}/operators/{cn}`` (admin);
+    ``GET /tenants/{slug}/operators`` (admin or auditor). Role
+    gating uses router-local ``_RequireAdmin`` /
+    ``_RequireAdminOrAuditor`` deps composed on top of
+    ``_get_operator`` — same shape as :mod:`wg_manager.routers.certs`,
+    so the test override pattern is uniform across the API surface.
+    Wired into ``main.create_app``.
+  - **Dashboard parity.** New
+    [`web/app/tenants/page.tsx`](web/app/tenants/page.tsx) page
+    with three vertically stacked sections: tenant inventory with
+    per-row Select buttons, Create form (slug derives from name
+    when blank), and a per-tenant detail panel rendering the
+    attached-operator table with per-tenant role badges, an Attach
+    form, and per-row Detach buttons. New ``Tenants`` nav entry;
+    new ``Tenant``, ``TenantCreate``, ``OperatorTenantRead``,
+    ``OperatorTenantAttachRequest`` types in
+    [`web/lib/types.ts`](web/lib/types.ts); matching ``api.listTenants``
+    / ``getTenant`` / ``createTenant`` / ``attachOperatorToTenant``
+    / ``detachOperatorFromTenant`` / ``listTenantOperators`` methods
+    in [`web/lib/api.ts`](web/lib/api.ts).
+  - Tests: 16 alembic-0015 cases (table shape + FK references +
+    unique constraint at the DB layer + per-row backfill from each
+    of the three operator roles + the two-operator sanity case +
+    downgrade round-trip + idempotent upgrade-downgrade-upgrade +
+    model-surface defaults + repr safety); 16 CLI cases
+    (``tests/test_cli_tenants.py``); 21 API cases
+    (``tests/test_tenants_api.py``); 6 vitest specs
+    (``web/__tests__/tenants.test.tsx``). Backend pytest 824/824
+    in ``local`` mode (was 786 on cycle 1's merge); vitest 52/52;
+    ``tsc --noEmit`` clean. Cycle 2 ships **zero behaviour
+    change** for the auth middleware — the join is recorded but
+    not yet consulted; cycle 3 flips per-tenant enforcement on.
+  - Fix-along: ``tests/test_alembic_0014.py``'s downgrade-round-trip
+    tests pinned to the explicit pre-revision name instead of
+    ``-1``; ``-1`` silently turns into "downgrade only the topmost
+    revision" once 0015 lands on top, which would have let the
+    test pass while testing nothing.
 - **Cycle 3 `[ ]`** — Tenant-aware filtering. Middleware reads the
   operator's tenant set from the join table + filters every list
   query. Mutating endpoints assert the operator has per-tenant

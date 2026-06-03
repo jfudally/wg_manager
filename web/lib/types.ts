@@ -464,3 +464,50 @@ export interface AuditEventList {
   limit: number;
   offset: number;
 }
+
+// ---------------------------------------------------------------------------
+// Tenants — Phase 3b cycle 2
+// ---------------------------------------------------------------------------
+
+/**
+ * One tenant namespace. Mirrors `TenantRead` in
+ * `src/wg_manager/schemas.py`. The `default` tenant (`id=1`,
+ * `slug='default'`) is created by Alembic 0014; every Phase-3b-cycle-1
+ * row is back-filled to point at it.
+ */
+export interface Tenant {
+  id: number;
+  name: string;
+  slug: string;
+  /** ISO-8601 UTC timestamp. */
+  created_at: string;
+}
+
+/** Body for `POST /tenants`. Slug derives from `name` when omitted. */
+export interface TenantCreate {
+  name: string;
+  slug?: string;
+}
+
+/**
+ * One operator ↔ tenant join. Mirrors `OperatorTenantRead`. Exposes the
+ * resolved tenant slug / name + operator CN so the dashboard renders
+ * the table without a second lookup against `Tenant` / `Operator`.
+ */
+export interface OperatorTenantRead {
+  id: number;
+  tenant_id: number;
+  tenant_slug: string;
+  tenant_name: string;
+  operator_id: number;
+  operator_cn: string;
+  role: OperatorRole;
+  /** ISO-8601 UTC timestamp the join was created. */
+  created_at: string;
+}
+
+/** Body for `POST /tenants/{slug}/operators`. */
+export interface OperatorTenantAttachRequest {
+  cn: string;
+  role?: OperatorRole;
+}

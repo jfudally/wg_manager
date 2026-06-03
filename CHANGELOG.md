@@ -10,6 +10,67 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3b cycle 2 — `OperatorTenant` join + tenant CRUD surface.**
+  Cycle 1 shipped the `Tenant` row + nullable FKs. Cycle 2 layers the
+  many-to-many association: one operator can be attached to many
+  tenants, one tenant can host many operators, and the **per-tenant
+  role** lives on the join — so a user can be `admin` in their own
+  tenant and `auditor` in another without two separate operator
+  rows. **Zero behaviour change for callers** — the auth middleware
+  still consults the operator's *global* role; cycle 3 is what
+  flips per-tenant enforcement on.
+
+  - New `OperatorTenant` SQLModel: `id` / `operator_id` FK /
+    `tenant_id` FK / `role` / `created_at`. Unique constraint on
+    `(operator_id, tenant_id)` so a duplicate attach is rejected at
+    the DB layer as the last line of defence.
+  - Alembic 0015 creates the join table + back-fills one row per
+    existing operator pointing at the default tenant (id=1) and
+    mirroring the operator's existing global role as the
+    per-tenant role. Idempotent upgrade → downgrade → upgrade
+    round-trip.
+  - **CLI surface.** New `wg-manager tenants create/list/get` +
+    `wg-manager operators attach-tenant/detach-tenant/list-tenants`
+    direct-DB subcommands. Mirrors the `wg-manager operators
+    add/list` shape (works before the API listener is up — same
+    canonical bootstrap path).
+  - **HTTP surface.** New `/tenants` router exposes the CLI shape
+    over mTLS: `GET /tenants`, `GET /tenants/{slug}` (admin or
+    auditor); `POST /tenants` (admin); `POST /tenants/{slug}/operators`,
+    `DELETE /tenants/{slug}/operators/{cn}` (admin);
+    `GET /tenants/{slug}/operators` (admin or auditor). Role
+    gating mirrors `/certs` byte-for-byte.
+  - **Dashboard parity.** New `web/app/tenants` page with the
+    tenant inventory table, a Create form, a per-tenant detail
+    panel rendering the attached-operator table with per-tenant
+    role badges, an Attach form, and per-row Detach buttons. New
+    "Tenants" nav entry; new `Tenant`, `TenantCreate`,
+    `OperatorTenantRead`, `OperatorTenantAttachRequest` types and
+    matching `api.*Tenant*` methods.
+  - 16 new alembic test cases (`tests/test_alembic_0015.py`) — join
+    table shape, FK references, unique constraint at the DB layer,
+    per-row backfill from each of the three operator roles + the
+    two-operator-count sanity, downgrade + idempotent round-trip,
+    model-surface defaults + repr safety.
+  - 16 new CLI test cases (`tests/test_cli_tenants.py`) — tenants
+    create / list / get happy + failure paths, slug derivation from
+    name, duplicate-slug refused; operators attach/detach/list-tenants
+    happy + unknown-cn / unknown-tenant / duplicate-pair errors.
+  - 21 new API test cases (`tests/test_tenants_api.py`) — list +
+    detail + create (admin / auditor / plain operator role gates;
+    duplicate slug → 409; slug-from-name derivation); attach
+    (happy / unknown-cn → 422 / unknown-tenant → 404 / duplicate
+    → 409 / default-role / auditor 403); detach (happy / unknown
+    pair → 404 / auditor 403); per-tenant operator list.
+  - 6 new vitest specs (`web/__tests__/tenants.test.tsx`) — list
+    render, empty state, create form POST, per-tenant detail
+    operator table, attach form POST, detach DELETE.
+  - Fix-along: `tests/test_alembic_0014.py`'s downgrade-round-trip
+    tests pinned to the explicit pre-revision name instead of
+    `-1` — `-1` silently turned into "downgrade only 0015" once
+    0015 landed on top, and the prior tests would have looked
+    green while testing nothing.
+
 - **Phase 3b cycle 1 — multi-tenant schema groundwork.** Opens
   Phase 3b. **Zero behaviour change** — pure schema migration so
   operators upgrade a v0.1.0 deployment without re-issuing certs

@@ -65,6 +65,14 @@ evidence_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+tenants_app = typer.Typer(
+    help=(
+        "Manage the tenant namespace registry (Phase 3b cycle 2). "
+        "Tenants are the multi-tenant boundary; per-operator access "
+        "is granted via `wg-manager operators attach-tenant`."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(keys_app, name="keys")
 app.add_typer(servers_app, name="servers")
 app.add_typer(clients_app, name="clients")
@@ -74,6 +82,7 @@ app.add_typer(crypto_app, name="crypto")
 app.add_typer(certs_app, name="certs")
 app.add_typer(operators_app, name="operators")
 app.add_typer(evidence_app, name="evidence")
+app.add_typer(tenants_app, name="tenants")
 
 
 def _make_http_client(api_url: str) -> httpx.Client:
@@ -1875,6 +1884,397 @@ def operators_list(
             ),
         }
         for row in rows
+    ]
+    typer.echo(json.dumps(payload, indent=2, default=str, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
+# tenants — Phase 3b cycle 2
+# ---------------------------------------------------------------------------
+#
+# Direct-DB CRUD against :class:`wg_manager.models.Tenant` + the new
+# :class:`wg_manager.models.OperatorTenant` join. Mirrors the
+# ``wg-manager operators add/list`` shape Phase 2d CP3.3 established
+# as the canonical bootstrap path: works before the API listener is
+# up, so an operator on a fresh install can seed tenants and their
+# join rows without first standing up TLS. The dashboard / HTTP
+# surface lands on top of the same tables — the CLI stays the
+# canonical install / disaster-recovery path.
+
+
+import re as _tenant_re
+
+
+def _slugify(name: str) -> str:
+    """Lowercase + collapse non-alphanumeric runs to single hyphens.
+
+    Matches the cycle 5 validator shape (``^[a-z0-9-]+$``) so a tenant
+    created via the CLI today will still parse cleanly once the cycle
+    5 dashboard tightens the slug to a regex.
+    """
+    slug = _tenant_re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "tenant"
+
+
+@tenants_app.command("create")
+def tenants_create(
+    name: str = typer.Option(
+        ...,
+        "--name",
+        help="Human-readable tenant name. Unique.",
+    ),
+    slug: str | None = typer.Option(
+        None,
+        "--slug",
+        help=(
+            "URL-/CLI-safe identifier. Defaults to a kebab-case form "
+            "of --name."
+        ),
+    ),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Create a new tenant namespace.
+
+    The tenant becomes the home of any resource later created with
+    ``--tenant <slug>`` (cycle 3+ wires the routers). The default
+    tenant (``slug='default'``) is created by Alembic 0014 — every
+    pre-Phase-3b row gets back-filled there.
+    """
+    from sqlmodel import Session
+
+    from wg_manager.models import Tenant
+
+    target_slug = slug or _slugify(name)
+    engine = _get_engine(database_url)
+    with Session(engine) as session:
+        existing = session.exec(
+            select(Tenant).where(Tenant.slug == target_slug)
+        ).first()
+        if existing is not None:
+            typer.secho(
+                f"tenant with slug {target_slug!r} already exists "
+                f"(id={existing.id}, name={existing.name!r})",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        existing_name = session.exec(
+            select(Tenant).where(Tenant.name == name)
+        ).first()
+        if existing_name is not None:
+            typer.secho(
+                f"tenant with name {name!r} already exists "
+                f"(id={existing_name.id}, slug={existing_name.slug!r})",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        row = Tenant(name=name, slug=target_slug)
+        session.add(row)
+        session.commit()
+        session.refresh(row)
+        typer.echo(
+            f"created tenant id={row.id} name={row.name!r} "
+            f"slug={row.slug!r}"
+        )
+
+
+@tenants_app.command("list")
+def tenants_list(
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Print every tenant row as JSON.
+
+    Output is a JSON array — pipe through ``jq`` to filter by ``slug``.
+    """
+    from sqlmodel import Session
+
+    from wg_manager.models import Tenant
+
+    engine = _get_engine(database_url)
+    with Session(engine) as session:
+        rows = session.exec(select(Tenant)).all()
+    payload = [
+        {
+            "id": row.id,
+            "name": row.name,
+            "slug": row.slug,
+            "created_at": (
+                row.created_at.isoformat() if row.created_at else None
+            ),
+        }
+        for row in rows
+    ]
+    typer.echo(json.dumps(payload, indent=2, default=str, sort_keys=True))
+
+
+@tenants_app.command("get")
+def tenants_get(
+    slug: str = typer.Argument(..., help="Tenant slug."),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Print a single tenant row by slug.
+
+    Exits non-zero with a clear error if the slug is unknown so a
+    pipeline (``wg-manager tenants get acme | jq ...``) fails fast.
+    """
+    from sqlmodel import Session
+
+    from wg_manager.models import Tenant
+
+    engine = _get_engine(database_url)
+    with Session(engine) as session:
+        row = session.exec(
+            select(Tenant).where(Tenant.slug == slug)
+        ).first()
+    if row is None:
+        typer.secho(
+            f"no tenant with slug {slug!r}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    payload = {
+        "id": row.id,
+        "name": row.name,
+        "slug": row.slug,
+        "created_at": (
+            row.created_at.isoformat() if row.created_at else None
+        ),
+    }
+    typer.echo(json.dumps(payload, indent=2, default=str, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
+# operators attach-tenant / detach-tenant / list-tenants — Phase 3b cycle 2
+# ---------------------------------------------------------------------------
+#
+# Manage the :class:`wg_manager.models.OperatorTenant` join. The
+# subcommands live under ``operators`` rather than ``tenants`` so the
+# subject of the action (the operator whose access is being granted /
+# revoked) is the first noun in the command path.
+
+
+def _lookup_operator(session: Any, cn: str) -> Any:
+    """Return the :class:`Operator` row keyed by CN, or None."""
+    from wg_manager.models import Operator
+
+    return session.exec(select(Operator).where(Operator.cn == cn)).first()
+
+
+def _lookup_tenant(session: Any, slug: str) -> Any:
+    """Return the :class:`Tenant` row keyed by slug, or None."""
+    from wg_manager.models import Tenant
+
+    return session.exec(select(Tenant).where(Tenant.slug == slug)).first()
+
+
+@operators_app.command("attach-tenant")
+def operators_attach_tenant(
+    cn: str = typer.Option(..., "--cn", help="Operator CN."),
+    tenant: str = typer.Option(
+        ...,
+        "--tenant",
+        help="Tenant slug to grant the operator access to.",
+    ),
+    role: _OperatorRoleArg = typer.Option(
+        _OperatorRoleArg.operator,
+        "--role",
+        help=(
+            "Per-tenant permission tier. Defaults to 'operator' "
+            "(principle of least privilege — admins must be set "
+            "explicitly per tenant too)."
+        ),
+    ),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Attach an operator to a tenant with a per-tenant role.
+
+    Refuses with a non-zero exit if the operator or tenant doesn't
+    exist, or if the pair is already joined. The DB has a unique
+    constraint on ``(operator_id, tenant_id)`` — this command surfaces
+    the lookup failure first so the operator gets a clean error rather
+    than a raw IntegrityError.
+    """
+    from sqlmodel import Session
+
+    from wg_manager.models import OperatorRole, OperatorTenant
+
+    engine = _get_engine(database_url)
+    with Session(engine) as session:
+        op_row = _lookup_operator(session, cn)
+        if op_row is None:
+            typer.secho(
+                f"no operator with CN {cn!r}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        tenant_row = _lookup_tenant(session, tenant)
+        if tenant_row is None:
+            typer.secho(
+                f"no tenant with slug {tenant!r}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        existing = session.exec(
+            select(OperatorTenant).where(
+                OperatorTenant.operator_id == op_row.id,
+                OperatorTenant.tenant_id == tenant_row.id,
+            )
+        ).first()
+        if existing is not None:
+            typer.secho(
+                f"operator {cn!r} already attached to tenant "
+                f"{tenant!r} (role={existing.role.value})",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        join = OperatorTenant(
+            operator_id=int(op_row.id or 0),
+            tenant_id=int(tenant_row.id or 0),
+            role=OperatorRole(role.value),
+        )
+        session.add(join)
+        session.commit()
+        session.refresh(join)
+        typer.echo(
+            f"attached operator cn={cn!r} to tenant slug={tenant!r} "
+            f"role={join.role.value}"
+        )
+
+
+@operators_app.command("detach-tenant")
+def operators_detach_tenant(
+    cn: str = typer.Option(..., "--cn", help="Operator CN."),
+    tenant: str = typer.Option(
+        ...,
+        "--tenant",
+        help="Tenant slug to revoke the operator's access from.",
+    ),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Detach an operator from a tenant.
+
+    Refuses with a non-zero exit if the operator or tenant doesn't
+    exist, or if the operator isn't currently attached to the tenant.
+    """
+    from sqlmodel import Session
+
+    from wg_manager.models import OperatorTenant
+
+    engine = _get_engine(database_url)
+    with Session(engine) as session:
+        op_row = _lookup_operator(session, cn)
+        if op_row is None:
+            typer.secho(
+                f"no operator with CN {cn!r}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        tenant_row = _lookup_tenant(session, tenant)
+        if tenant_row is None:
+            typer.secho(
+                f"no tenant with slug {tenant!r}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        join = session.exec(
+            select(OperatorTenant).where(
+                OperatorTenant.operator_id == op_row.id,
+                OperatorTenant.tenant_id == tenant_row.id,
+            )
+        ).first()
+        if join is None:
+            typer.secho(
+                f"operator {cn!r} is not attached to tenant {tenant!r}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        session.delete(join)
+        session.commit()
+        typer.echo(
+            f"detached operator cn={cn!r} from tenant slug={tenant!r}"
+        )
+
+
+@operators_app.command("list-tenants")
+def operators_list_tenants(
+    cn: str = typer.Option(..., "--cn", help="Operator CN."),
+    database_url: str | None = typer.Option(
+        None,
+        "--database-url",
+        envvar="DATABASE_URL",
+        help="Override the configured DATABASE_URL.",
+    ),
+) -> None:
+    """Print every tenant the operator is attached to as JSON.
+
+    Each entry surfaces the join's per-tenant role + the tenant's
+    slug + name so a pipeline can render a human-readable summary
+    without a second lookup.
+    """
+    from sqlmodel import Session
+
+    from wg_manager.models import OperatorTenant, Tenant
+
+    engine = _get_engine(database_url)
+    with Session(engine) as session:
+        op_row = _lookup_operator(session, cn)
+        if op_row is None:
+            typer.secho(
+                f"no operator with CN {cn!r}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        joins = session.exec(
+            select(OperatorTenant, Tenant)
+            .join(Tenant, Tenant.id == OperatorTenant.tenant_id)
+            .where(OperatorTenant.operator_id == op_row.id)
+        ).all()
+    payload = [
+        {
+            "id": join.id,
+            "tenant_id": tenant.id,
+            "tenant_slug": tenant.slug,
+            "tenant_name": tenant.name,
+            "role": join.role.value,
+            "created_at": (
+                join.created_at.isoformat() if join.created_at else None
+            ),
+        }
+        for join, tenant in joins
     ]
     typer.echo(json.dumps(payload, indent=2, default=str, sort_keys=True))
 

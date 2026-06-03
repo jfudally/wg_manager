@@ -268,15 +268,22 @@ class TestBackfillFromPriorRevision:
 
 
 class TestDowngradeRoundTrip:
+    # Pin the surrounding revisions explicitly so adding 0015+ on top
+    # doesn't quietly turn ``-1`` into "downgrade only the topmost
+    # revision" — which was the regression that surfaced when Phase 3b
+    # cycle 2 (Alembic 0015) landed.
+    _TARGET_BEFORE_0014 = "0013_add_audit_event_table"
+    _TARGET_AT_0014 = "0014_add_tenant_table"
+
     def test_downgrade_drops_tenant_table_and_columns(
         self, file_db_url: str
     ) -> None:
         from alembic.command import downgrade, upgrade
 
-        upgrade(_alembic_config(file_db_url), "head")
+        upgrade(_alembic_config(file_db_url), self._TARGET_AT_0014)
         assert "tenant" in _table_names(file_db_url)
 
-        downgrade(_alembic_config(file_db_url), "-1")
+        downgrade(_alembic_config(file_db_url), self._TARGET_BEFORE_0014)
 
         names = _table_names(file_db_url)
         assert "tenant" not in names, (
@@ -294,9 +301,9 @@ class TestDowngradeRoundTrip:
     ) -> None:
         from alembic.command import downgrade, upgrade
 
-        upgrade(_alembic_config(file_db_url), "head")
-        downgrade(_alembic_config(file_db_url), "-1")
-        upgrade(_alembic_config(file_db_url), "head")
+        upgrade(_alembic_config(file_db_url), self._TARGET_AT_0014)
+        downgrade(_alembic_config(file_db_url), self._TARGET_BEFORE_0014)
+        upgrade(_alembic_config(file_db_url), self._TARGET_AT_0014)
 
         # Default tenant must exist after the second upgrade —
         # backfill is run on every upgrade pass.

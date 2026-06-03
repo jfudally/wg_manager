@@ -25,6 +25,8 @@ import type {
   DiscoveredPeer,
   DiscoverResponse,
   HostCertRotateResponse,
+  OperatorTenantAttachRequest,
+  OperatorTenantRead,
   SSHKey,
   SSHKeyCreate,
   SSHKeyUpdate,
@@ -33,6 +35,8 @@ import type {
   ServerRegisterResponse,
   ServerUpdate,
   TaskStatus,
+  Tenant,
+  TenantCreate,
   WhoAmI,
 } from "./types";
 
@@ -384,4 +388,47 @@ export const api = {
     const suffix = qs.toString();
     return request<AuditEventList>(`/audit${suffix ? `?${suffix}` : ""}`);
   },
+
+  // --- Tenants (Phase 3b cycle 2) ---
+  /**
+   * List every tenant. Admin / auditor; plain operators 403. Cycle 3
+   * will narrow this to the operator's per-tenant set.
+   */
+  listTenants: () => request<Tenant[]>("/tenants"),
+  /** Fetch a single tenant by slug; throws ApiError(404) if unknown. */
+  getTenant: (slug: string) => request<Tenant>(`/tenants/${slug}`),
+  /**
+   * Create a new tenant namespace. Admin only. Slug derives from
+   * `name` server-side when omitted.
+   */
+  createTenant: (payload: TenantCreate) =>
+    request<Tenant>("/tenants", { method: "POST", body: payload }),
+  /**
+   * Attach an operator to a tenant with a per-tenant role. Admin
+   * only. Returns the joined row with the resolved tenant + operator
+   * fields so the dashboard can render the per-tenant table without
+   * a second lookup.
+   */
+  attachOperatorToTenant: (
+    slug: string,
+    payload: OperatorTenantAttachRequest,
+  ) =>
+    request<OperatorTenantRead>(`/tenants/${slug}/operators`, {
+      method: "POST",
+      body: payload,
+    }),
+  /**
+   * Detach an operator from a tenant. Admin only. Returns 204 on
+   * success; the typed request wrapper resolves to `undefined`.
+   */
+  detachOperatorFromTenant: (slug: string, cn: string) =>
+    request<void>(`/tenants/${slug}/operators/${cn}`, {
+      method: "DELETE",
+    }),
+  /**
+   * List every operator attached to the tenant with the per-tenant
+   * role. Admin / auditor.
+   */
+  listTenantOperators: (slug: string) =>
+    request<OperatorTenantRead[]>(`/tenants/${slug}/operators`),
 };
