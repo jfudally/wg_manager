@@ -10,6 +10,32 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3b cycle 1 — multi-tenant schema groundwork.** Opens
+  Phase 3b. **Zero behaviour change** — pure schema migration so
+  operators upgrade a v0.1.0 deployment without re-issuing certs
+  or re-bootstrapping. Cycles 2-5 layer enforcement on top.
+
+  - New `Tenant` SQLModel: `id` / `name` (unique) / `slug`
+    (unique) / `created_at`.
+  - Alembic 0014 creates the `tenant` table, inserts a `default`
+    tenant row at id=1, adds a **nullable** `tenant_id` FK
+    column + index to each of the six tenanted resource tables
+    (`operator`, `server`, `client`, `sshkey`, `certificate`,
+    `auditevent`), and back-fills every existing row to the
+    default tenant. Nullable for cycle 1 so the migration is
+    non-breaking; cycle 3 will tighten to NOT NULL once auth-side
+    filtering enforces the invariant.
+  - 25 new test cases in `tests/test_alembic_0014.py`: tenant
+    table shape (3), default tenant row inserted at id=1,
+    `tenant_id` column added to each of 6 tables × 3 assertions =
+    18 parametrised, FK references `tenant(id)`, back-fill from
+    prior-revision data assigns existing rows to default tenant,
+    downgrade reverses cleanly + idempotent round-trip.
+  - ROADMAP grew a Phase 3b sub-phase with the locked design
+    decisions (namespace-style tenancy, OperatorTenant join,
+    incremental enforcement) and the 5-cycle plan; cycle 1
+    flipped to `[~]` in progress.
+
 - **Phase 3a cycle 3 — cert-lifecycle dashboard + alerting recipes.**
   Closes Phase 3a (observability). A v0.1.0 operator can now
   answer "which certs are due for renewal this week?" and "should

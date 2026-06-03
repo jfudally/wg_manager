@@ -1645,12 +1645,52 @@ provisioning path are the three deliverables.
   reference the canonical metrics, every alert has expr +
   annotations.summary).
 
-### Phase 3b — Multi-tenant operator model `[ ]`
+### Phase 3b — Multi-tenant operator model `[~]`
 
-Roles, scoped tokens, per-tenant peer pools. Big design surface
-(tenant boundary at server level? client level? namespace?) —
-worth doing after 3a so isolation can be validated against real
-metrics.
+**Design decisions** (locked 2026-06-03):
+
+- **Tenancy boundary** = namespace. Explicit ``Tenant`` row with a
+  FK on every owned resource. Cleaner than per-server tenancy
+  (which conflates deployment unit with ownership) and more
+  flexible than cert-SAN-based tenancy (which moves authz into
+  cert-issuance rather than the API).
+- **Operator ↔ Tenant** = many-to-many via an ``OperatorTenant``
+  join table with a per-tenant role. Matches how real ops teams
+  work — one person reads many tenants, writes a few. The Phase
+  2d CP3 ``Operator`` row keeps its global ``role`` for system
+  scope (``super-admin``); per-tenant role is added via join.
+- **Cycle ordering** = incremental. Cycle 1 ships pure schema
+  groundwork (zero behaviour change); each subsequent cycle layers
+  enforcement on top so a mid-phase course-correct is cheap.
+
+Five cycles:
+
+- **Cycle 1 `[~]`** — Schema groundwork. New ``Tenant`` SQLModel
+  + Alembic 0014 creates the table, inserts a ``default`` tenant
+  (id=1), adds nullable ``tenant_id`` FK to ``operator`` /
+  ``server`` / ``client`` / ``sshkey`` / ``certificate`` /
+  ``auditevent``, backfills every existing row to the default
+  tenant. **Zero behaviour change** — no auth filter, no routing
+  change. Operators upgrade without re-issuing certs or
+  re-bootstrapping.
+- **Cycle 2 `[ ]`** — ``OperatorTenant`` join table. Per-tenant
+  role (``admin`` / ``operator`` / ``auditor``). CLI + API
+  (admin-only) to attach / detach operators to / from tenants.
+  Default tenant gets every existing operator with their existing
+  global role mirrored as the per-tenant role.
+- **Cycle 3 `[ ]`** — Tenant-aware filtering. Middleware reads the
+  operator's tenant set from the join table + filters every list
+  query. Mutating endpoints assert the operator has per-tenant
+  ``admin`` / ``operator`` role on the target's tenant. Audit
+  events record ``tenant_id``.
+- **Cycle 4 `[ ]`** — Per-tenant peer pools. IPAM partitioned per
+  tenant: each tenant has its own subnet allocation; no IP
+  collisions between tenants. ``Server.subnet`` no longer the
+  global IP space — it's a tenant-scoped slice.
+- **Cycle 5 `[ ]`** — Dashboard + scoped certs. Tenant CRUD UI on
+  the dashboard. Cert types ``cli`` / ``dashboard`` grow a
+  tenant SAN convention for non-operator service identities that
+  need tenant scoping at issuance time.
 
 ### Phase 3c — Public API versioning `[ ]`
 
