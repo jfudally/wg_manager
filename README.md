@@ -33,10 +33,11 @@ real security substrate:
 **v0.1.0 shipped** (2026-06-03) — Phase 2 closed. Every release on
 GHCR is cosign-signed via Fulcio keyless OIDC, carries a CycloneDX
 SBOM attestation, and is end-to-end verifiable. **Phase 3a
-(observability) cycle 1 in flight** — Prometheus metrics + Grafana
-dashboard land on `main` ahead of the next tagged release. See
+(observability) shipped** — Prometheus metrics + Grafana
+dashboards + OTLP traces + Prometheus alerting recipes are on
+`main` ahead of the next tagged release. See
 [`ROADMAP.md`](ROADMAP.md) for the full phase history (2a Vault
-spike → 2f release engineering) and what's planned for the rest of
+spike → 3a observability) and what's planned for the rest of
 Phase 3 (multi-tenant, HA, public API versioning, Helm/Terraform).
 
 ## Architecture at a glance
