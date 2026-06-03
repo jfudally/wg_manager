@@ -150,6 +150,38 @@ def _utcnow() -> datetime:
     return datetime.now(tz=timezone.utc)
 
 
+class Tenant(SQLModel, table=True):
+    """Namespace boundary for multi-tenant deployments (Phase 3b).
+
+    Cycle 1 ships the row + a default tenant; every existing
+    resource row is back-filled to ``id=1`` so the upgrade is
+    behaviour-preserving. Cycles 2-3 layer the ``OperatorTenant``
+    join + the auth-middleware filtering that actually *enforces*
+    isolation. Cycle 4 partitions the WireGuard subnet pool per
+    tenant; cycle 5 ships the dashboard CRUD UI.
+
+    :ivar id: Surrogate primary key. The reserved ``id=1`` row is
+        the ``default`` tenant created by Alembic 0014's data-only
+        step. Tenant rows added through the cycle 2 API / CLI get
+        higher ids.
+    :ivar name: Human-readable display name. Unique so the UI can
+        sort + de-dupe without a join. Operators see this on the
+        dashboard.
+    :ivar slug: URL- and CLI-safe identifier. Unique. Used in API
+        paths (``/tenants/{slug}``) and CLI invocations
+        (``wg-manager tenants get <slug>``). Cycle 5 enforces a
+        ``^[a-z0-9-]+$`` shape; cycle 1 keeps it permissive so the
+        schema migration doesn't depend on validator code that
+        ships later.
+    :ivar created_at: UTC timestamp the row was created.
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str = Field(unique=True, index=True, max_length=64)
+    slug: str = Field(unique=True, index=True, max_length=64)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+
 class SSHKey(SQLModel, table=True):
     """Named SSH role used to provision nodes.
 
@@ -174,6 +206,10 @@ class SSHKey(SQLModel, table=True):
     """
 
     id: int | None = Field(default=None, primary_key=True)
+    # Phase 3b cycle 1 — nullable namespace FK. Backfilled to the
+    # default tenant by Alembic 0014; cycle 3 tightens to NOT NULL
+    # once auth-side filtering enforces the invariant.
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     name: str = Field(index=True, unique=True)
     # Phase 2c CP4.4 — every row is CA-mode now. The default flipped
     # from ``legacy`` to ``ca`` once Alembic 0008 dropped the
@@ -227,6 +263,8 @@ class Server(SQLModel, table=True):
     """
 
     id: int | None = Field(default=None, primary_key=True)
+    # Phase 3b cycle 1 — nullable tenant FK. See Tenant model.
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     hostname: str
     ssh_port: int = 22
     ssh_username: str
@@ -293,6 +331,8 @@ class Client(SQLModel, table=True):
     """
 
     id: int | None = Field(default=None, primary_key=True)
+    # Phase 3b cycle 1 — nullable tenant FK. See Tenant model.
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     name: str = Field(index=True, unique=True)
     hostname: str | None = None
     ssh_port: int = 22
@@ -348,6 +388,9 @@ class Operator(SQLModel, table=True):
     """
 
     id: int | None = Field(default=None, primary_key=True)
+    # Phase 3b cycle 1 — nullable tenant FK. Per-tenant role lives on
+    # the ``OperatorTenant`` join table that cycle 2 ships.
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     cn: str = Field(index=True, unique=True)
     display_name: str | None = Field(default=None)
     role: OperatorRole = Field(default=OperatorRole.operator)
@@ -472,6 +515,11 @@ class Certificate(SQLModel, table=True):
     """
 
     id: int | None = Field(default=None, primary_key=True)
+    # Phase 3b cycle 1 — nullable tenant FK. Operator + cli +
+    # dashboard certs typically share tenant with the issuing
+    # operator; api / mysql / mysql-client service certs may stay
+    # NULL (global to the deployment). Cycle 5 cements the policy.
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     serial: str = Field(unique=True, index=True, max_length=64)
     cert_type: CertificateType = Field(index=True)
     operator_id: int | None = Field(
@@ -586,6 +634,10 @@ class AuditEvent(SQLModel, table=True):
     )
 
     id: int | None = Field(default=None, primary_key=True)
+    # Phase 3b cycle 1 — nullable tenant FK. Cycle 3 wires the
+    # ``audit.persist`` helper to set this to the acting operator's
+    # tenant so the ``/audit`` filter can scope per-tenant.
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
     ts: datetime = Field(default_factory=_utcnow, index=True)
     event: str = Field(index=True, max_length=64)
     actor_cn: str | None = Field(default=None, index=True, max_length=255)
