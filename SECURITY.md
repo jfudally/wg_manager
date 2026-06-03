@@ -21,6 +21,21 @@ release notes unless you ask not to be.
 PGP is not currently set up — if encrypted reporting matters to you, say
 so in your first email and I will provision a key.
 
+## Operator runbooks
+
+If a wg-manager deployment you operate is the subject of the
+incident, work the matching runbook in
+[`docs/runbooks/`](docs/runbooks/) in parallel with notifying us:
+
+- [`docs/runbooks/key-compromise.md`](docs/runbooks/key-compromise.md)
+  — Vault root token, Transit master key, SSH CA / PKI private key,
+  operator client cert, service cert, or manual-client WireGuard
+  private key suspected leaked. Triage, per-key-class mitigation,
+  verification, postmortem checklist.
+- [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md) —
+  Vault unreachable, sealed, or raft quorum lost. Container-down,
+  sealed, app-can't-reach, and quorum-lost recovery branches.
+
 ## Threat model
 
 The full STRIDE model lives at

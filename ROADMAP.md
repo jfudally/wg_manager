@@ -1213,6 +1213,43 @@ you'd actually deploy.
   the read surface — `GET /audit` (admin / auditor only, filterable
   on `event` / `actor_cn` / `resource_type` / `resource_id` /
   `since` / `until`, paginated) plus the `/audit` dashboard page.
+- **Operator runbooks** `[x]` (runbooks cycle 1 shipped 2026-06-03).
+  Two operator-facing runbooks under
+  [`docs/runbooks/`](docs/runbooks/) an on-call engineer can follow
+  at 3am.
+  [`key-compromise.md`](docs/runbooks/key-compromise.md) frames the
+  scope (Vault root, unseal/recovery keys, Transit master key, SSH
+  CA, PKI root + intermediate, operator client certs, service
+  certs, manual-client WireGuard keys), the IR-standard sections
+  (symptoms / triage / mitigation / verification / postmortem),
+  and per-key-class mitigation paths naming the concrete
+  ``wg-manager certs revoke``, ``wg-manager certs renew``,
+  ``wg-manager crypto rewrap``,
+  ``vault write -f transit/keys/wg-manager/rotate``,
+  ``make ssh-ca-bootstrap``, and ``make pki-bootstrap`` commands.
+  [`vault-down.md`](docs/runbooks/vault-down.md) frames the
+  symptoms (decryption failures on encrypted-column touches,
+  ``SSHCAError`` on provisioning, ``PKIError`` on renewal walker,
+  the dashboard Crypto panel surface), triage (``vault status``,
+  ``docker compose logs vault``), and four recovery branches
+  (container down / sealed / app-can't-reach / raft quorum lost)
+  with the matching ``vault operator unseal``,
+  ``vault operator raft snapshot restore``, and ``make vault-up``
+  commands. Both runbooks cross-reference
+  [`docs/vault-cookbook.md`](docs/vault-cookbook.md),
+  [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md), and
+  [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md).
+  Discoverability: README's "Roadmap, security, and threat model"
+  section + SECURITY.md's reporting section both link the
+  runbooks. Tests: 40 cases in
+  [`tests/test_runbooks.py`](tests/test_runbooks.py) pin file
+  existence, the IR section frame, per-key-class coverage, the
+  concrete commands the runbook tells the operator to run (so a
+  rename in ``cli`` / Makefile that breaks the runbook trips the
+  test), the cookbook + threat-model + README + SECURITY cross-
+  references. Pure parse-and-assert so the fast ``make test``
+  invocation stays hermetic — live verification is the operator's
+  job during a drill.
 - **Backup story.** Documented `vault operator raft snapshot save`
   cadence; MySQL dumps documented to be encrypted at rest using the
   Transit data-key flow so a leaked dump is not equivalent to a leaked
@@ -1224,7 +1261,8 @@ you'd actually deploy.
 **Acceptance.**
 - The CI badge in the README is green and the `security` job exists.
 - `docs/runbooks/key-compromise.md` and `docs/runbooks/vault-down.md`
-  exist with concrete steps a half-asleep on-call engineer can follow.
+  exist with concrete steps a half-asleep on-call engineer can follow
+  (shipped 2026-06-03 — runbooks cycle 1).
 - A SOC 2-style "evidence pack" is generatable via `make evidence` —
   pulls last 30 days of audit logs, current cert inventory, and Vault
   audit hash chain into a tarball. (Stretch; useful for the showcase.)

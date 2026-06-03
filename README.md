@@ -574,17 +574,30 @@ shape; the acceptance tests assert on it directly.
   suite (`make test-e2e-tls`) pins the four behavioural contracts
   end-to-end against a live uvicorn process — see ROADMAP § Phase
   2d CP5 for the per-test detail. Phase 2e (supply chain + audit)
-  is in progress: the application audit log (cycles 1-4) and the
+  is in progress: the application audit log (cycles 1-4), the
   five CI security gates — gitleaks / pip-audit / npm audit / bandit
-  / semgrep — are shipped (`make security` runs them locally);
-  SBOM, cosign verify, Dependabot, off-host Vault audit, encrypted
-  backups, and reproducible-build enforcement remain.
+  / semgrep — (`make security` runs them locally), the Vault audit
+  log (file device → vector sidecar → production sink configs), and
+  the operator runbooks
+  ([`docs/runbooks/key-compromise.md`](docs/runbooks/key-compromise.md),
+  [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md))
+  are shipped; encrypted backups and reproducible-build enforcement
+  remain.
 - [`SECURITY.md`](SECURITY.md) lists the current security posture,
   what wg-manager today explicitly does not defend against, and how
   to report a vulnerability.
 - [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) is the STRIDE
   model the roadmap phases are tied to. Every threat in the table
   names the phase that closes (or has closed) it.
+- [`docs/runbooks/`](docs/runbooks/) — operator runbooks an on-call
+  engineer can follow at 3am. Phase 2e cycle 1 ships two:
+  [`key-compromise.md`](docs/runbooks/key-compromise.md) (covers
+  every trust root — Vault root, Transit, SSH CA, PKI, operator and
+  service certs, manual-client WireGuard keys — with revoke /
+  rotate steps per row) and
+  [`vault-down.md`](docs/runbooks/vault-down.md) (container down /
+  sealed / app-can't-reach / raft quorum lost branches with the
+  matching recovery commands).
 
 **Not yet a finished system.** Phase 2e (supply chain + ops
 hygiene) is in progress. Shipped pieces: the application audit
