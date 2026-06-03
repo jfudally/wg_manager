@@ -1,0 +1,90 @@
+# Phase 2f cycle 1 gate: verify both Dockerfiles still build.
+#
+# This is the build-on-PR + push-to-main side of the release pipeline.
+# Cycle 1 ships the Dockerfiles + this gate; cycle 2 publishes the
+# images to GHCR on a git tag; cycles 3-4 sign with cosign and attach
+# SBOMs. Each cycle layers on the previous one's output.
+#
+# Two jobs run in parallel (no inter-dependency):
+#
+#  * api-image: builds the repo-root ``Dockerfile`` (Python 3.13 +
+#    uv --frozen) — the API + worker artefact.
+#  * web-image: builds ``web/Dockerfile`` (Node 22 + next standalone)
+#    — the dashboard artefact.
+#
+# ``push: false`` is pinned: cycle 1 explicitly does NOT publish. A
+# future refactor flipping that flag would slip a publish flow into
+# the wrong context (PRs from forks, in particular) — cycles 3-4 sign
+# only artefacts the release workflow produced.
+#
+# Path-filtered so code-only PRs don't burn ~3min of runner time on
+# an unchanged image build.
+
+name: Image build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - 'web/Dockerfile'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - 'web/next.config.ts'
+      - 'src/**'
+      - 'web/**'
+      - '.github/workflows/image-build.yml'
+
+concurrency:
+  group: image-build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  api-image:
+    name: Build API + worker image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build API + worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: false
+          load: true
+          tags: wg-manager:ci-${{ github.sha }}
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,scope=api,mode=max
+
+  web-image:
+    name: Build dashboard image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build dashboard image
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          file: web/Dockerfile
+          push: false
+          load: true
+          tags: wg-manager-web:ci-${{ github.sha }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,scope=web,mode=max

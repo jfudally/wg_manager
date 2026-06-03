@@ -121,7 +121,15 @@ export async function forwardToUpstream(
     respHeaders.set(key, value);
   });
 
-  return new Response(upstream.body, {
+  // ``upstream.body`` is ``Uint8Array<ArrayBufferLike>`` (typescript
+  // 6's narrower lib types) but ``Response``'s ``BodyInit`` expects
+  // ``ArrayBufferView<ArrayBuffer>`` — runtime-equivalent, but the
+  // assignment is no longer structurally compatible. The cast is the
+  // documented workaround until lib-dom catches up; the underlying
+  // bytes are passed through verbatim. Phase 2f cycle 1 fix — the
+  // docker image build's ``next build`` is what surfaced this latent
+  // breakage (vitest doesn't run tsc).
+  return new Response(upstream.body as unknown as BodyInit, {
     status: upstream.status,
     headers: respHeaders,
   });

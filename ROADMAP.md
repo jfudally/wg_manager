@@ -1361,6 +1361,95 @@ you'd actually deploy.
 
 ---
 
+### Phase 2f — Release engineering `[~]`
+
+**Closes.** T-10 (extends Phase 2e's CI-gate posture from "the code
+we test" to "the artefacts we ship"); unblocks the deferred Phase 2e
+bullets (cosign verify, SBOM attachment, release-workflow-from-
+lockfile).
+
+**Goal.** Tagged Docker image releases with signed provenance + SBOM
+that a downstream operator can verify before pulling. Four-cycle
+plan:
+
+- **Cycle 1 `[x]`** (2026-06-03) — Dockerfiles + build-on-PR gate.
+  Multi-stage [`Dockerfile`](Dockerfile) (Python 3.13-slim-bookworm
+  builder → ``uv sync --frozen --no-dev`` → slim runtime with
+  ``.venv`` + ``src/`` only, non-root ``wgmanager`` user UID 1001,
+  ``python -m wg_manager`` default CMD). Multi-stage
+  [`web/Dockerfile`](web/Dockerfile) (Node 22-slim builder → ``npm
+  ci`` + ``npm run build`` → standalone runtime with the
+  ``.next/standalone`` bundle, non-root ``nextjs`` user UID 1001).
+  ``web/next.config.ts`` flipped to ``output: "standalone"`` so the
+  Docker layout works. New
+  [`.github/workflows/image-build.yml`](.github/workflows/image-build.yml)
+  builds both images on every PR + push to main using
+  ``docker/build-push-action@v6`` with GHA layer cache; ``push:
+  false`` pinned so cycle 1 explicitly does not publish (cycle 2's
+  job). Path-filtered to dep manifests + the source dirs so code-
+  only PRs skip the ~3-min image build.
+
+  **Latent bugs surfaced by the image build (now fixed):** the
+  tailwindcss v3→v4 dependabot bump that landed earlier left
+  ``next dev`` working but ``next build`` broken on three counts:
+  (a) the PostCSS plugin moved to ``@tailwindcss/postcss`` and the
+  ``web/postcss.config.mjs`` still used the old name; (b) the v3
+  ``@tailwind base/components/utilities`` directives were dropped
+  in v4 for a single ``@import "tailwindcss"`` + ``@theme`` block —
+  the v3 ``tailwind.config.ts`` colors moved to ``--color-*``
+  tokens inside ``@theme`` in
+  [`web/app/globals.css`](web/app/globals.css); (c) the
+  pre-existing ``lib/proxy.ts:124`` ``Uint8Array<ArrayBufferLike>``
+  ↔ ``BodyInit`` complaint (flagged out-of-scope in Phase 2d CP3.4)
+  now blocks ``next build`` — patched with the documented
+  workaround cast. None of this regressed before cycle 1 because
+  the existing CI runs vitest only (not ``next build``); the image
+  build is the path that flushes the type-checker.
+
+  Tests: 26 cases across
+  [`tests/test_dockerfile.py`](tests/test_dockerfile.py) (18 —
+  Dockerfile existence, multi-stage shape, slim base, Python 3.13
+  pin, uv ``--frozen``, non-root runtime user, WORKDIR set,
+  default CMD references wg_manager; same for web/Dockerfile;
+  next.config.ts has standalone output) and
+  [`tests/test_image_build_workflow.py`](tests/test_image_build_workflow.py)
+  (8 — workflow exists, triggers on PR + push, path-filtered, uses
+  docker/build-push-action, references both Dockerfiles by path,
+  pins ``push: false``, cancels-in-progress concurrency,
+  contents-read least-privilege permissions). Local smoke: both
+  ``docker build`` invocations succeed; vitest 46/46; backend
+  pytest 632/632 (was 606 on Phase 2e cycle 4).
+- **Cycle 2 `[ ]`** — Tagged release workflow + GHCR publish.
+  New ``.github/workflows/release.yml`` triggered by ``v*.*.*`` git
+  tags. Builds both images, pushes to GHCR with semver + commit
+  SHA tags, auto-generates the GitHub release notes from
+  ``CHANGELOG.md``'s top section. After cycle 2 there is a
+  published artefact for cycles 3 + 4 to operate on.
+- **Cycle 3 `[ ]`** — Cosign keyless signing + verify gate. The
+  release workflow signs each pushed image with cosign using
+  GitHub's OIDC token (no key management); new
+  ``.github/workflows/image-verify.yml`` runs ``cosign verify``
+  against the signed images on every PR + push as the consumer-
+  side gate. Phase 2e's "Deferred — cosign verify" bullet flips to
+  shipped here.
+- **Cycle 4 `[ ]`** — SBOM attachment. ``cyclonedx-py`` +
+  ``cyclonedx-npm`` emit per-component SBOMs in the release job;
+  attached to the GitHub release as build artefacts. The
+  Phase 2e SBOM bullet flips to shipped here. After cycle 4 every
+  remaining Phase 2 bullet is ``[x]``.
+
+**Acceptance.**
+- A ``git push origin v0.x.y`` produces a published image at
+  ``ghcr.io/jfudally/wg-manager:v0.x.y`` (and ``…/wg-manager-web``)
+  with a cosign signature and an attached SBOM.
+- ``cosign verify ghcr.io/jfudally/wg-manager:v0.x.y …`` returns
+  zero against the published image.
+- ``docker pull`` + ``docker run`` of the published image starts
+  the API (with TLS env vars injected) and serves a mTLS 200
+  against ``GET /certs/whoami``.
+
+---
+
 ## Phase 3 — Scale / Polish (future)
 
 These are explicitly deferred until Phase 2 is closed. Listed so we don't
