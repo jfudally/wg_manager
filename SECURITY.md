@@ -35,6 +35,11 @@ incident, work the matching runbook in
 - [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md) —
   Vault unreachable, sealed, or raft quorum lost. Container-down,
   sealed, app-can't-reach, and quorum-lost recovery branches.
+- [`docs/runbooks/backup-restore.md`](docs/runbooks/backup-restore.md)
+  — encrypted MySQL backups via `wg-manager db backup --encrypt`
+  (Transit-data-key envelope, Phase 2e cycle 2) plus Vault raft
+  snapshot save/restore, with the recommended cadence + restore
+  drill + verification steps.
 
 ## Threat model
 

@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -41,6 +41,7 @@ help:
 	@echo "  vault-smoke    Run scripts/vault_smoke.py against the dev Vault"
 	@echo "  vault-audit-bootstrap"
 	@echo "                 Enable a file audit device on the dev Vault (Phase 2e)"
+	@echo "  backup-vault   Save a Vault raft snapshot to backups/vault/ (Phase 2e — production Vault only; see docs/runbooks/backup-restore.md)"
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
@@ -169,6 +170,22 @@ vault-smoke:
 vault-audit-bootstrap:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
 		$(PYTHON) scripts/vault_audit_bootstrap.py
+
+# Phase 2e backup cycle 2 — capture a Vault raft snapshot via the
+# dev-container CLI. The snapshot lands at /vault/snapshots/<ts>.snap
+# inside the container, which the docker-compose stack maps to the
+# wg_manager_vault_audit_logs volume's sibling path on disk. Idempotent:
+# every invocation produces a new timestamped file. Production
+# operators run `vault operator raft snapshot save` directly against
+# their Vault address; see docs/runbooks/backup-restore.md.
+backup-vault:
+	@mkdir -p backups/vault
+	@ts=$$(date -u +%Y%m%dT%H%M%SZ); \
+	docker compose exec -T -e VAULT_TOKEN=$(VAULT_TOKEN) vault \
+		vault operator raft snapshot save /vault/logs/snap-$$ts.snap \
+		&& docker compose cp vault:/vault/logs/snap-$$ts.snap backups/vault/snap-$$ts.snap \
+		&& docker compose exec -T vault rm -f /vault/logs/snap-$$ts.snap \
+		&& echo "snapshot written to backups/vault/snap-$$ts.snap"
 
 # ---------------------------------------------------------------------------
 # SSH CA (Phase 2c) — see docs/vault-cookbook.md §3

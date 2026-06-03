@@ -590,14 +590,17 @@ shape; the acceptance tests assert on it directly.
   model the roadmap phases are tied to. Every threat in the table
   names the phase that closes (or has closed) it.
 - [`docs/runbooks/`](docs/runbooks/) — operator runbooks an on-call
-  engineer can follow at 3am. Phase 2e cycle 1 ships two:
+  engineer can follow at 3am. Phase 2e cycle 1 ships three:
   [`key-compromise.md`](docs/runbooks/key-compromise.md) (covers
   every trust root — Vault root, Transit, SSH CA, PKI, operator and
   service certs, manual-client WireGuard keys — with revoke /
-  rotate steps per row) and
+  rotate steps per row),
   [`vault-down.md`](docs/runbooks/vault-down.md) (container down /
   sealed / app-can't-reach / raft quorum lost branches with the
-  matching recovery commands).
+  matching recovery commands), and
+  [`backup-restore.md`](docs/runbooks/backup-restore.md) (Phase 2e
+  cycle 2 — encrypted `wg-manager db backup --encrypt` dumps and
+  Vault raft snapshots, cadence + restore drill + verification).
 
 **Not yet a finished system.** Phase 2e (supply chain + ops
 hygiene) is in progress. Shipped pieces: the application audit

@@ -34,6 +34,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNBOOKS_DIR = REPO_ROOT / "docs" / "runbooks"
 KEY_COMPROMISE_PATH = RUNBOOKS_DIR / "key-compromise.md"
 VAULT_DOWN_PATH = RUNBOOKS_DIR / "vault-down.md"
+BACKUP_RESTORE_PATH = RUNBOOKS_DIR / "backup-restore.md"
 
 
 def _read(path: Path) -> str:
@@ -317,8 +318,134 @@ class TestDiscoverability:
     def test_readme_links_vault_down_runbook(self, readme: str) -> None:
         assert "runbooks/vault-down.md" in readme
 
+    def test_readme_links_backup_restore_runbook(self, readme: str) -> None:
+        assert "runbooks/backup-restore.md" in readme
+
     def test_security_links_runbooks(self, security: str) -> None:
         assert (
             "runbooks/key-compromise.md" in security
             or "runbooks/vault-down.md" in security
         )
+
+
+# ---------------------------------------------------------------------------
+# Backup / restore runbook (cycle 2)
+# ---------------------------------------------------------------------------
+
+
+class TestBackupRestoreRunbookExists:
+    """The cycle 2 runbook lives at the documented path."""
+
+    def test_backup_restore_runbook_exists(self) -> None:
+        assert BACKUP_RESTORE_PATH.is_file(), (
+            f"{BACKUP_RESTORE_PATH} is missing — see ROADMAP.md Phase 2e "
+            "backup story"
+        )
+
+    def test_backup_restore_runbook_has_h1_title(self) -> None:
+        body = _read(BACKUP_RESTORE_PATH)
+        first_heading = next(
+            (line for line in body.splitlines() if line.startswith("# ")),
+            None,
+        )
+        assert first_heading is not None
+        assert (
+            "backup" in first_heading.lower()
+            or "restore" in first_heading.lower()
+        )
+
+
+class TestBackupRestoreRunbookSections:
+    """The runbook covers both the backup *and* restore halves and the
+    standard frame for either."""
+
+    @pytest.fixture(scope="class")
+    def body(self) -> str:
+        return _read(BACKUP_RESTORE_PATH)
+
+    def test_scope_section(self, body: str) -> None:
+        assert _has_section(body, "scope", "what is backed up", "in scope")
+
+    def test_cadence_section(self, body: str) -> None:
+        """How often the operator should be running these."""
+        assert _has_section(body, "cadence", "schedule", "frequency", "timer")
+
+    def test_backup_section(self, body: str) -> None:
+        """The take-a-backup steps."""
+        assert _has_section(body, "backup", "take a backup", "snapshot")
+
+    def test_restore_section(self, body: str) -> None:
+        """The restore drill."""
+        assert _has_section(body, "restore", "recovery", "drill")
+
+    def test_verification_section(self, body: str) -> None:
+        """How to confirm the backup is good before you need it."""
+        assert _has_section(body, "verification", "verify", "confirm")
+
+
+BACKUP_RESTORE_REQUIRED_COMMANDS = (
+    "wg-manager db backup",
+    "wg-manager db restore",
+    "--encrypt",
+    "--decrypt",
+    "make backup-vault",
+    "vault operator raft snapshot save",
+    "vault operator raft snapshot restore",
+)
+
+
+class TestBackupRestoreRunbookCommands:
+    @pytest.fixture(scope="class")
+    def body(self) -> str:
+        return _read(BACKUP_RESTORE_PATH)
+
+    @pytest.mark.parametrize("command", BACKUP_RESTORE_REQUIRED_COMMANDS)
+    def test_command_referenced(self, body: str, command: str) -> None:
+        assert command in body, (
+            f"backup-restore runbook must name `{command}` — see "
+            f"src/wg_manager/cli.py / Makefile for the canonical form"
+        )
+
+
+class TestBackupRestoreCrossReferences:
+    @pytest.fixture(scope="class")
+    def body(self) -> str:
+        return _read(BACKUP_RESTORE_PATH)
+
+    def test_links_vault_cookbook(self, body: str) -> None:
+        assert "vault-cookbook.md" in body
+
+    def test_links_systemd_timer(self, body: str) -> None:
+        """The cadence section should point at the timer doc so the
+        operator doesn't reinvent the timer pattern."""
+        assert "deploy/systemd-timer.md" in body
+
+
+# ---------------------------------------------------------------------------
+# systemd-timer.md must grow a backup-timer subsection
+# ---------------------------------------------------------------------------
+
+
+class TestSystemdTimerBackupSubsection:
+    """The deploy doc covers cert renewal already; cycle 2 adds a
+    parallel backup-timer pattern so an operator gets both timer
+    families from one doc."""
+
+    @pytest.fixture(scope="class")
+    def body(self) -> str:
+        return (REPO_ROOT / "docs" / "deploy" / "systemd-timer.md").read_text(
+            encoding="utf-8"
+        )
+
+    def test_backup_timer_section_present(self, body: str) -> None:
+        # Heading wording is whatever fits; the important bit is that
+        # the doc surfaces a backup timer subsection at all.
+        assert _has_section(
+            body, "backup", "wg-manager-backup", "snapshot timer"
+        )
+
+    def test_backup_unit_name_referenced(self, body: str) -> None:
+        """The unit-file name must be stable so an operator who reads
+        the doc once knows what to `systemctl status` later."""
+        assert "wg-manager-backup.service" in body
+        assert "wg-manager-backup.timer" in body
