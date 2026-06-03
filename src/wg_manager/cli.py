@@ -536,6 +536,117 @@ def _serialize_row(row: Any) -> dict[str, Any]:
     return data
 
 
+# ---------------------------------------------------------------------------
+# Phase 2e backup cycle 2 — envelope encryption for backup files
+# ---------------------------------------------------------------------------
+
+# Constants chosen to match the AESGCM defaults the cryptography lib
+# already exposes. 256-bit DEK + 96-bit nonce + GCM tag in-line with
+# the ciphertext. Recovering operators care about these values so they
+# can re-implement the decrypt path in a hostile environment — keep
+# them centralised here.
+_DEK_BYTES = 32  # AES-256
+_NONCE_BYTES = 12  # GCM standard
+
+
+def _envelope_context() -> str:
+    """Return a per-backup context string used to bind the DEK wrap.
+
+    Vault Transit's ``encrypt_data`` accepts a ``context`` parameter
+    only when the key is ``derived=True``. The LocalDevBackend's Fernet
+    wrap silently ignores the context. Binding the context here keeps
+    the production path defended against a "swap the DEK between two
+    backups" attack — see ``test_db_backup_encrypt.py``
+    ``test_swapped_dek_ct_fails_restore`` — and the LocalDev mode
+    benefits at minimum from the context appearing in the envelope as
+    a public audit field even if the wrap doesn't enforce it.
+    """
+    from datetime import timezone
+
+    return "backup:" + datetime.now(timezone.utc).isoformat(
+        timespec="microseconds"
+    )
+
+
+def _envelope_encrypt(plaintext: bytes) -> dict[str, Any]:
+    """Build the on-disk envelope around ``plaintext``.
+
+    Mints a random 256-bit DEK + 96-bit nonce, AES-256-GCM-encrypts the
+    plaintext, then wraps the DEK via
+    :func:`wg_manager.crypto.make_backend`. The wrap goes through the
+    same backend the rest of the app uses for at-rest encryption — so a
+    production wg-manager deployment that has Vault Transit gets the
+    Transit data-key flow without additional configuration.
+    """
+    import secrets
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from wg_manager.crypto import make_backend
+
+    dek = secrets.token_bytes(_DEK_BYTES)
+    nonce = secrets.token_bytes(_NONCE_BYTES)
+    aesgcm = AESGCM(dek)
+    ciphertext = aesgcm.encrypt(nonce, plaintext, associated_data=None)
+
+    context = _envelope_context()
+    backend = make_backend()
+    dek_ct = backend.encrypt(dek, context=context)
+
+    # Zero the DEK before returning so the plaintext key doesn't sit in
+    # the caller's memory longer than necessary. The bytes object is
+    # immutable in CPython, so we rebind to a sentinel — best-effort.
+    del dek
+
+    return {
+        "version": _BACKUP_VERSION,
+        "encrypted": True,
+        "created_at": datetime.now().isoformat(),
+        "context": context,
+        "dek_ct": dek_ct,
+        "nonce_b64": _b64(nonce),
+        "ciphertext_b64": _b64(ciphertext),
+    }
+
+
+def _envelope_decrypt(envelope: dict[str, Any]) -> bytes:
+    """Inverse of :func:`_envelope_encrypt`. Returns the plaintext JSON.
+
+    Raises if the envelope is malformed, the DEK wrap is invalid, or
+    the AES-GCM tag fails to verify (the GCM tag is what catches a
+    flipped ciphertext / nonce bit; the wrap failure catches a swapped
+    ``dek_ct``).
+    """
+    from base64 import b64decode
+
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    from wg_manager.crypto import make_backend
+
+    required = {"dek_ct", "nonce_b64", "ciphertext_b64", "context"}
+    missing = required - envelope.keys()
+    if missing:
+        raise ValueError(f"envelope missing required fields: {sorted(missing)}")
+
+    backend = make_backend()
+    dek = backend.decrypt(envelope["dek_ct"], context=envelope["context"])
+    nonce = b64decode(envelope["nonce_b64"])
+    ciphertext = b64decode(envelope["ciphertext_b64"])
+
+    aesgcm = AESGCM(dek)
+    plaintext = aesgcm.decrypt(nonce, ciphertext, associated_data=None)
+    del dek
+    return plaintext
+
+
+def _b64(raw: bytes) -> str:
+    """Base64-encode ``raw`` as an ASCII string. Centralised so the
+    envelope helpers stay readable."""
+    from base64 import b64encode
+
+    return b64encode(raw).decode("ascii")
+
+
 @db_app.command("backup")
 def db_backup(
     output: Path = typer.Option(
@@ -550,6 +661,17 @@ def db_backup(
         envvar="DATABASE_URL",
         help="Override the configured DATABASE_URL.",
     ),
+    encrypt: bool = typer.Option(
+        False,
+        "--encrypt",
+        help=(
+            "Wrap the dump in a Transit-data-key envelope (Phase 2e "
+            "backup cycle 2). Mints a per-backup AES-256-GCM key, "
+            "encrypts the JSON with it, wraps the key via the configured "
+            "CryptoBackend (Transit in production, LocalDev in tests). "
+            "Restore with `wg-manager db restore --decrypt`."
+        ),
+    ),
 ) -> None:
     """Dump all wg-manager data to a portable JSON file.
 
@@ -557,6 +679,13 @@ def db_backup(
     (SSHKey, Server, Client) as plain JSON objects, preserving primary keys,
     foreign keys, and timestamps. The file can be restored into any
     supported backend (MySQL, SQLite, PostgreSQL, etc.).
+
+    Pass ``--encrypt`` to wrap the dump in an envelope-encrypted form
+    so a leaked backup file is not equivalent to a leaked database
+    (closes a residual variant of T-1). The wrap path uses the
+    :class:`wg_manager.crypto.CryptoBackend` selected by
+    ``CRYPTO_BACKEND``, so a production deployment with Vault
+    Transit gets the Transit data-key flow without additional config.
     """
     from sqlmodel import Session, select
 
@@ -576,7 +705,21 @@ def db_backup(
             rows = session.exec(select(model)).all()
             dump["tables"][table_name] = [_serialize_row(r) for r in rows]
 
-    output.write_text(json.dumps(dump, indent=2, default=str, sort_keys=True))
+    plaintext = json.dumps(dump, indent=2, default=str, sort_keys=True)
+
+    if encrypt:
+        envelope = _envelope_encrypt(plaintext.encode("utf-8"))
+        output.write_text(json.dumps(envelope, indent=2, sort_keys=True))
+        for table_name in _TABLE_ORDER:
+            count = len(dump["tables"][table_name])
+            typer.echo(f"  {table_name}: {count} row(s)")
+        typer.echo(
+            f"encrypted backup written to {output} "
+            f"(DEK wrapped via {envelope['dek_ct'].split(':', 1)[0]} backend)"
+        )
+        return
+
+    output.write_text(plaintext)
     for table_name in _TABLE_ORDER:
         count = len(dump["tables"][table_name])
         typer.echo(f"  {table_name}: {count} row(s)")
@@ -605,6 +748,16 @@ def db_restore(
         "--drop-existing",
         help="Delete all existing rows before inserting (required if tables are non-empty).",
     ),
+    decrypt: bool = typer.Option(
+        False,
+        "--decrypt",
+        help=(
+            "Unwrap a Transit-data-key envelope (Phase 2e backup cycle "
+            "2) before restoring. Required for files produced by "
+            "`wg-manager db backup --encrypt`; rejected on a plain "
+            "JSON dump."
+        ),
+    ),
 ) -> None:
     """Restore wg-manager data from a JSON backup file.
 
@@ -614,12 +767,59 @@ def db_restore(
 
     By default the command refuses to proceed if any target table
     already contains rows. Pass ``--drop-existing`` to truncate first.
+
+    Pass ``--decrypt`` to unwrap an envelope-encrypted backup produced
+    by ``db backup --encrypt``. The DEK is unwrapped via the
+    :class:`wg_manager.crypto.CryptoBackend` selected by
+    ``CRYPTO_BACKEND`` — must be the same backend that wrapped it.
     """
     from sqlmodel import Session, select
 
     from wg_manager.models import Client, NodeStatus, SSHKey, Server
 
-    raw = json.loads(input_file.read_text())
+    raw_text = input_file.read_text()
+    try:
+        raw = json.loads(raw_text)
+    except json.JSONDecodeError as exc:
+        typer.secho(
+            f"backup file is not valid JSON: {exc}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+
+    # Mode-mismatch ergonomics: tell the operator exactly which flag is
+    # missing or extra. Without this, an encrypted file restored without
+    # ``--decrypt`` would land on a confusing version-mismatch error
+    # because the envelope JSON has no ``tables`` key.
+    file_is_encrypted = bool(raw.get("encrypted"))
+    if file_is_encrypted and not decrypt:
+        typer.secho(
+            "backup file is encrypted; pass --decrypt to restore",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if decrypt and not file_is_encrypted:
+        typer.secho(
+            "backup file is plain JSON, not encrypted — drop --decrypt",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    if decrypt:
+        try:
+            plaintext = _envelope_decrypt(raw)
+        except Exception as exc:  # noqa: BLE001 — surface every failure shape
+            typer.secho(
+                f"decrypt failed: {exc}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        raw = json.loads(plaintext.decode("utf-8"))
+
     version = raw.get("version", 0)
     if version != _BACKUP_VERSION:
         typer.secho(

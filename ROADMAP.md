@@ -1250,10 +1250,47 @@ you'd actually deploy.
   references. Pure parse-and-assert so the fast ``make test``
   invocation stays hermetic — live verification is the operator's
   job during a drill.
-- **Backup story.** Documented `vault operator raft snapshot save`
-  cadence; MySQL dumps documented to be encrypted at rest using the
-  Transit data-key flow so a leaked dump is not equivalent to a leaked
-  key (closes a residual variant of T-1).
+- **Backup story** `[x]` (backup cycle 2 shipped 2026-06-03). Both
+  halves shipped together.
+  - **Encrypted MySQL dumps.** `wg-manager db backup --encrypt` (and
+    `db restore --decrypt`) wrap the existing JSON dump in an
+    AES-256-GCM envelope keyed by a per-backup random DEK. The DEK
+    is wrapped via :func:`wg_manager.crypto.make_backend` — so a
+    production deployment with Vault Transit gets the Transit
+    data-key flow without additional configuration; tests use the
+    LocalDevBackend Fernet wrap so the round-trip is hermetic. The
+    on-disk envelope records ``{version, encrypted, created_at,
+    context, dek_ct, nonce_b64, ciphertext_b64}`` so the AES-GCM tag
+    catches a flipped bit in any of the three encrypted fields and
+    the context binds the wrap to this specific backup (swapping a
+    DEK ciphertext between two backups fails). Mode-mismatch
+    ergonomics: ``restore`` without ``--decrypt`` on an encrypted
+    file (and vice versa) errors clearly rather than landing on a
+    cryptic JSON-shape failure. Tests:
+    [`tests/test_db_backup_encrypt.py`](tests/test_db_backup_encrypt.py)
+    pins the envelope shape, the round-trip, three tamper-detection
+    paths (flipped ciphertext bit, flipped nonce bit, swapped
+    ``dek_ct``), and the two mode-mismatch shapes — 10 cases. Closes
+    a residual variant of T-1: a leaked dump is no longer equivalent
+    to a leaked database.
+  - **Vault raft snapshot save** via the new `make backup-vault`
+    target (wraps `vault operator raft snapshot save` against the
+    dev container; production operators run the raw `vault` CLI
+    against their Vault address). 5 cases in
+    [`tests/test_makefile_backup.py`](tests/test_makefile_backup.py)
+    pin the target's shape.
+  - **`docs/runbooks/backup-restore.md`** (new) covers scope (what
+    is backed up, what is not), cadence (default tables for MySQL
+    every 6h, Vault every 1h), the take-a-backup + restore halves
+    end-to-end, verification, and a first-time restore drill against
+    a throwaway compose stack. Plus a parallel "Backup timer" section
+    in [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)
+    shipping `wg-manager-backup.service` + `.timer` and
+    `vault-snapshot.service` + `.timer` unit-file templates with a
+    backup-side disaster-recovery walkthrough. 14 cases in
+    [`tests/test_runbooks.py`](tests/test_runbooks.py) pin the
+    runbook's IR section frame, required commands, cross-references,
+    and the systemd-timer doc's backup subsection.
 - **Reproducible builds.** `pyproject.toml` is locked via `uv lock`; the
   release workflow builds from the lockfile and refuses unpinned
   upgrades.

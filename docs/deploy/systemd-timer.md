@@ -165,3 +165,136 @@ If the renewer hasn't run in a while (e.g. host was offline):
    row stays untouched — no half-rotated state to clean up.
 4. Re-run by hand: ``sudo systemctl start
    wg-manager-cert-renew.service``.
+
+---
+
+## Backup timer (Phase 2e backup cycle 2)
+
+The same systemd-timer pattern wraps the cycle 2 backup story. Two
+units run ``wg-manager db backup --encrypt`` and (on production
+Vault) ``vault operator raft snapshot save`` on their respective
+cadences. The cadences differ — Vault snapshots run more frequently
+than MySQL dumps because the Vault key material is harder to
+reconstruct after a loss — so they ship as two separate timer
+families rather than one unified unit.
+
+The full backup + restore drill lives in
+[`docs/runbooks/backup-restore.md`](../runbooks/backup-restore.md);
+this section just wires the cadence into systemd.
+
+### wg-manager-backup (MySQL encrypted dump)
+
+**`/etc/systemd/system/wg-manager-backup.service`**
+
+```ini
+[Unit]
+Description=wg-manager — encrypted DB backup
+Documentation=https://github.com/your-org/wg-manager/blob/main/docs/runbooks/backup-restore.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=wg-manager
+Group=wg-manager
+EnvironmentFile=/etc/wg-manager/wg-manager.env
+# The path is timestamped so each run produces a new file; ship the
+# whole /var/backups/wg-manager directory off-host with your existing
+# log/backup shipper.
+ExecStart=/bin/sh -c '/opt/wg-manager/.venv/bin/wg-manager db backup \
+    --output /var/backups/wg-manager/db-$(date -u +%%Y%%m%%dT%%H%%M%%SZ).enc.json \
+    --encrypt'
+# Prune local copies older than 7 days; the off-host shipper keeps the
+# 30-day retention. Adjust to your IR window.
+ExecStartPost=/usr/bin/find /var/backups/wg-manager -name 'db-*.enc.json' -mtime +7 -delete
+StandardOutput=journal
+StandardError=journal
+```
+
+**`/etc/systemd/system/wg-manager-backup.timer`**
+
+```ini
+[Unit]
+Description=wg-manager — every-6-hours DB backup
+Documentation=https://github.com/your-org/wg-manager/blob/main/docs/runbooks/backup-restore.md
+
+[Timer]
+# Every 6 hours with a small jitter so the encrypt + ship cycle
+# doesn't compete with the cert-renew sweep at the top of the hour.
+OnCalendar=0/6:00
+RandomizedDelaySec=10min
+Persistent=true
+Unit=wg-manager-backup.service
+
+[Install]
+WantedBy=timers.target
+```
+
+### vault-snapshot (raft snapshot save)
+
+**`/etc/systemd/system/vault-snapshot.service`**
+
+```ini
+[Unit]
+Description=Vault — raft snapshot save
+Documentation=https://github.com/your-org/wg-manager/blob/main/docs/runbooks/backup-restore.md
+After=vault.service
+Requires=vault.service
+
+[Service]
+Type=oneshot
+User=vault
+Group=vault
+EnvironmentFile=/etc/wg-manager/wg-manager.env
+ExecStart=/bin/sh -c '/usr/local/bin/vault operator raft snapshot save \
+    /var/backups/vault/snap-$(date -u +%%Y%%m%%dT%%H%%M%%SZ).snap'
+# Local retention shorter than the DB dump because Vault snapshots
+# are bigger and your off-host store should be the long-term home.
+ExecStartPost=/usr/bin/find /var/backups/vault -name 'snap-*.snap' -mtime +1 -delete
+StandardOutput=journal
+StandardError=journal
+```
+
+**`/etc/systemd/system/vault-snapshot.timer`**
+
+```ini
+[Unit]
+Description=Vault — hourly raft snapshot
+Documentation=https://github.com/your-org/wg-manager/blob/main/docs/runbooks/backup-restore.md
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=vault-snapshot.service
+
+[Install]
+WantedBy=timers.target
+```
+
+### Enable both
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wg-manager-backup.timer vault-snapshot.timer
+
+# Verify next-fire timestamps:
+sudo systemctl list-timers --no-pager | grep -E 'wg-manager-backup|vault-snapshot'
+```
+
+### Backup-side disaster recovery
+
+If the backup timer hasn't run in a while:
+
+1. Check ``systemctl status wg-manager-backup.timer`` — the
+   ``Last`` field tells you when the unit last fired. A gap larger
+   than the cadence is the signal something is wrong.
+2. ``journalctl -u wg-manager-backup.service --since '24h ago'``
+   surfaces the underlying error (most commonly: ``EnvironmentFile``
+   path missing, output directory not writable by the service
+   user, or the Vault hop failing on the DEK wrap).
+3. Run a manual backup against the same env:
+   ``sudo -u wg-manager wg-manager db backup --output /tmp/manual.enc.json --encrypt``
+4. If the env file is the problem and rotating Vault credentials
+   fixed it, restart the timer to pick up the change:
+   ``sudo systemctl restart wg-manager-backup.timer``.

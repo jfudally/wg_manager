@@ -10,6 +10,51 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e backup cycle 2 — encrypted DB dumps + Vault raft
+  snapshots + restore runbook.** Closes a residual variant of T-1
+  (a leaked MySQL dump is no longer equivalent to a leaked database)
+  and ships the cadence + restore drill the on-call needs after
+  cycle 1's `vault-down.md` / `key-compromise.md` send them here.
+
+  - `wg-manager db backup --encrypt` wraps the existing JSON dump in
+    a per-backup AES-256-GCM envelope. The DEK is wrapped via
+    `wg_manager.crypto.make_backend()` — production deployments with
+    Vault Transit get the Transit data-key flow without extra
+    configuration; tests use the LocalDevBackend Fernet wrap. The
+    on-disk envelope records `{version, encrypted, created_at,
+    context, dek_ct, nonce_b64, ciphertext_b64}`. `db restore
+    --decrypt` inverts. Mode-mismatch ergonomics: passing
+    `--decrypt` against a plain backup (or omitting it on an
+    encrypted backup) errors clearly rather than dying inside
+    AES-GCM.
+  - New `make backup-vault` target wraps `vault operator raft
+    snapshot save` against the dev compose container. Production
+    operators run the raw `vault` CLI against their own Vault
+    address — both paths land in the runbook.
+  - New `docs/runbooks/backup-restore.md` covers scope, cadence
+    (MySQL every 6h, Vault every 1h as default tables), take-a-
+    backup steps for both halves, the **restore order** (Vault
+    first, then MySQL), verification end-to-end, and a first-time
+    restore-drill checklist against a throwaway compose stack.
+  - New "Backup timer" section in `docs/deploy/systemd-timer.md`
+    ships `wg-manager-backup.service` + `.timer` plus
+    `vault-snapshot.service` + `.timer` unit-file templates with a
+    backup-side disaster-recovery walkthrough.
+  - 29 new test cases:
+    [`tests/test_db_backup_encrypt.py`](tests/test_db_backup_encrypt.py)
+    × 10 (envelope shape, round-trip, three tamper paths, mode
+    mismatch, backend integration);
+    [`tests/test_makefile_backup.py`](tests/test_makefile_backup.py)
+    × 5 (target declaration, raft snapshot wrapping, dev-compose
+    target, snapshots path, help line); 14 new cases extending
+    [`tests/test_runbooks.py`](tests/test_runbooks.py) (runbook
+    existence, IR section frame, required commands, cross-references,
+    README + SECURITY discoverability, systemd-timer subsection).
+  - Discoverability: README's runbooks bullet now lists three
+    runbooks; SECURITY.md's "Operator runbooks" section gains the
+    backup-restore link. ROADMAP's backup-story bullet flips to
+    shipped.
+
 - **Phase 2e runbooks cycle 1 — operator runbooks for key compromise
   and Vault outage.** First slice of the Phase 2e ops-hygiene
   closeout. Two operator-facing runbooks under
