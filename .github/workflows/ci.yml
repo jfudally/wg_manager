@@ -1,0 +1,75 @@
+# Phase 2e CI baseline — runs the fast test suite on every push and PR
+# against ``main``. Security gates (gitleaks, pip-audit, npm audit, bandit,
+# semgrep) ship in subsequent cycles as their own workflows / jobs so
+# failures bisect to a single gate.
+#
+# The Phase 2c CP5 / 2d CP5 e2e buckets stay out of this workflow on
+# purpose — they need a dockerised sshd / live ``uvicorn`` subprocess
+# and longer wall-clock. The fast suite (``-m 'not e2e and not e2e_tls'``
+# from ``pyproject.toml`` addopts) is what guards every PR.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Sync dependencies (incl. dev)
+        run: uv sync --extra dev --frozen
+
+      - name: Run fast test suite
+        run: uv run --frozen pytest -q
+
+  dashboard:
+    name: Dashboard (tsc + vitest)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dashboard deps
+        run: npm ci
+
+      # ``npx tsc --noEmit`` is intentionally *not* gated here yet. The
+      # pre-existing ``lib/proxy.ts:124`` ``Uint8Array<ArrayBufferLike>``
+      # ↔ ``BodyInit`` complaint (flagged out-of-scope in Phase 2d CP3.4)
+      # would fail this gate on day one. Re-add the step once that lands.
+
+      - name: Vitest
+        run: npm run test

@@ -1,5 +1,7 @@
 # wg-manager
 
+[![CI](https://github.com/jfudally/wg_manager/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jfudally/wg_manager/actions/workflows/ci.yml)
+
 FastAPI control-plane that registers and manages a WireGuard hub-and-spoke network.
 
 ## Quickstart
