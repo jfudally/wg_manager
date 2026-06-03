@@ -10,6 +10,45 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2f cycle 3 — cosign keyless signing + verify gate.**
+  Closes Phase 2e's "Deferred — cosign verify" bullet. Every image
+  the release workflow publishes is now signed with cosign keyless
+  OIDC against GitHub Actions' Fulcio issuer; a separate verify
+  workflow proves the signatures verify against the canonical
+  identity.
+
+  - `.github/workflows/release.yml` extended: each
+    `build-and-push-*` job installs `sigstore/cosign-installer@v3`
+    and runs `cosign sign --yes "${IMAGE}@${DIGEST}"` against the
+    immutable digest the push step emits. Signing the digest (not
+    the tag) means a future re-tag inherits the signature.
+  - New `.github/workflows/image-verify.yml` is the consumer-side
+    gate. Runs on `workflow_dispatch` (with a `tag` input,
+    defaults to `latest`) and on a daily 14:00 UTC cron. **Not**
+    on push/PR — verification before the first release is cut
+    would always fail. Two jobs (verify-api + verify-web) run
+    `cosign verify` with `--certificate-identity-regexp` pinned to
+    the canonical release workflow path in this repo (catches
+    fork-workflow / stolen-token / malicious-mirror signatures)
+    and `--certificate-oidc-issuer` pinned to GitHub Actions'
+    Fulcio issuer (catches Fulcio certs from other OIDC
+    providers).
+  - The cron failure mode is exactly the alerting trigger an
+    operator wants: a previously-verified image no longer verifies
+    → someone tampered with it after publish.
+  - `docs/release.md` grows a "Verifying a published image"
+    section covering the downstream-pull flow + the CI workflow
+    path + what the identity binding catches.
+  - 16 new test cases:
+    [`tests/test_image_verify_workflow.py`](tests/test_image_verify_workflow.py)
+    × 11 (workflow exists, triggers on dispatch + schedule but
+    NOT push/PR, dispatch takes `tag` input, contents-read
+    least-privilege perms, installs cosign, calls `cosign verify`,
+    pins identity regexp + OIDC issuer, covers both images); plus
+    5 cases extending `tests/test_release_workflow.py`'s
+    `TestCosignSigning` (installs cosign, signs pushed images,
+    `--yes` flag, signs by digest not tag).
+
 - **Phase 2f cycle 2 — tagged release workflow + GHCR publish.**
   Closes the second of four Phase 2f cycles. A `git push origin
   v<X.Y.Z>` now produces published images at

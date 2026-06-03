@@ -1076,15 +1076,13 @@ you'd actually deploy.
     `p/python` is clean (0 findings) so no allowlist needed.
   - CI-gate cycle 5 (2026-06-03) — ROADMAP sweep + cosign deferral
     (this slice). No production-code changes; docs only.
-  - **Deferred — cosign verify.** The Phase 2e ROADMAP also called
-    for `cosign verify` of the published Docker image in the
-    release job. Blocked on a release job existing in the first
-    place: there is no Docker publish flow on `main` today, so
-    there is no signed image for cosign to verify and no release
-    workflow to bolt the gate onto. Tracked alongside the SBOM
-    bullet (which has the same blocker — `cyclonedx-py` /
-    `cyclonedx-npm` need a release artefact to attach to). Both
-    land together when the release-engineering slice opens.
+  - **Cosign verify `[x]`** (Phase 2f cycle 3 shipped 2026-06-03).
+    Was deferred to Phase 2f's release-engineering slice — that
+    slice landed; Phase 2f cycle 2 ships the release workflow that
+    publishes signed images to GHCR, and cycle 3 layers ``cosign
+    sign`` (keyless OIDC) on the publish + ships a separate
+    [`.github/workflows/image-verify.yml`](.github/workflows/image-verify.yml)
+    consumer gate. See Phase 2f § Cycle 3 for the full detail.
 - **SBOM.** `cyclonedx-py` and `cyclonedx-npm` emit SBOMs in the release
   workflow; attached to the GitHub release.
 - **Dependency hygiene** `[x]` (Dependabot cycle 1 shipped 2026-06-03).
@@ -1451,13 +1449,51 @@ plan:
   shells out to the extractor, creates a GitHub release, does NOT
   cancel-in-progress). After cycle 2 there is a published artefact
   for cycles 3 + 4 to operate on.
-- **Cycle 3 `[ ]`** — Cosign keyless signing + verify gate. The
-  release workflow signs each pushed image with cosign using
-  GitHub's OIDC token (no key management); new
-  ``.github/workflows/image-verify.yml`` runs ``cosign verify``
-  against the signed images on every PR + push as the consumer-
-  side gate. Phase 2e's "Deferred — cosign verify" bullet flips to
-  shipped here.
+- **Cycle 3 `[x]`** (2026-06-03) — Cosign keyless signing + verify
+  gate. Closes Phase 2e's "Deferred — cosign verify" bullet.
+  - Release workflow extended: each ``build-and-push-*`` job now
+    installs cosign (``sigstore/cosign-installer@v3``) and runs
+    ``cosign sign --yes "${IMAGE}@${DIGEST}"`` against the
+    immutable digest the push step emits. Signing the digest (not
+    the tag) means a future re-tag inherits the signature — a tag
+    is just a pointer at a digest, and the signature lives next to
+    the digest in OCI storage. The OIDC token comes from the
+    workflow's ``id-token: write`` permission (cycle 2 already
+    pinned this for forward-compatibility).
+  - New
+    [`.github/workflows/image-verify.yml`](.github/workflows/image-verify.yml)
+    is the consumer-side gate. Runs on ``workflow_dispatch`` (with
+    a ``tag`` input defaulting to ``latest``) and on a daily 14:00
+    UTC cron. **Not** on push/PR — verification before the first
+    release is cut would always fail, which is noise; the
+    dispatch + cron rhythm gives the same posture without the
+    false negatives. Two jobs (``verify-api`` + ``verify-web``)
+    each run ``cosign verify`` with:
+    - ``--certificate-identity-regexp`` pinned to the canonical
+      release workflow path in this repo (a Fulcio-issued cert
+      with any other identity — fork's workflow, stolen token
+      from a different repo, malicious mirror — fails).
+    - ``--certificate-oidc-issuer`` pinned to
+      ``https://token.actions.githubusercontent.com`` (Fulcio
+      certs from other OIDC providers fail).
+  - Cron's failure mode is exactly the alerting trigger an
+    operator wants: a previously-verified image no longer verifies
+    → someone tampered with it after publish. Wire the workflow's
+    failure notification into on-call.
+  - [`docs/release.md`](docs/release.md) grows a "Verifying a
+    published image" section walking both the downstream-pull
+    flow (``cosign verify`` from an operator's machine before a
+    production pull) and the CI workflow path.
+  - 16 new test cases:
+    [`tests/test_image_verify_workflow.py`](tests/test_image_verify_workflow.py)
+    × 11 (workflow exists, triggers on dispatch + schedule but
+    NOT push/PR, dispatch takes ``tag`` input, contents-read
+    least-privilege perms, installs cosign, calls ``cosign
+    verify``, pins identity regexp + OIDC issuer, covers both
+    images); plus 5 cases extending
+    [`tests/test_release_workflow.py`](tests/test_release_workflow.py)'s
+    ``TestCosignSigning`` (installs cosign, signs pushed images,
+    ``--yes`` flag, signs by digest not tag).
 - **Cycle 4 `[ ]`** — SBOM attachment. ``cyclonedx-py`` +
   ``cyclonedx-npm`` emit per-component SBOMs in the release job;
   attached to the GitHub release as build artefacts. The
