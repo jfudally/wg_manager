@@ -1,0 +1,112 @@
+# Prometheus alerting rules for wg-manager (Phase 3a cycle 3).
+#
+# Drop this file into your Prometheus config's ``rule_files:`` list:
+#
+#   # prometheus.yml
+#   rule_files:
+#     - /etc/prometheus/wg-manager-alerts.yaml
+#
+# Three rules covering the most operationally-meaningful failure
+# modes a v0.1.0 wg-manager deployment can hit:
+#
+#   * Wg5xxSurge          — 5xx-rate climbs (almost always a backend
+#                           dependency degradation, not a bug)
+#   * WgVaultLatencyHigh  — Vault round-trip p95 > 2s (Vault is the
+#                           critical-path bottleneck; cert renewal,
+#                           provisioning, and encrypted backups all
+#                           wait on it)
+#   * WgCertExpiringSoon  — a non-revoked cert is within 7 days of
+#                           expiry; the cert-renew systemd timer
+#                           should have caught it (see
+#                           docs/deploy/systemd-timer.md), so this
+#                           firing means the timer skipped
+#
+# Tune ``for:`` durations to your deployment's pain tolerance. The
+# defaults are conservative: short enough to catch incidents,
+# long enough that a transient blip doesn't page on-call.
+
+groups:
+  - name: wg-manager.observability
+    interval: 30s
+    rules:
+      # ----- HTTP -------------------------------------------------
+      - alert: Wg5xxSurge
+        # Fires when the rolling 5xx fraction over the last 5 minutes
+        # is above 5% of total request rate. Stays in pending for 5m
+        # to absorb transient blips; pages after that.
+        expr: |
+          (
+            sum(rate(wg_manager_http_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(wg_manager_http_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "wg-manager 5xx rate above 5% (5m)"
+          description: |
+            More than 5% of wg-manager HTTP responses over the last
+            5 minutes returned 5xx. Check the Backend (pytest) log
+            stream and the recent Vault round-trip latency panel on
+            the service-health Grafana dashboard — most 5xx
+            incidents originate downstream.
+          runbook: docs/observability.md#alerting-recipes
+
+      # ----- Vault ------------------------------------------------
+      - alert: WgVaultLatencyHigh
+        # Vault round-trip p95 has stayed above 2s for 5m. Most
+        # commonly: Vault is sealed (likely a recent restart), the
+        # network between wg-manager and Vault has degraded, or
+        # Vault is under-provisioned for its load. The vault-down
+        # runbook walks every recovery branch.
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le, engine) (
+              rate(wg_manager_vault_request_duration_seconds_bucket[5m])
+            )
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+          component: vault
+        annotations:
+          summary: "Vault round-trip p95 above 2s for 5m ({{ $labels.engine }})"
+          description: |
+            The 95th percentile of wg-manager's Vault round-trip
+            durations has stayed above 2 seconds for the last 5
+            minutes against engine ``{{ $labels.engine }}``. This
+            is upstream of every provisioning task, cert issue/
+            renew, and encrypted backup — degraded Vault means
+            degraded wg-manager.
+          runbook: docs/runbooks/vault-down.md
+
+      # ----- Cert lifecycle --------------------------------------
+      - alert: WgCertExpiringSoon
+        # A non-revoked cert is within 7 days of expiry. The
+        # cert-renew systemd timer (docs/deploy/systemd-timer.md)
+        # should have caught this — if it's firing, the timer
+        # skipped, or the cert was issued via POST /certs (no
+        # ``out_*_path``) so the walker skips it. Re-issue via the
+        # CLI to opt into automated renewal.
+        expr: (wg_manager_cert_not_after_seconds - time()) < 7 * 86400
+        for: 30m
+        labels:
+          severity: warning
+          component: certs
+        annotations:
+          summary: "Cert {{ $labels.cn }} ({{ $labels.cert_type }}) expires in < 7d"
+          description: |
+            The cert with serial={{ $labels.serial }} CN={{ $labels.cn
+            }} ({{ $labels.cert_type }}) is non-revoked and will
+            expire within 7 days. The cert-renew walker normally
+            handles this 50% of the way into the cert's lifetime —
+            check the cert-renew systemd timer status and re-run
+            ``wg-manager certs renew --due`` against the host
+            running it. Rows issued via POST /certs (no out_*_path)
+            are skipped by the walker — re-issue with
+            ``wg-manager certs issue --out-cert/...`` to opt into
+            automated renewal.
+          runbook: docs/deploy/systemd-timer.md

@@ -1570,7 +1570,7 @@ work-stream a downstream operator can adopt incrementally. Phase 3a
 ships first because every other sub-phase is harder to debug
 without observability.
 
-### Phase 3a — Observability `[~]`
+### Phase 3a — Observability `[x]` (shipped 2026-06-03)
 
 **Goal.** A v0.1.0 operator can answer "is wg-manager healthy right
 now, and if not, where is the failure?" without grepping logs.
@@ -1615,11 +1615,35 @@ provisioning path are the three deliverables.
   [`docs/observability.md`](docs/observability.md) grew a Tracing
   section with exporter selection, span topology diagram, sample
   collector config.
-- **Cycle 3 `[ ]`** — Operator dashboard polish + alerting recipes.
-  A second Grafana dashboard for the cert-lifecycle view (renewal
-  due dates, expiring-soon, revoked-this-week), example Prometheus
-  alerting rules (5xx surge, Vault round-trip p95 > 2s, cert TTL <
-  7 days), wired into ``docs/observability.md``.
+- **Cycle 3 `[x]`** (2026-06-03) — Operator dashboard polish +
+  alerting recipes. Closes Phase 3a. New per-cert gauge metric
+  ``wg_manager_cert_not_after_seconds{serial,cn,cert_type}``
+  emitted by a custom ``CertificateLifecycleCollector`` that walks
+  the ``certificate`` table on every scrape (revoked rows
+  excluded). Second Grafana dashboard
+  [`docs/observability/grafana-cert-lifecycle.json`](docs/observability/grafana-cert-lifecycle.json)
+  ships 5 panels: nearest-expiry top-20 table, expiring-in-7-days
+  + expiring-in-30-days stats by cert type, lifecycle event-rate
+  timeseries, active cert count by type.
+  [`docs/observability/prometheus-alerts.yaml`](docs/observability/prometheus-alerts.yaml)
+  ships three alerting rules: ``Wg5xxSurge`` (5xx fraction > 5%
+  over 5m), ``WgVaultLatencyHigh`` (Vault round-trip p95 > 2s for
+  5m), ``WgCertExpiringSoon`` (non-revoked cert TTL < 7 days).
+  Each alert includes a ``runbook`` annotation pointing at the
+  corresponding wg-manager runbook so Alertmanager templates can
+  render clickable links in the page payload.
+  [`docs/observability.md`](docs/observability.md) grew the
+  cert-lifecycle + alerting-recipes sections. 20 new test cases:
+  [`tests/test_cert_lifecycle_collector.py`](tests/test_cert_lifecycle_collector.py)
+  × 4 (gauge appears on /metrics, includes active certs, excludes
+  revoked, carries cn+cert_type labels);
+  [`tests/test_grafana_cert_lifecycle.py`](tests/test_grafana_cert_lifecycle.py)
+  × 5 (file exists, valid JSON, top-level shape, panels cover
+  the cert gauge + lifecycle counters);
+  [`tests/test_prometheus_alerts.py`](tests/test_prometheus_alerts.py)
+  × 11 (file exists, valid YAML, all three alerts present, exprs
+  reference the canonical metrics, every alert has expr +
+  annotations.summary).
 
 ### Phase 3b — Multi-tenant operator model `[ ]`
 

@@ -46,6 +46,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
+from prometheus_client.core import GaugeMetricFamily
 from prometheus_client.exposition import CONTENT_TYPE_LATEST
 
 # Module-local registry — keeps test isolation cleaner than relying
@@ -304,6 +305,74 @@ def vault_call(*, engine: str, operation: str) -> Iterator[None]:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Cert-lifecycle gauge collector (Phase 3a cycle 3)
+# ---------------------------------------------------------------------------
+
+
+class CertificateLifecycleCollector:
+    """Emit one ``wg_manager_cert_not_after_seconds`` sample per
+    non-revoked cert in the ``certificate`` table.
+
+    The collector walks the table on every scrape rather than caching
+    so a freshly-issued or freshly-revoked cert shows up on the next
+    Prometheus scrape (15s by default). Cardinality is bounded by the
+    active cert count — operators + service certs, typically tens —
+    so per-cert labels are safe.
+
+    Revoked certs are intentionally excluded: emitting a revoked
+    cert's expiry as a gauge sample would either fire noisy "expiring
+    soon" alerts on a cert nobody cares about, or mask the absence of
+    a real replacement.
+    """
+
+    def collect(self):  # noqa: ANN201 — prometheus_client's protocol
+        from sqlmodel import Session, select
+
+        from wg_manager import db as db_module
+        from wg_manager.models import Certificate
+
+        gauge = GaugeMetricFamily(
+            "wg_manager_cert_not_after_seconds",
+            (
+                "Unix timestamp of each non-revoked cert's `not_after`. "
+                "Subtract `time()` to get seconds-until-expiry; the "
+                "WgCertExpiringSoon alert fires on `< 7 days`."
+            ),
+            labels=["serial", "cn", "cert_type"],
+        )
+        try:
+            with Session(db_module.engine) as session:
+                rows = session.exec(
+                    select(Certificate).where(Certificate.revoked == False)  # noqa: E712
+                ).all()
+        except Exception:  # noqa: BLE001 — never let a DB blip crash the scrape
+            return
+        for row in rows:
+            if row.not_after is None:
+                continue
+            gauge.add_metric(
+                [
+                    str(row.serial),
+                    row.common_name or "",
+                    row.cert_type.value if row.cert_type else "",
+                ],
+                row.not_after.timestamp(),
+            )
+        yield gauge
+
+
+# Register the collector at import time so ``/metrics`` picks it up
+# without further wiring. Idempotent against test re-imports — the
+# CollectorRegistry rejects double-registration, so we guard it.
+try:
+    REGISTRY.register(CertificateLifecycleCollector())
+except ValueError:
+    # Already registered by an earlier import (e.g. pytest re-import
+    # under ``--forked``). Safe to ignore.
+    pass
+
+
 def metrics_response() -> tuple[bytes, str]:
     """Return ``(body, content_type)`` for the ``/metrics`` endpoint.
 
@@ -314,6 +383,7 @@ def metrics_response() -> tuple[bytes, str]:
 
 
 __all__ = [
+    "CertificateLifecycleCollector",
     "MetricsMiddleware",
     "REGISTRY",
     "certs_issued_total",

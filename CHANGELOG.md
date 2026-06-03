@@ -10,6 +10,44 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3a cycle 3 — cert-lifecycle dashboard + alerting recipes.**
+  Closes Phase 3a (observability). A v0.1.0 operator can now
+  answer "which certs are due for renewal this week?" and "should
+  on-call be paged right now?" from Grafana + Prometheus alone.
+
+  - New gauge metric `wg_manager_cert_not_after_seconds{serial,
+    cn, cert_type}` emitted by a custom
+    `CertificateLifecycleCollector` that walks the `certificate`
+    table on every scrape. Revoked rows excluded (emitting their
+    expiry would either fire noisy "expiring soon" alerts on
+    decommissioned certs, or mask the absence of a real
+    replacement).
+  - New `docs/observability/grafana-cert-lifecycle.json` dashboard
+    with 5 panels: nearest-expiry top-20 table, expiring-in-7-days
+    + expiring-in-30-days stats by cert type, lifecycle event-rate
+    timeseries (issue / renew / revoke), active cert count by type.
+  - New `docs/observability/prometheus-alerts.yaml` ships three
+    alerting rules:
+    - `Wg5xxSurge` — 5xx fraction > 5% over 5m
+    - `WgVaultLatencyHigh` — Vault round-trip p95 > 2s for 5m
+    - `WgCertExpiringSoon` — non-revoked cert TTL < 7 days
+    Each rule includes a `runbook` annotation pointing at the
+    corresponding wg-manager runbook so Alertmanager templates can
+    render clickable links in the page payload.
+  - `docs/observability.md` grew Cert-lifecycle + Alerting-recipes
+    sections covering the new metric, useful PromQL recipes, the
+    dashboard panels, and the alert tuning knobs.
+  - 20 new test cases:
+    `tests/test_cert_lifecycle_collector.py` × 4 (gauge appears on
+    /metrics, includes active certs, excludes revoked, carries
+    cn+cert_type labels);
+    `tests/test_grafana_cert_lifecycle.py` × 5 (file exists, valid
+    JSON, top-level shape, panels cover the cert gauge + lifecycle
+    counters);
+    `tests/test_prometheus_alerts.py` × 11 (file exists, valid
+    YAML, all three alerts present, exprs reference the canonical
+    metrics, every alert has expr + annotations.summary).
+
 - **Phase 3a cycle 2 — OTLP trace exporter on the provisioning path.**
   Three span families covering the full provisioning trace: Celery
   task root spans (auto-instrumented), Vault round-trip sub-spans

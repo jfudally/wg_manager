@@ -1,0 +1,221 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "description": "Cert-lifecycle dashboard for wg-manager (Phase 3a cycle 3). Pairs with the service-health dashboard: this one is where an operator answers 'which certs are due for renewal this week?' and 'are we keeping up with rotation?'. Import via Grafana UI: Dashboards → Import → Upload JSON file.",
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Top 20 non-revoked certs by nearest expiry. Read row-by-row to plan renewal.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso"
+        }
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "showHeader": true
+      },
+      "targets": [
+        {
+          "expr": "bottomk(20, wg_manager_cert_not_after_seconds * 1000)",
+          "format": "table",
+          "instant": true,
+          "legendFormat": "{{cn}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Certs by nearest expiry (top 20)",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Count of non-revoked certs expiring within the next 7 days, by type.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "id": 2,
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "count by (cert_type) ((wg_manager_cert_not_after_seconds - time()) < 7 * 86400)",
+          "legendFormat": "{{cert_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Expiring within 7 days, by type",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Count of non-revoked certs expiring within the next 30 days, by type. Useful for planning the next rotation sweep.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "id": 3,
+      "options": {
+        "reduceOptions": {
+          "calcs": ["lastNotNull"]
+        }
+      },
+      "targets": [
+        {
+          "expr": "count by (cert_type) ((wg_manager_cert_not_after_seconds - time()) < 30 * 86400)",
+          "legendFormat": "{{cert_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Expiring within 30 days, by type",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Hourly rate of cert lifecycle events, split by event type + cert type. A renewal spike here should match the cert-renew systemd-timer firings; a steady issue rate without matching renewals points at the renewal walker being stuck.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 16
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (cert_type) (rate(wg_manager_certs_issued_total[1h]))",
+          "legendFormat": "issued {{cert_type}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (cert_type) (rate(wg_manager_certs_renewed_total[1h]))",
+          "legendFormat": "renewed {{cert_type}}",
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (cert_type) (rate(wg_manager_certs_revoked_total[1h]))",
+          "legendFormat": "revoked {{cert_type}}",
+          "refId": "C"
+        }
+      ],
+      "title": "Cert lifecycle event rate by type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Total active certs by type. Sudden drops can indicate a sweep that revoked more than expected; sudden rises can indicate a renewal that didn't expire the predecessor.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "count by (cert_type) (wg_manager_cert_not_after_seconds)",
+          "legendFormat": "{{cert_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Active cert count by type",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 38,
+  "tags": ["wg-manager", "phase-3a", "certs"],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": false,
+          "text": "Prometheus",
+          "value": "prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "skipUrlSync": false,
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "wg-manager — cert lifecycle (Phase 3a cycle 3)",
+  "uid": "wg-manager-cert-lifecycle",
+  "version": 1,
+  "weekStart": ""
+}

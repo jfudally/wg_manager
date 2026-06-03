@@ -201,9 +201,97 @@ The worker process picks up the same env via
 `wg_manager.celery_app`'s top-level `setup_tracing` call — every
 provisioning task gets a trace under the worker, not just the API.
 
-### What's coming next
+## Cert lifecycle (Phase 3a cycle 3)
 
-- **Cycle 3** — Operator dashboard for the cert-lifecycle view
-  (renewal due dates, expiring-soon, revoked-this-week), plus
-  example Prometheus alerting rules (5xx surge, Vault round-trip
-  p95 > 2s, cert TTL < 7 days).
+A second Grafana dashboard +
+[`docs/observability/grafana-cert-lifecycle.json`](observability/grafana-cert-lifecycle.json),
+plus a per-cert TTL gauge so the operator dashboard can render
+"expiring soon" tables and the Prometheus alerting rule can fire
+at the right threshold.
+
+### Cert-expiry gauge
+
+The new metric:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `wg_manager_cert_not_after_seconds` | Gauge | `serial`, `cn`, `cert_type` |
+
+A custom collector walks the `certificate` table on every scrape
+and emits one sample per **non-revoked** row (revoked rows are
+deliberately excluded — emitting their expiry would either fire
+noisy "expiring soon" alerts on a cert nobody cares about, or mask
+the absence of a real replacement).
+
+Cardinality is bounded by the active cert count (operators +
+service certs, typically tens) so per-cert labels are safe.
+
+Useful PromQL:
+
+```promql
+# Certs expiring in the next 7 days
+(wg_manager_cert_not_after_seconds - time()) < 7 * 86400
+
+# Top 20 by nearest expiry
+bottomk(20, wg_manager_cert_not_after_seconds)
+
+# Active cert count by type
+count by (cert_type) (wg_manager_cert_not_after_seconds)
+```
+
+### Cert-lifecycle dashboard
+
+[`docs/observability/grafana-cert-lifecycle.json`](observability/grafana-cert-lifecycle.json)
+ships 5 panels:
+
+1. **Certs by nearest expiry (top 20)** — table view. Row-by-row
+   plan for the next rotation sweep.
+2. **Expiring within 7 days, by type** — single-stat per cert type.
+3. **Expiring within 30 days, by type** — same, longer horizon.
+4. **Cert lifecycle event rate by type** — issue / renew / revoke
+   timeseries. A renewal spike here should match the cert-renew
+   systemd-timer firings; a steady issue rate without matching
+   renewals points at the renewal walker being stuck.
+5. **Active cert count by type** — total non-revoked, by type.
+   Sudden drops or rises are worth investigating.
+
+Import via **Dashboards → Import → Upload JSON file** just like
+the cycle 1 service-health dashboard.
+
+## Alerting recipes (Phase 3a cycle 3)
+
+[`docs/observability/prometheus-alerts.yaml`](observability/prometheus-alerts.yaml)
+ships three alert rules covering the most operationally-meaningful
+failure modes:
+
+| Alert | Trigger | Runbook |
+|---|---|---|
+| `Wg5xxSurge` | 5xx fraction > 5% over 5m | [`observability.md#alerting-recipes`](#alerting-recipes) |
+| `WgVaultLatencyHigh` | Vault round-trip p95 > 2s for 5m | [`docs/runbooks/vault-down.md`](runbooks/vault-down.md) |
+| `WgCertExpiringSoon` | Non-revoked cert TTL < 7 days | [`docs/deploy/systemd-timer.md`](deploy/systemd-timer.md) |
+
+Drop the YAML into your Prometheus config:
+
+```yaml
+# prometheus.yml
+rule_files:
+  - /etc/prometheus/wg-manager-alerts.yaml
+```
+
+Tune the `for:` durations to your deployment's pain tolerance.
+The defaults are conservative: short enough to catch real
+incidents, long enough that a transient blip doesn't page
+on-call.
+
+### Annotated runbooks
+
+Each rule includes a `runbook` annotation pointing at the
+corresponding wg-manager runbook so an Alertmanager template
+can render it as a clickable link in the page payload:
+
+```yaml
+# alertmanager template (example)
+{{ define "runbook" -}}
+{{- if .Annotations.runbook }}https://github.com/jfudally/wg_manager/blob/main/{{ .Annotations.runbook }}{{ end -}}
+{{- end }}
+```
