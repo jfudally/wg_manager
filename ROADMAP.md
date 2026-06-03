@@ -53,7 +53,7 @@ on it. Throwaway work, time-boxed to ~2 days.
   `dev-only-root`. **Dev mode is in-memory by design** — restarts wipe
   state, and `scripts/vault_smoke.py` is idempotent so re-runs always
   succeed. Production storage / unseal / HA story is captured in
-  [`docs/vault-cookbook.md`](docs/vault-cookbook.md) §6 and lands in
+  [`docs/vault-cookbook.md`](docs/vault-cookbook.md) §7 and lands in
   Phase 2e.
 - [`scripts/vault_smoke.py`](scripts/vault_smoke.py) — single throwaway
   script proving Transit encrypt/decrypt (with per-row context), KV v2
@@ -1104,8 +1104,34 @@ you'd actually deploy.
   low-stakes version pins. Commit prefix `chore(deps):` matches the
   existing manual-bump convention so the supply-chain audit trail
   in `git log` stays uniform.
-- **Vault audit log** is shipped off-host (file sink + a `vector`
-  sidecar in compose; production story documented for journald/syslog).
+- **Vault audit log** `[~]` (audit-log cycle 1 shipped 2026-06-03;
+  cycles 2-3 pending). Three-cycle plan:
+  - **Cycle 1 `[x]`** (2026-06-03) — file audit device + persistent
+    volume. New module
+    [`wg_manager.vault_audit`](src/wg_manager/vault_audit.py) ships
+    `bootstrap_file_audit_device` — idempotent helper that enables a
+    Vault `file` audit device, pre-checking the device list rather
+    than relying on Vault's generic HTTP 400 for double-enable.
+    Refuses to clobber a non-`file` device at the same path
+    (silent rewiring loses in-flight records during rotation —
+    exactly the failure mode the audit log exists to prevent).
+    docker-compose mounts the new `wg_manager_vault_audit_logs`
+    named volume at `/vault/logs/` on the Vault container so the
+    audit file survives compose restarts. New operator-facing
+    [`scripts/vault_audit_bootstrap.py`](scripts/vault_audit_bootstrap.py)
+    + `make vault-audit-bootstrap` Makefile target. Cookbook §6
+    (new section) walks the wire-up and the verification flow.
+    Tests: 7 cases in
+    [`tests/test_vault_audit.py`](tests/test_vault_audit.py)
+    (enables-when-empty, idempotent re-run, refuses-different-type,
+    respects-custom-paths, tolerates both hvac payload shapes,
+    pins the two default-path constants).
+  - **Cycle 2 `[ ]`** — `vector` sidecar in compose, tails
+    `/vault/logs/audit.log` and emits to its own stdout for dev
+    visibility. Same named volume mounted read-only.
+  - **Cycle 3 `[ ]`** — Production-path docs (journald, syslog,
+    Loki / CloudWatch / S3+Object-Lock sinks). Acceptance-criterion
+    closer for the Phase 2e Vault-audit bullet.
 - **Application audit log** `[x]` (cycles 1-4 shipped 2026-06-01). New
   `auditevent` table; every mutating endpoint writes one row with
   operator subject (from the mTLS cert), resource, action, before/after

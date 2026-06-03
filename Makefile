@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -39,6 +39,8 @@ help:
 	@echo "  vault-down     Stop the dev Vault container"
 	@echo "  vault-logs     Tail the Vault container logs"
 	@echo "  vault-smoke    Run scripts/vault_smoke.py against the dev Vault"
+	@echo "  vault-audit-bootstrap"
+	@echo "                 Enable a file audit device on the dev Vault (Phase 2e)"
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
@@ -158,6 +160,15 @@ vault-logs:
 vault-smoke:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
 		$(PYTHON) scripts/vault_smoke.py
+
+# Phase 2e audit-log cycle 1 — enable a file audit device on the dev
+# Vault. Idempotent: a re-run against an already-bootstrapped Vault is
+# a no-op. The audit file lives in the wg_manager_vault_audit_logs
+# named volume (mounted at /vault/logs/ on the container) so it
+# survives compose restarts.
+vault-audit-bootstrap:
+	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
+		$(PYTHON) scripts/vault_audit_bootstrap.py
 
 # ---------------------------------------------------------------------------
 # SSH CA (Phase 2c) — see docs/vault-cookbook.md §3
