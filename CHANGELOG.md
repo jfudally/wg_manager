@@ -10,6 +10,43 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e Dependabot cycle 1 — supply-chain dep automation.** Closes
+  the Phase 2e "Dependency hygiene" ROADMAP bullet. New
+  [`.github/dependabot.yml`](.github/dependabot.yml) wires three
+  ecosystems for weekly Mondays 14:00 UTC:
+
+  - `uv` (Python — `pyproject.toml` + `uv.lock`)
+  - `npm` (dashboard — `web/package.json`)
+  - `github-actions` (version pins across the four CI-gate workflows)
+
+  The schedule deliberately aligns with the deps-audit cron
+  (`'0 14 * * 1'` in
+  [`.github/workflows/deps-audit.yml`](.github/workflows/deps-audit.yml))
+  so Dependabot's bump PRs and the scheduled `pip-audit` /
+  `npm audit` scan share one "supply-chain Monday" rhythm — bump
+  first, scan re-verifies the same surface a few hours later in
+  case anything new dropped overnight.
+
+  Grouping strategy keeps review noise tractable for a solo
+  maintainer: minor + patch versions collapse into a single PR per
+  ecosystem (`python-minor-patch`, `npm-minor-patch`,
+  `actions-all`); majors split out for individual review because
+  FastAPI 1.0, Pydantic v3, Next.js 15→16, and friends all need
+  real attention rather than auto-merge. Open-PR limit is the
+  Dependabot default (5) for `uv` / `npm`, dropped to 3 for
+  `github-actions` since those are mostly version pins.
+
+  Commit-message prefix `chore(deps)` with scope inclusion matches
+  the existing manual-bump convention (e.g.
+  `fc6796f chore(deps): add pyyaml to dev dependencies in uv.lock`)
+  so the supply-chain audit trail in `git log` stays uniform whether
+  the bump came from a human or Dependabot. Labels (`dependencies`
+  + per-ecosystem) keep the PR list filterable.
+
+  Docs-only outside the config file: ROADMAP § Phase 2e "Dependency
+  hygiene" flipped `[x]` with the cycle reference; this entry lands
+  the rationale in the changelog. No production-code changes.
+
 - **Phase 2e CI-gate cycles 1-5 — GitHub Actions security gates.**
   Five workflows landed across two days (2026-06-02 → 2026-06-03)
   closing the Phase 2e "CI gates" ROADMAP bullet — every push to
