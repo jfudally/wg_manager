@@ -34,9 +34,16 @@ services:
   # Vault in `-dev` mode. Phase 2a only — see docs/vault-cookbook.md.
   # Dev mode is in-memory and unsealed at boot, which is the *point*: any
   # `docker compose down && up` resets state, and scripts/vault_smoke.py is
-  # written to be idempotent so that's a feature, not a bug. A production
-  # Vault story (file/raft storage, auto-unseal, audit log shipping) is
-  # tracked in docs/vault-cookbook.md and lands in Phase 2e.
+  # written to be idempotent so that's a feature, not a bug.
+  #
+  # Phase 2e audit-log cycle 1: the ``wg_manager_vault_audit_logs`` named
+  # volume is mounted at ``/vault/logs/`` so that ``make
+  # vault-audit-bootstrap`` (which enables a Vault file audit device
+  # writing to ``/vault/logs/audit.log``) has a writable path that
+  # survives container restarts. Cycle 2 mounts the same volume into a
+  # ``vector`` sidecar that tails the file off-host. A production Vault
+  # story (file/raft storage, auto-unseal, off-host audit shipping) is
+  # tracked in docs/vault-cookbook.md.
   vault:
     image: hashicorp/vault:1.18
     container_name: wg_manager_vault
@@ -50,6 +57,8 @@ services:
     command: ["server", "-dev"]
     ports:
       - "8200:8200"
+    volumes:
+      - wg_manager_vault_audit_logs:/vault/logs
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health"]
       interval: 5s
@@ -82,3 +91,7 @@ volumes:
   wg_manager_mysql_data:
   wg_manager_valkey_data:
   wg_manager_sshd_e2e_state:
+  # Phase 2e audit-log cycle 1 — Vault file audit device writes
+  # /vault/logs/audit.log into this volume. Persists across compose
+  # restarts so the audit trail survives the dev workflow.
+  wg_manager_vault_audit_logs:
