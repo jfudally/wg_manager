@@ -8,6 +8,8 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+## [v0.1.0] - 2026-06-03
+
 ### Added
 
 - **Phase 2f cycle 4 — SBOM generation + attestation + release-asset
