@@ -30,3 +30,9 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+# Phase 3a cycle 1: importing the metrics module registers its
+# ``task_prerun`` + ``task_postrun`` signal handlers as a side effect.
+# Importing here (rather than only from ``main``) means the metrics
+# fire under the celery worker process too, not just the API.
+import wg_manager.metrics  # noqa: F401, E402 — side-effect import

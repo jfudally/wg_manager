@@ -242,33 +242,42 @@ class VaultTransitBackend:
 
     @property
     def key_version(self) -> int:
-        resp = self._client.secrets.transit.read_key(
-            name=self._key_name, mount_point=self._mount_point
-        )
+        from wg_manager.metrics import vault_call
+
+        with vault_call(engine="transit", operation="read"):
+            resp = self._client.secrets.transit.read_key(
+                name=self._key_name, mount_point=self._mount_point
+            )
         return int(resp["data"]["latest_version"])
 
     def encrypt(self, plaintext: bytes, *, context: str) -> str:
-        resp = self._client.secrets.transit.encrypt_data(
-            name=self._key_name,
-            plaintext=base64.b64encode(plaintext).decode("ascii"),
-            context=base64.b64encode(context.encode("utf-8")).decode("ascii"),
-            mount_point=self._mount_point,
-        )
+        from wg_manager.metrics import vault_call
+
+        with vault_call(engine="transit", operation="encrypt"):
+            resp = self._client.secrets.transit.encrypt_data(
+                name=self._key_name,
+                plaintext=base64.b64encode(plaintext).decode("ascii"),
+                context=base64.b64encode(context.encode("utf-8")).decode("ascii"),
+                mount_point=self._mount_point,
+            )
         return resp["data"]["ciphertext"]
 
     def decrypt(self, blob: str, *, context: str) -> bytes:
+        from wg_manager.metrics import vault_call
+
         if not blob.startswith(self.blob_prefix):
             raise DecryptError(
                 f"blob missing {self.blob_prefix!r} prefix; not a "
                 f"{self.name} ciphertext"
             )
         try:
-            resp = self._client.secrets.transit.decrypt_data(
-                name=self._key_name,
-                ciphertext=blob,
-                context=base64.b64encode(context.encode("utf-8")).decode("ascii"),
-                mount_point=self._mount_point,
-            )
+            with vault_call(engine="transit", operation="decrypt"):
+                resp = self._client.secrets.transit.decrypt_data(
+                    name=self._key_name,
+                    ciphertext=blob,
+                    context=base64.b64encode(context.encode("utf-8")).decode("ascii"),
+                    mount_point=self._mount_point,
+                )
         except HvacInvalidRequest as exc:
             raise DecryptError("vault transit decrypt failed") from exc
         except HvacVaultError as exc:
@@ -287,9 +296,12 @@ class VaultTransitBackend:
         CLI (Phase 2b follow-up) walks every row to upgrade existing
         ciphertext.
         """
-        self._client.secrets.transit.rotate_key(
-            name=self._key_name, mount_point=self._mount_point
-        )
+        from wg_manager.metrics import vault_call
+
+        with vault_call(engine="transit", operation="rotate"):
+            self._client.secrets.transit.rotate_key(
+                name=self._key_name, mount_point=self._mount_point
+            )
 
 
 # ---------------------------------------------------------------------------

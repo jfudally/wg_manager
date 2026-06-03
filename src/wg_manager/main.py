@@ -7,12 +7,13 @@ not call ``create_all`` on its own.
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from wg_manager._tls_uvicorn import enable_tls_extension
 from wg_manager.auth import MTLSAuthMiddleware
 from wg_manager.config import Settings, settings
+from wg_manager.metrics import MetricsMiddleware, metrics_response
 from wg_manager.routers import (
     audit,
     certs,
@@ -76,6 +77,15 @@ def create_app() -> FastAPI:
     # ``TLS_REQUIRED=true`` — see ``.env.example``.
     application.add_middleware(MTLSAuthMiddleware, settings=app_settings)
 
+    # Phase 3a cycle 1: Prometheus metrics. Added last so it runs
+    # innermost (Starlette runs middleware in reverse-added order),
+    # which means the recorded duration is the time spent in the
+    # routers — auth + CORS overhead lives in the outer layers and
+    # would distort the per-route latency histogram if included.
+    # The middleware skips OPTIONS preflight and the /metrics path
+    # itself; see :mod:`wg_manager.metrics`.
+    application.add_middleware(MetricsMiddleware)
+
     application.include_router(ssh_keys.router)
     application.include_router(servers.router)
     application.include_router(clients.router)
@@ -83,6 +93,16 @@ def create_app() -> FastAPI:
     application.include_router(crypto.router)
     application.include_router(certs.router)
     application.include_router(audit.router)
+
+    # Phase 3a cycle 1: /metrics endpoint exposes the Prometheus
+    # registry in the standard text format. Sits behind the mTLS
+    # listener like every other route — Prometheus scrapers
+    # configure a client cert the same way operators do.
+    @application.get("/metrics", include_in_schema=False)
+    def metrics() -> Response:
+        body, content_type = metrics_response()
+        return Response(content=body, media_type=content_type)
+
     return application
 
 

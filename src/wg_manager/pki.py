@@ -872,13 +872,16 @@ class VaultPKI:
         if ip_sans:
             extra["ip_sans"] = ",".join(ip_sans)
 
+        from wg_manager.metrics import vault_call
+
         try:
-            resp = self._client.secrets.pki.generate_certificate(
-                name=role,
-                common_name=common_name,
-                extra_params=extra,
-                mount_point=self._int_mount,
-            )
+            with vault_call(engine="pki", operation="issue"):
+                resp = self._client.secrets.pki.generate_certificate(
+                    name=role,
+                    common_name=common_name,
+                    extra_params=extra,
+                    mount_point=self._int_mount,
+                )
         except VaultError as exc:
             raise PKIError(
                 f"vault refused to issue ({role}, cn={common_name!r}): {exc}"
@@ -941,11 +944,14 @@ class VaultPKI:
 
     def revoke_cert(self, *, serial: int) -> None:
         """Mark ``serial`` revoked on the intermediate mount."""
+        from wg_manager.metrics import vault_call
+
         try:
-            self._client.secrets.pki.revoke_certificate(
-                serial_number=_int_to_hex_colon(serial),
-                mount_point=self._int_mount,
-            )
+            with vault_call(engine="pki", operation="revoke"):
+                self._client.secrets.pki.revoke_certificate(
+                    serial_number=_int_to_hex_colon(serial),
+                    mount_point=self._int_mount,
+                )
         except VaultError as exc:
             raise PKIError(
                 f"vault refused to revoke serial {serial}: {exc}"
@@ -953,8 +959,11 @@ class VaultPKI:
 
     def crl_pem(self) -> str:
         """Read the intermediate's current CRL in PEM form."""
+        from wg_manager.metrics import vault_call
+
         try:
-            resp = self._client.adapter.get(f"/v1/{self._int_mount}/crl/pem")
+            with vault_call(engine="pki", operation="read-crl"):
+                resp = self._client.adapter.get(f"/v1/{self._int_mount}/crl/pem")
         except VaultError as exc:
             raise PKIError(f"could not read CRL: {exc}") from exc
         text = getattr(resp, "text", None) or ""

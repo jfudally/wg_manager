@@ -1563,18 +1563,68 @@ blocked by anything in Phase 2.
 
 ---
 
-## Phase 3 — Scale / Polish (future)
+## Phase 3 — Scale / Polish (in progress)
 
-These are explicitly deferred until Phase 2 is closed. Listed so we don't
-quietly let them creep into the hardening work.
+Five sub-phases sized like Phase 2's: each is an independent
+work-stream a downstream operator can adopt incrementally. Phase 3a
+ships first because every other sub-phase is harder to debug
+without observability.
 
-- **Multi-tenant operator model.** Roles, scoped tokens, per-tenant peer
-  pools.
-- **HA control plane.** Two-replica FastAPI behind a load balancer;
-  Celery workers horizontally scaled; MySQL primary + replica with
-  failover.
-- **Observability.** Prometheus metrics, Grafana dashboard, OTLP traces
-  through the provisioning path.
-- **Public API spec.** OpenAPI versioning, deprecation policy, a
-  `v1`/`v2` namespace.
-- **Helm chart / Terraform module.** First-class Kubernetes deploy.
+### Phase 3a — Observability `[~]`
+
+**Goal.** A v0.1.0 operator can answer "is wg-manager healthy right
+now, and if not, where is the failure?" without grepping logs.
+Prometheus metrics + a Grafana dashboard + OTLP traces on the
+provisioning path are the three deliverables.
+
+- **Cycle 1 `[~]`** — Prometheus metrics endpoint + Grafana
+  dashboard. New
+  [`wg_manager.metrics`](src/wg_manager/metrics.py) module declares
+  the metric families, an ASGI middleware records every HTTP
+  request, Celery signal handlers wrap every task, the three
+  Vault-backed modules (``crypto`` / ``ssh_ca`` / ``pki``) get a
+  ``vault_call(engine, operation)`` context manager around each
+  round-trip, and the cert routers bump counters on every issue /
+  revoke / renew. ``GET /metrics`` exposes the Prometheus text
+  format through the existing mTLS listener — scrapers configure a
+  client cert the same way operators do. New
+  [`docs/observability/grafana-dashboard.json`](docs/observability/grafana-dashboard.json)
+  ships a starter dashboard covering HTTP request rate + p95
+  latency, Celery task success/failure + duration, Vault round-trip
+  latency by engine, and cert lifecycle events.
+- **Cycle 2 `[ ]`** — OTLP trace exporter on the provisioning path.
+  OpenTelemetry SDK setup, spans on the four Celery provisioning
+  tasks (``provision_server`` / ``reconfigure_server`` /
+  ``provision_client`` / ``discover_peers``), sub-spans on every
+  SSH connection + Vault round-trip those tasks make. Configurable
+  exporter (default off; in-memory for tests; OTLP/HTTP for
+  production).
+- **Cycle 3 `[ ]`** — Operator dashboard polish + alerting recipes.
+  A second Grafana dashboard for the cert-lifecycle view (renewal
+  due dates, expiring-soon, revoked-this-week), example Prometheus
+  alerting rules (5xx surge, Vault round-trip p95 > 2s, cert TTL <
+  7 days), wired into ``docs/observability.md``.
+
+### Phase 3b — Multi-tenant operator model `[ ]`
+
+Roles, scoped tokens, per-tenant peer pools. Big design surface
+(tenant boundary at server level? client level? namespace?) —
+worth doing after 3a so isolation can be validated against real
+metrics.
+
+### Phase 3c — Public API versioning `[ ]`
+
+OpenAPI versioning, deprecation policy, ``/v1/`` / ``/v2/``
+namespace. Best done after we know what 3b changes.
+
+### Phase 3d — HA control plane `[ ]`
+
+Two-replica FastAPI behind a load balancer; Celery workers
+horizontally scaled; MySQL primary + replica with failover.
+Largest scope — needs 3a's observability to verify failover
+behaviour in practice.
+
+### Phase 3e — Helm chart / Terraform module `[ ]`
+
+First-class Kubernetes deploy. The value of Helm is multi-replica
+deploys, so this lands after 3d.

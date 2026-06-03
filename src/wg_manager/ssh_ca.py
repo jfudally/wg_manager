@@ -528,15 +528,19 @@ class VaultSSHCA:
         the API surfaces them on ``data`` but the field names have moved
         across Vault versions and the cert itself is authoritative.
         """
+        from wg_manager.metrics import vault_call
+
+        op = "sign-user" if cert_type == "user" else "sign-host"
         try:
-            resp = self._client.secrets.ssh.sign_ssh_key(
-                name=role,
-                public_key=public_key_openssh,
-                valid_principals=",".join(principals),
-                cert_type=cert_type,
-                ttl=f"{ttl_seconds}s",
-                mount_point=self._mount,
-            )
+            with vault_call(engine="ssh", operation=op):
+                resp = self._client.secrets.ssh.sign_ssh_key(
+                    name=role,
+                    public_key=public_key_openssh,
+                    valid_principals=",".join(principals),
+                    cert_type=cert_type,
+                    ttl=f"{ttl_seconds}s",
+                    mount_point=self._mount,
+                )
         except VaultError as exc:
             raise SSHCAError(
                 f"vault refused to sign ({cert_type}, principals={principals!r}): {exc}"

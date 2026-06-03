@@ -32,10 +32,12 @@ real security substrate:
 
 **v0.1.0 shipped** (2026-06-03) — Phase 2 closed. Every release on
 GHCR is cosign-signed via Fulcio keyless OIDC, carries a CycloneDX
-SBOM attestation, and is end-to-end verifiable. See
+SBOM attestation, and is end-to-end verifiable. **Phase 3a
+(observability) cycle 1 in flight** — Prometheus metrics + Grafana
+dashboard land on `main` ahead of the next tagged release. See
 [`ROADMAP.md`](ROADMAP.md) for the full phase history (2a Vault
-spike → 2f release engineering) and what's planned for Phase 3
-(multi-tenant, HA, observability).
+spike → 2f release engineering) and what's planned for the rest of
+Phase 3 (multi-tenant, HA, public API versioning, Helm/Terraform).
 
 ## Architecture at a glance
 
@@ -185,6 +187,7 @@ The release page also attaches `sbom-api.cdx.json` +
 | Incident response — key compromise | [`docs/runbooks/key-compromise.md`](docs/runbooks/key-compromise.md) |
 | Incident response — Vault down | [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md) |
 | Backup + restore drill | [`docs/runbooks/backup-restore.md`](docs/runbooks/backup-restore.md) |
+| Observability: metrics + Grafana dashboard | [`docs/observability.md`](docs/observability.md) |
 
 ## Development
 
