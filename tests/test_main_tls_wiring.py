@@ -80,6 +80,15 @@ class TestCreateAppInstallsMTLSMiddleware:
         when ``tls_required=True`` — the browser can't send the cert
         until preflight clears."""
         monkeypatch.setenv("TLS_REQUIRED", "true")
+        # The Settings default ``cors_origins`` points at :3000 (Phase 1
+        # default before the Rancher Desktop port-bump). The test asserts
+        # the :3100 dashboard origin is echoed back, so pin the env var
+        # explicitly — a developer ``.env`` at the repo root usually does
+        # this for them, but CI's clean env doesn't.
+        monkeypatch.setenv(
+            "CORS_ORIGINS",
+            "http://localhost:3100,http://127.0.0.1:3100",
+        )
         app = create_app()
         client = TestClient(app)
 
