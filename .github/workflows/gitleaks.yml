@@ -1,0 +1,47 @@
+# Phase 2e gate: gitleaks secret scan. Runs on every push and PR
+# against ``main``. The canonical allowlist for known-safe test
+# fixtures lives in ``.gitleaks.toml`` at the repo root — gitleaks
+# auto-discovers it. The binary is installed by pinned-version
+# download rather than the ``gitleaks/gitleaks-action`` so the
+# workflow stays free of third-party action surface and supply chain.
+
+name: Gitleaks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: gitleaks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: "8.30.1"
+
+jobs:
+  scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+        with:
+          # gitleaks ``detect`` walks git history; the action runs on
+          # push and PR alike and needs the full ref to find leaks in
+          # older commits that survived a rebase / squash.
+          fetch-depth: 0
+
+      - name: Install gitleaks ${{ env.GITLEAKS_VERSION }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL "$url" | sudo tar -xz -C /usr/local/bin gitleaks
+          gitleaks version
+
+      - name: Scan repo for secrets
+        run: gitleaks detect --source . --no-banner --redact --verbose

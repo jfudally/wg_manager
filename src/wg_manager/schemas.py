@@ -611,3 +611,86 @@ class CertificateRevokeResponse(BaseModel):
     """
 
     certificate: CertificateRead
+
+
+# ---------------------------------------------------------------------------
+# Audit log — Phase 2e cycle 4
+# ---------------------------------------------------------------------------
+
+
+class AuditEventRead(BaseModel):
+    """Public view of an :class:`wg_manager.models.AuditEvent` row.
+
+    Mirrors the storage shape one-to-one with one intentional
+    difference: ``payload`` comes back as a parsed ``dict`` (or
+    ``None``) rather than the compact-JSON string the column stores.
+    Centralising the parse on the server keeps every consumer — the
+    dashboard, an auditor's ``jq``-pipeline session, a future SIEM
+    backfill job — agreeing on the dict shape rather than each
+    re-parsing the string locally.
+
+    Hashes are surfaced as their hex digest (or ``None`` on create /
+    delete polarities) so an auditor can compare against an external
+    canonical-JSON computation of the underlying resource state.
+
+    :ivar id: Row primary key.
+    :ivar ts: When the event was emitted, UTC. The endpoint pages
+        newest-first on this column.
+    :ivar event: Slug of the form ``<resource>.<action>``.
+    :ivar actor_cn: CN from the mTLS cert that authorised the
+        mutation; ``None`` for system-origin events.
+    :ivar actor_serial: Cert serial as decimal string; ``None`` for
+        system-origin events.
+    :ivar actor_role: :class:`OperatorRole` value at action time
+        (string-encoded); ``None`` for system-origin events.
+    :ivar resource_type: Coarse bucket (``server`` / ``client`` /
+        ``ssh_key`` / ``certificate`` / ``crypto``).
+    :ivar resource_id: Row id of the affected resource, or ``None``
+        for global-scope events.
+    :ivar action: Verb (``create`` / ``update`` / ``delete`` /
+        ``revoke`` / ``rotate``).
+    :ivar before_hash: SHA-256 hex of the pre-mutation row, or ``None``
+        on create.
+    :ivar after_hash: SHA-256 hex of the post-mutation row, or ``None``
+        on delete.
+    :ivar payload: Parsed payload dict, or ``None``. Stripped of
+        secret material by the persistence helper's caller.
+    :ivar request_id: Correlation ID lifted from the request, or a
+        ``uuid4`` for system-origin events.
+    """
+
+    id: int
+    ts: datetime
+    event: str
+    actor_cn: str | None
+    actor_serial: str | None
+    actor_role: str | None
+    resource_type: str
+    resource_id: int | None
+    action: str
+    before_hash: str | None
+    after_hash: str | None
+    payload: dict[str, Any] | None
+    request_id: str | None
+
+
+class AuditEventListResponse(BaseModel):
+    """Envelope returned by ``GET /audit``.
+
+    Carries the page of rows alongside the full ``total`` matching the
+    request's filter — the dashboard renders a correct ``Showing X-Y
+    of Z`` line and pagination controls without a second request. The
+    envelope echoes ``limit`` and ``offset`` so a thin client (the
+    dashboard, a CLI session piping into ``jq``) can confirm the page
+    it actually got matches what it asked for.
+
+    :ivar items: One page of audit rows, newest-first.
+    :ivar total: Count of rows matching the filter across all pages.
+    :ivar limit: The page size honoured for ``items``.
+    :ivar offset: The offset honoured for ``items``.
+    """
+
+    items: list[AuditEventRead]
+    total: int
+    limit: int
+    offset: int

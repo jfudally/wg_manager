@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -42,6 +42,12 @@ help:
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
+	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
+	@echo "  pip-audit      Run pip-audit against the synced Python deps"
+	@echo "  npm-audit      Run npm audit --omit=dev against the dashboard deps"
+	@echo "  bandit         Run bandit -ll over src/ (Python SAST)"
+	@echo "  semgrep        Run semgrep p/python over src/"
+	@echo "  security       Run every Phase 2e security gate locally"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -223,3 +229,48 @@ e2e-down:
 
 e2e-logs:
 	docker compose --profile e2e logs -f sshd-e2e
+
+# ---------------------------------------------------------------------------
+# Phase 2e — security gates
+# ---------------------------------------------------------------------------
+#
+# Each gate has its own target so a developer can repro a single CI
+# failure locally without paying the rest. ``make security`` runs the
+# full set. Targets prefer a locally-installed binary and bail out with
+# an install hint rather than silently no-op-ing.
+
+gitleaks:
+	@if ! command -v gitleaks >/dev/null 2>&1; then \
+		echo "ERROR: gitleaks not installed."; \
+		echo "       macOS:  brew install gitleaks"; \
+		echo "       Linux:  https://github.com/gitleaks/gitleaks#installing"; \
+		echo "       The CI workflow pins v8.30.1; match locally if you want byte-for-byte parity."; \
+		exit 2; \
+	fi
+	gitleaks detect --source . --no-banner --redact
+
+# pip-audit walks the synced .venv against PyPI's vulnerability feed.
+# ``--ignore-vuln`` mirrors the CI workflow so a local repro matches.
+# Update the ignore list in lockstep with .github/workflows/deps-audit.yml.
+pip-audit:
+	uv run --frozen --with pip-audit pip-audit --strict \
+		--ignore-vuln CVE-2026-44405
+
+npm-audit:
+	cd web && npm audit --omit=dev --audit-level=high
+
+# Bandit reads its config from [tool.bandit] in pyproject.toml — match
+# the CI step exactly so a local repro is byte-for-byte.
+bandit:
+	uv run --frozen --with bandit bandit -ll -c pyproject.toml -r src/
+
+# Semgrep p/python ruleset. ``--error`` flips findings into a non-zero
+# exit so the gate behaves as a gate rather than a printout.
+semgrep:
+	uv run --frozen --with semgrep semgrep \
+		--config=p/python --error --metrics=off src/
+
+# Aggregate target. Order is cheapest-first so a fast failure short-
+# circuits the rest. gitleaks/bandit are sub-second; the audits and
+# semgrep are seconds-to-tens-of-seconds depending on caches.
+security: gitleaks bandit pip-audit npm-audit semgrep

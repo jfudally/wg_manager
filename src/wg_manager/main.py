@@ -14,6 +14,7 @@ from wg_manager._tls_uvicorn import enable_tls_extension
 from wg_manager.auth import MTLSAuthMiddleware
 from wg_manager.config import Settings, settings
 from wg_manager.routers import (
+    audit,
     certs,
     clients,
     crypto,
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     application.include_router(tasks.router)
     application.include_router(crypto.router)
     application.include_router(certs.router)
+    application.include_router(audit.router)
     return application
 
 

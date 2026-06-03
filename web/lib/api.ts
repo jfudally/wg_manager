@@ -7,6 +7,8 @@
  */
 
 import type {
+  AuditEventList,
+  AuditEventListParams,
   Certificate,
   CertificateIssueRequest,
   CertificateIssueResponse,
@@ -348,4 +350,38 @@ export const api = {
     request<CertificateIssueResponse>(`/certs/${id}/renew`, {
       method: "POST",
     }),
+
+  // --- Audit log (Phase 2e cycle 4) ---
+  /**
+   * List audit-log rows, newest first. Admin / auditor only — the
+   * backend's role gate (`_RequireAdminOrAuditor`) returns 403 for
+   * plain operators.
+   *
+   * Filters are AND-combined on the server. `since` / `until` is a
+   * half-open window (`ts >= since AND ts < until`). `limit` is
+   * defaulted to 100 server-side and capped at 500.
+   *
+   * Returns the {@link AuditEventList} envelope (items + total +
+   * limit + offset) so the dashboard can render a real
+   * "Showing X-Y of Z" line without a second request.
+   */
+  listAuditEvents: (params: AuditEventListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.event !== undefined && params.event !== "")
+      qs.set("event", params.event);
+    if (params.actor_cn !== undefined && params.actor_cn !== "")
+      qs.set("actor_cn", params.actor_cn);
+    if (params.resource_type !== undefined && params.resource_type !== "")
+      qs.set("resource_type", params.resource_type);
+    if (params.resource_id !== undefined && !Number.isNaN(params.resource_id))
+      qs.set("resource_id", String(params.resource_id));
+    if (params.since !== undefined && params.since !== "")
+      qs.set("since", params.since);
+    if (params.until !== undefined && params.until !== "")
+      qs.set("until", params.until);
+    if (params.limit !== undefined) qs.set("limit", String(params.limit));
+    if (params.offset !== undefined) qs.set("offset", String(params.offset));
+    const suffix = qs.toString();
+    return request<AuditEventList>(`/audit${suffix ? `?${suffix}` : ""}`);
+  },
 };

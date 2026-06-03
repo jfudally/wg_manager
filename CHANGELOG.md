@@ -10,6 +10,203 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 2e CI-gate cycles 1-5 — GitHub Actions security gates.**
+  Five workflows landed across two days (2026-06-02 → 2026-06-03)
+  closing the Phase 2e "CI gates" ROADMAP bullet — every push to
+  `main` and every PR now runs five independent jobs that bisect
+  cleanly to a single workflow file when one trips. `make security`
+  runs the same five gates locally in cheapest-first order so a
+  pre-push hand-spin matches CI byte-for-byte.
+
+  - **Cycle 1** —
+    [`ci.yml`](.github/workflows/ci.yml). Backend job: `uv sync
+    --extra dev --frozen` + `uv run pytest -q` on Python 3.13.
+    Dashboard job: `npm ci` + `npm run test` (vitest) on Node 22.
+    README badge added to surface workflow status. Side fix:
+    `tests/test_main_tls_wiring.py::test_options_preflight_succeeds_under_tls_required`
+    was depending on a local `.env` for `CORS_ORIGINS`; pinned via
+    `monkeypatch.setenv` so the test is hermetic.
+  - **Cycle 2** —
+    [`gitleaks.yml`](.github/workflows/gitleaks.yml). Gitleaks
+    v8.30.1 pinned via direct curl + tar (no third-party action);
+    `--source . --no-banner --redact --verbose`; full-history scan
+    (`fetch-depth: 0`). New [`.gitleaks.toml`](.gitleaks.toml)
+    extends the default ruleset with a nine-file allowlist (seven
+    tests with ephemeral PEMs, `tests/e2e/tls/conftest.py` Fernet
+    dev key, `web/app/ssh-keys/page.tsx` placeholder) — deliberately
+    file-scoped, no blanket `tests/` carve-out so a real leak in a
+    test still trips the gate.
+  - **Cycle 3** —
+    [`deps-audit.yml`](.github/workflows/deps-audit.yml). pip-audit
+    job (`uv run --frozen --with pip-audit pip-audit --strict
+    --ignore-vuln CVE-2026-44405`) + npm audit job (`npm audit
+    --omit=dev --audit-level=high`). Path-filtered on
+    `pyproject.toml` / `uv.lock` / `web/package*.json` so unrelated
+    PRs skip the network fetch; weekly Monday cron + manual
+    `workflow_dispatch` for the unprompted scan. Landed alongside
+    a dep bump (cryptography 46.0.6→48.0.0, idna 3.11→3.18,
+    mako 1.3.10→1.3.12, starlette 1.0.0→1.2.1) to close four of
+    the five CVEs the strict run flagged; the fifth
+    (paramiko CVE-2026-44405) has no upstream fix yet and is
+    explicitly ignored with the inline rationale.
+  - **Cycle 4** — [`sast.yml`](.github/workflows/sast.yml). bandit
+    job (`bandit -ll -c pyproject.toml -r src/` — medium+/medium+)
+    + semgrep job (`semgrep --config=p/python --error
+    --metrics=off src/` in the official `semgrep/semgrep:latest`
+    container). New `[tool.bandit]` config in
+    [`pyproject.toml`](pyproject.toml) skips B601 globally
+    (paramiko exec IS the SSH layer's purpose — keeping the rule
+    on would burn ~6 markers across two files for zero signal)
+    with documented rationale in the section header. B507 stays
+    enabled and catches genuine `AutoAddPolicy` regressions; the
+    two known-safe sites carry per-line `# nosec B507`:
+    `bootstrap_ssh.py:192` (the one legitimate TOFU site per
+    CP4.5) and `ssh.py:391` (legacy fallback). semgrep `p/python`
+    is clean on the current tree — no allowlist needed.
+  - **Cycle 5** — ROADMAP sweep + cosign deferral. Flips the
+    Phase 2e header from `[ ]` to `[~]` (CI gates + audit log
+    shipped; SBOM / Dependabot / Vault audit off-host / Backup
+    story / Reproducible builds still open). The CI-gates bullet
+    is now `[x]` with a per-cycle breakdown; cosign verify is
+    documented as **deferred** with the reason — no Docker
+    publish flow exists on `main`, so there is no signed image
+    for cosign to verify and no release workflow to bolt the
+    gate onto. Tracked alongside the SBOM bullet (same blocker:
+    cyclonedx tools need a release artefact to attach to). Both
+    land when the release-engineering slice opens. Docs-only;
+    no production-code changes.
+
+  Local invocations: `make gitleaks`, `make pip-audit`,
+  `make npm-audit`, `make bandit`, `make semgrep`, and
+  `make security` (runs all five in cheapest-first order:
+  gitleaks → bandit → pip-audit → npm-audit → semgrep). All five
+  workflows green on `main` as of the cycle 5 push.
+
+- **Phase 2e cycle 4 — `GET /audit` endpoint + dashboard page.** Closes
+  the read side of the application audit log. Cycles 1-3 wrote rows
+  to `auditevent`; cycle 4 exposes them over HTTP and renders them in
+  the dashboard.
+
+  - Backend [`routers/audit.py`](src/wg_manager/routers/audit.py) ships
+    `GET /audit` (admin / auditor only, plain operators get 403 via
+    the same `_RequireAdminOrAuditor` dep `GET /certs` uses). Filters:
+    `event`, `actor_cn`, `resource_type`, `resource_id`, `since`
+    (inclusive), `until` (exclusive). Pagination: `limit` (default
+    100, max 500) + `offset` (≥ 0). Ordering is `ts DESC, id DESC` so
+    the dashboard reads newest-first with a deterministic tiebreaker
+    for rows sharing the same microsecond.
+
+  - Response envelope `AuditEventListResponse` carries `items` +
+    `total` + `limit` + `offset` — the dashboard renders a real
+    "Showing X-Y of Z" line without a second request. Per-row
+    `AuditEventRead` mirrors the storage shape with one intentional
+    difference: `payload` is decoded back into a `dict` (rather than
+    the compact-JSON string the column stores) so every consumer
+    agrees on the wire shape rather than each re-parsing locally.
+
+  - Dashboard [`web/app/audit/page.tsx`](web/app/audit/page.tsx)
+    renders the filter card + paged table. Filter inputs cover the
+    five exact-match filters plus the time window; Prev/Next walk by
+    the server-echoed limit so the buttons stay aligned with the
+    actual page boundary. Added to the left nav as "Audit log".
+
+  - Tests: 19 backend cases in
+    [`tests/test_audit_api.py`](tests/test_audit_api.py) (role gating,
+    response shape, ordering, every filter individually + combined,
+    pagination defaults / walk / validation) and 6 vitest cases in
+    [`web/__tests__/audit.test.tsx`](web/__tests__/audit.test.tsx)
+    (row rendering, empty state, filter wiring for `event` +
+    `actor_cn`, Next advances offset, Prev disabled on page 1).
+    Backend pytest 457/457 (was 438/438); vitest 46/46 (was 40/40).
+
+- **Phase 2e cycle 3 — `audit.persist` wired into mutating endpoints.**
+  Cycle 2 shipped the helper; cycle 3 plumbs it into the five mutating
+  endpoint families called out in the plan, one per resource:
+
+  - `POST /servers` ([`routers/servers.py`](src/wg_manager/routers/servers.py)) → `server.create`
+  - `PATCH /servers/{id}` → `server.update` (captures pre-mutation row dict)
+  - `DELETE /clients/{id}` ([`routers/clients.py`](src/wg_manager/routers/clients.py)) → `client.delete`
+  - `POST /ssh-keys` ([`routers/ssh_keys.py`](src/wg_manager/routers/ssh_keys.py)) → `ssh_key.create`
+  - `POST /certs/{id}/revoke` ([`routers/certs.py`](src/wg_manager/routers/certs.py)) → `certificate.revoke`
+
+  Each handler now picks up the same transaction shape: capture
+  `before` dict if applicable, `session.add → session.flush →
+  session.refresh`, `audit.persist(...)`, then `session.commit()`. The
+  audit row lives or dies alongside the mutation it records — a
+  rolled-back mutation never leaves an orphan audit row, and an
+  audit-write failure rolls back the mutation.
+
+  New helper [`audit.actor_from_request(request)`](src/wg_manager/audit.py)
+  extracts `actor_cn` / `actor_serial` / `actor_role` off
+  `request.state.operator` and `request.state.cert_subject` (populated
+  by `MTLSAuthMiddleware`), returning `None` fields when the
+  middleware is in passthrough mode. Endpoints call
+  `**audit.actor_from_request(request)` without branching for the
+  test path. Idempotent revoke on `POST /certs/{id}/revoke` skips the
+  audit row on the no-op retry so the application audit trail stays
+  one-row-per-event.
+
+  Tests: 8 cases in
+  [`tests/test_audit_wiring.py`](tests/test_audit_wiring.py) — two
+  for `actor_from_request` (populated + empty `request.state`), one
+  per wired endpoint asserting event slug / resource binding / hash
+  polarity, plus an idempotent-revoke assertion that a second
+  retry doesn't double-write the audit row. Backend pytest 438/438
+  (was 430/430).
+
+- **Phase 2e cycle 2 — `wg_manager.audit` module + `persist()` helper.**
+  Cycle 1's table needed a writer; cycle 2 introduces the single seam
+  every mutating endpoint will go through. New module
+  [`wg_manager.audit`](src/wg_manager/audit.py) exposes
+  `audit_logger` (the named logger),
+  [`emit(event, **fields)`](src/wg_manager/audit.py) (log-only, the
+  CP5 path), [`canonical_json_hash(obj)`](src/wg_manager/audit.py)
+  (sorted-key compact-JSON SHA-256), and
+  [`persist(session, …)`](src/wg_manager/audit.py) which inserts one
+  `AuditEvent` row **and** emits the same identity on the audit
+  logger. The caller's session owns the transaction — `persist`
+  flushes but never commits, so an audit failure rolls back the
+  mutation it would have recorded and vice versa.
+
+  Backward compat: [`wg_manager.auth`](src/wg_manager/auth.py)
+  re-exports `audit_logger` and `_emit_audit` from the new module so
+  [`bootstrap_ssh.py`](src/wg_manager/bootstrap_ssh.py) and any
+  in-flight SIEM rule parsing the CP5 stream keep working unchanged.
+  A regression test in
+  [`tests/test_audit_persist.py`](tests/test_audit_persist.py) freezes
+  the timestamp and compares `audit.emit(...)` to
+  `auth._emit_audit(...)` byte-for-byte so the CP5 acceptance suite
+  stays load-bearing.
+
+  Tests: 18 cases — five for `canonical_json_hash` (order independence,
+  hex shape, `None` round-trip, `datetime` fallback, exact-bytes
+  construction), four for `emit` (log line shape, microsecond
+  `ts`, byte-identical with the legacy helper, `_emit_audit`
+  re-export), nine for `persist` (row shape, hashes, the three
+  legitimate row shapes from cycle 1, payload JSON encoding, NULL
+  payload, matching log line, no commit). Backend pytest 430/430
+  (was 412/412).
+
+- **Phase 2e cycle 1 — `auditevent` table.** First slice of the
+  application audit log. Phase 2d CP5 ships per-request audit lines
+  to stderr via the `wg_manager.audit` named logger (admit / reject /
+  bootstrap-host); cycle 1 introduces the persisted-mutations
+  counterpart that the upcoming `/audit` endpoint and dashboard page
+  will read from. Schema lands as
+  [`alembic/versions/0013_add_audit_event_table.py`](alembic/versions/0013_add_audit_event_table.py)
+  + [`AuditEvent`](src/wg_manager/models.py) — `id, ts, event,
+  actor_cn, actor_serial, actor_role, resource_type, resource_id,
+  action, before_hash, after_hash, payload, request_id` — backed by
+  four indexes (`ts`, `event`, `actor_cn`, and a composite
+  `(resource_type, resource_id)` so `GET /audit?resource_type=server
+  &resource_id=7` is a single index scan). Hash-only design: rows
+  carry SHA-256 of the canonical-JSON pre/post-mutation, never the
+  raw row, so the registry stays safe to ship in backups for the
+  same reason [`Certificate`](src/wg_manager/models.py) doesn't
+  store PEM bodies. No call sites yet — `wg_manager.audit.persist()`
+  + per-endpoint wiring land in cycle 2 / cycle 3. Backend pytest
+  412/412 (was 405/405).
+
 - **Phase 2c CP4.5 — `wg-manager bootstrap-host` CLI.** Closes the
   gap CP4.4 created when it retired `wg_manager.ssh_migrate`: the
   production [`SSHRunner`](src/wg_manager/ssh.py) is locked to CA-only

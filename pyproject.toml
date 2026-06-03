@@ -45,6 +45,23 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/wg_manager"]
 
+[tool.bandit]
+# Phase 2e CI gate config. ``make bandit`` and the CI workflow both
+# read this section via ``bandit -c pyproject.toml``.
+#
+# B601 (paramiko_calls) — every paramiko.exec_command() call trips this
+# rule. ``ssh.py`` and ``bootstrap_ssh.py`` ARE the SSH execution layer;
+# the rule has nothing to add. The audit boundary that actually matters
+# is ``tasks.py`` (which builds the command strings); that lives in a
+# separate review pass, not in a wholesale per-call mark-up. Keeping
+# B601 enabled would burn the gate's signal-to-noise with ~6 known-safe
+# markers across two files.
+#
+# B507 (ssh_no_host_key_verification) is intentionally NOT skipped — it
+# catches genuine ``AutoAddPolicy`` regressions. The two known-safe
+# sites carry per-line ``# nosec B507`` with a rationale.
+skips = ["B601"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # Phase 2c CP5 introduces the ``e2e`` marker for the dockerised-sshd

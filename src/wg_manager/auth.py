@@ -31,10 +31,9 @@ doesn't lock the operator out of their own API.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Iterable
 
 from cryptography import x509
@@ -46,40 +45,20 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from wg_manager import db as db_module
+from wg_manager.audit import audit_logger, emit as _emit_audit
 from wg_manager.config import Settings
 from wg_manager.models import Certificate, Operator, OperatorRole, OperatorStatus
 
 logger = logging.getLogger(__name__)
 
-# Phase 2d CP5 — dedicated audit logger. Every admission decision the
-# middleware makes (admit / reject) emits a one-line JSON record here.
-# Logging at WARNING level means the record shows up in default-config
-# uvicorn stderr without any extra setup, which is the visible-from-
-# outside contract the CP5 acceptance suite relies on. A production
-# deployment can attach a separate handler (file, syslog, SIEM) by
-# adding a ``logging.config`` entry for the ``wg_manager.audit``
-# logger name without touching this module.
-audit_logger = logging.getLogger("wg_manager.audit")
-
-
-def _emit_audit(event: str, **fields: Any) -> None:
-    """Emit a structured one-line JSON record on the audit logger.
-
-    The record always carries ``event`` and ``ts`` (RFC 3339 UTC); the
-    caller adds the request-shape fields (``cn``, ``serial``,
-    ``method``, ``path``, ``reason``, etc.). Serialised with
-    ``separators=(",", ":")`` so the line stays on a single newline-
-    terminated row — easy for ``grep`` / ``jq`` and easy to assert on
-    from the CP5 acceptance tests. Non-JSON-native types (e.g.
-    ``datetime``) fall through to ``str`` rather than raising at log
-    time; the choice favours observability over strict typing.
-    """
-    record: dict[str, Any] = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="microseconds"),
-        "event": event,
-        **fields,
-    }
-    audit_logger.warning(json.dumps(record, separators=(",", ":"), default=str))
+# Re-exports for backward compatibility. Phase 2d CP5 wired the audit
+# logger + emit function in this module; Phase 2e cycle 2 relocated
+# them to :mod:`wg_manager.audit` so the middleware here, the
+# bootstrap orchestrator in :mod:`wg_manager.bootstrap_ssh`, and the
+# new ``audit.persist`` helper all share one implementation. The
+# re-export keeps existing import sites (``from wg_manager.auth
+# import _emit_audit``) and the per-call-site byte format intact.
+__all_audit_reexports__ = ("audit_logger", "_emit_audit")
 
 
 # ---------------------------------------------------------------------------

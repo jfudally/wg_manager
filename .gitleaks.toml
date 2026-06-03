@@ -1,0 +1,33 @@
+# Gitleaks config for wg-manager. Extends the default ruleset and adds
+# a narrow per-file allowlist for committed test fixtures and dashboard
+# placeholder strings. New files added to tests/ are NOT auto-exempt —
+# every entry below was reviewed and is documented. If a fresh file
+# legitimately needs to land here, add it explicitly so the reviewer
+# sees the diff and confirms the secret-shape is non-production.
+
+title = "wg-manager gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Test-fixture PEMs and placeholder strings — no production secrets"
+paths = [
+  # Ephemeral Ed25519/RSA private keys generated in-memory inside test
+  # fixtures; never reach the network. Each file's module docstring
+  # explains why the bytes are inline.
+  '''^tests/test_crypto\.py$''',
+  '''^tests/test_model_repr\.py$''',
+  '''^tests/test_ssh_key_mode\.py$''',
+  '''^tests/test_ssh_keys_api\.py$''',
+  '''^tests/test_ssh_migrate\.py$''',
+  '''^tests/test_cli_ssh_migrate\.py$''',
+  '''^tests/test_tasks_crypto\.py$''',
+  # Published dev Fernet key. The conftest header documents that this
+  # value is in the repo on purpose — the suite needs deterministic
+  # encrypt() output across runs.
+  '''^tests/e2e/tls/conftest\.py$''',
+  # PEM-shaped textarea placeholder rendered in the SSH-roles form, not
+  # a real key.
+  '''^web/app/ssh-keys/page\.tsx$''',
+]

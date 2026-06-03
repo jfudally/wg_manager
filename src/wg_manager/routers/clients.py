@@ -5,10 +5,11 @@ from __future__ import annotations
 from ipaddress import ip_interface
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 from sqlmodel import Session, select
 
+from wg_manager import audit
 from wg_manager.db import get_session
 from wg_manager.ipam import IPPoolExhausted, allocate_client_ip
 from wg_manager.models import Client, NodeStatus, SSHKey, Server
@@ -361,7 +362,9 @@ def update_client(
     response_model=ClientDeleteResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-def delete_client(client_id: int, session: _SessionDep) -> ClientDeleteResponse:
+def delete_client(
+    client_id: int, request: Request, session: _SessionDep
+) -> ClientDeleteResponse:
     """Delete a client and dispatch a hub reconfigure to drop the peer.
 
     The row is removed from the database immediately. A follow-up
@@ -371,6 +374,10 @@ def delete_client(client_id: int, session: _SessionDep) -> ClientDeleteResponse:
     be used to connect. Poll ``GET /tasks/{task_id}`` to confirm the hub
     picked up the change.
 
+    Phase 2e cycle 3 captures the row dict for the audit log's
+    ``before_hash`` and emits a ``client.delete`` row inside the same
+    transaction as the row removal.
+
     :raises HTTPException: 404 if the client does not exist.
     """
     row = session.get(Client, client_id)
@@ -378,7 +385,19 @@ def delete_client(client_id: int, session: _SessionDep) -> ClientDeleteResponse:
         raise HTTPException(status_code=404, detail="Client not found")
 
     server_id = row.server_id
+    before = row.model_dump(mode="json")
     session.delete(row)
+    audit.persist(
+        session,
+        event="client.delete",
+        **audit.actor_from_request(request),
+        resource_type="client",
+        resource_id=client_id,
+        action="delete",
+        before=before,
+        after=None,
+        payload={"name": before.get("name"), "server_id": server_id},
+    )
     session.commit()
 
     async_result = reconfigure_server_task.delay(server_id)
