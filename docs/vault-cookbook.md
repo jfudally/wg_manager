@@ -741,7 +741,11 @@ helper refuses to overwrite — operator must migrate manually.
 Verify a record was written:
 
 ```bash
-# 1. Trigger an audit-worthy operation (anything that writes to Vault):
+# 1. Trigger an audit-worthy operation (anything that writes to Vault).
+#    The CLI inside the container picks up VAULT_ADDR + VAULT_TOKEN
+#    from the dev-compose environment block (both are set so
+#    ``docker compose exec vault vault …`` Just Works — no extra
+#    ``-e VAULT_TOKEN=…`` flag needed).
 docker compose exec vault vault kv put secret/audit-test foo=bar
 
 # 2. Tail the audit file:
@@ -773,7 +777,9 @@ Bring it up (after cycle 1's `make vault-audit-bootstrap`):
 ```bash
 docker compose up -d vector
 
-# Write to Vault to generate an audit record:
+# Write to Vault to generate an audit record. ``VAULT_ADDR`` +
+# ``VAULT_TOKEN`` are already set on the vault container's env
+# (dev compose) so the CLI authenticates without ceremony.
 docker compose exec vault vault kv put secret/cycle-2-test foo=bar
 
 # Read the audit feed off the sidecar's stdout:

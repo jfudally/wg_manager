@@ -143,6 +143,66 @@ class TestVectorComposeService:
         assert "wg_manager_vault_audit_logs" in compose["volumes"]
 
 
+class TestVaultServiceEnvSupportsCli:
+    """Pin the env vars needed for the cookbook §6 smoke flows.
+
+    Both the cycle 1 verify command (``docker compose exec vault
+    vault kv put secret/audit-test foo=bar``) and the cycle 2 vector
+    smoke command depend on the *vault CLI inside the vault
+    container* being pre-authenticated. The CLI reads ``VAULT_TOKEN``
+    from the process environment; without it the smoke command 403s
+    on a ``GET /v1/sys/internal/ui/mounts/…`` lookup before it ever
+    reaches the kv engine.
+
+    ``VAULT_DEV_ROOT_TOKEN_ID`` is *not* the same thing: that env var
+    is read by the Vault server at boot to fix the root token at
+    ``dev-only-root``, but the CLI doesn't consult it. A separate
+    ``VAULT_TOKEN`` entry is what makes the cookbook smoke commands
+    one-liners — without it the operator has to thread
+    ``-e VAULT_TOKEN=dev-only-root`` through every ``docker compose
+    exec`` call, which is precisely the kind of ceremony the dev
+    compose stack exists to spare.
+
+    Safe to bake into the dev compose: the root token is already a
+    literal string in the same file and the entire container's
+    state is throwaway.
+    """
+
+    def test_vault_addr_set_for_cli(self, compose: dict) -> None:
+        """``VAULT_ADDR`` env var present on the vault service."""
+        env = compose["services"]["vault"]["environment"]
+        assert "VAULT_ADDR" in env, (
+            "VAULT_ADDR must be set on the vault service env so the "
+            "CLI inside the container can find the local server"
+        )
+
+    def test_vault_token_set_for_cli(self, compose: dict) -> None:
+        """``VAULT_TOKEN`` env var matches the configured root token.
+
+        Catches the regression the cycle 2 PR review surfaced: the
+        cookbook §6 ``docker compose exec vault vault kv put …``
+        smoke commands all 403 if the CLI isn't pre-authenticated.
+        Pinning the env var here means a future compose edit that
+        drops it (e.g. a misguided "tidy the env block" refactor)
+        re-trips this test rather than silently breaking the
+        operator runbook.
+        """
+        env = compose["services"]["vault"]["environment"]
+        assert "VAULT_TOKEN" in env, (
+            "VAULT_TOKEN must be set on the vault service env so the "
+            "CLI inside the container authenticates without an extra "
+            "-e VAULT_TOKEN=… flag on every `docker compose exec`. "
+            "Pair value with VAULT_DEV_ROOT_TOKEN_ID."
+        )
+        # Same root token both server-side (DEV_ROOT_TOKEN_ID) and
+        # CLI-side (TOKEN). A drift between the two would also break
+        # the smoke flow, just less obviously.
+        assert env["VAULT_TOKEN"] == env["VAULT_DEV_ROOT_TOKEN_ID"], (
+            "VAULT_TOKEN must match VAULT_DEV_ROOT_TOKEN_ID — they "
+            "configure two sides of the same auth contract"
+        )
+
+
 class TestVectorConfig:
     """Pin the ``vector.toml`` shape: file source → console sink.
 
