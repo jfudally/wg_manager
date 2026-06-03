@@ -1279,6 +1279,7 @@ dev = [
     { name = "alembic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "pyyaml" },
 ]
 
 [package.metadata]
@@ -1296,6 +1297,7 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3.0" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24.0" },
     { name = "python-dotenv", specifier = ">=1.0.1" },
+    { name = "pyyaml", marker = "extra == 'dev'", specifier = ">=6.0" },
     { name = "redis", specifier = ">=5.0.0" },
     { name = "sqlmodel", specifier = ">=0.0.22" },
     { name = "typer", specifier = ">=0.12.0" },
