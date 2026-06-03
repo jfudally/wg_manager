@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks security
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit security
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -43,6 +43,8 @@ help:
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
+	@echo "  pip-audit      Run pip-audit against the synced Python deps"
+	@echo "  npm-audit      Run npm audit --omit=dev against the dashboard deps"
 	@echo "  security       Run every Phase 2e security gate locally"
 	@echo "  clean          Remove caches and build artifacts"
 
@@ -245,7 +247,16 @@ gitleaks:
 	fi
 	gitleaks detect --source . --no-banner --redact
 
-# Aggregate target. Extended as cycles 3+ land (pip-audit, npm-audit,
-# bandit, semgrep). Order is cheapest-first so a fast failure short-
-# circuits the rest.
-security: gitleaks
+# pip-audit walks the synced .venv against PyPI's vulnerability feed.
+# ``--ignore-vuln`` mirrors the CI workflow so a local repro matches.
+# Update the ignore list in lockstep with .github/workflows/deps-audit.yml.
+pip-audit:
+	uv run --frozen --with pip-audit pip-audit --strict \
+		--ignore-vuln CVE-2026-44405
+
+npm-audit:
+	cd web && npm audit --omit=dev --audit-level=high
+
+# Aggregate target. Extended as cycle 4 lands (bandit, semgrep).
+# Order is cheapest-first so a fast failure short-circuits the rest.
+security: gitleaks pip-audit npm-audit

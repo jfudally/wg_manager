@@ -1,0 +1,96 @@
+# Phase 2e gate: dependency vulnerability audit. Two jobs:
+#
+# - pip-audit: walks the synced ``.venv`` after ``uv sync --frozen``
+#   and checks every installed package against PyPI's vulnerability
+#   feed + OSV. ``--strict`` makes "vuln service unreachable" a
+#   failure rather than a silent pass.
+# - npm-audit: ``npm audit --omit=dev`` per the Phase 2e ROADMAP —
+#   devDependencies are tooling (vitest, tsc) that never reach the
+#   browser. ``--audit-level=high`` gates only on high+/critical so
+#   moderate CVEs in transitive deps that lack a non-breaking fix
+#   don't block the gate; they still surface in the run output.
+#
+# Triggers: every push to ``main`` (full coverage of merged code),
+# PRs that touch the lockfiles (skip cost for code-only PRs), a
+# weekly cron (catches CVEs disclosed *after* a lockfile last moved),
+# and manual dispatch.
+
+name: Dependency audit
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'web/package.json'
+      - 'web/package-lock.json'
+      - '.github/workflows/deps-audit.yml'
+  schedule:
+    # Mondays 14:00 UTC — well after any weekend CVE-disclosure backlog
+    # has filtered into PyPI / npm advisory feeds.
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: deps-audit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    name: pip-audit (Python deps)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Sync dependencies
+        run: uv sync --extra dev --frozen
+
+      - name: Run pip-audit
+        # CVE-2026-44405 (paramiko 4.0.0) has no upstream fix at time
+        # of writing; documented + tracked in docs/runbooks (Phase 2e
+        # cycle 5 will land the runbook). Re-evaluate every time the
+        # paramiko version moves and drop the ignore once a patched
+        # release is out.
+        run: >
+          uv run --frozen --with pip-audit pip-audit
+          --strict
+          --ignore-vuln CVE-2026-44405
+
+  npm-audit:
+    name: npm audit (Node deps)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Install Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Run npm audit (prod deps, high+ only)
+        run: npm audit --omit=dev --audit-level=high
