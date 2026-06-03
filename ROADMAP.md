@@ -1592,13 +1592,29 @@ provisioning path are the three deliverables.
   ships a starter dashboard covering HTTP request rate + p95
   latency, Celery task success/failure + duration, Vault round-trip
   latency by engine, and cert lifecycle events.
-- **Cycle 2 `[ ]`** — OTLP trace exporter on the provisioning path.
-  OpenTelemetry SDK setup, spans on the four Celery provisioning
-  tasks (``provision_server`` / ``reconfigure_server`` /
-  ``provision_client`` / ``discover_peers``), sub-spans on every
-  SSH connection + Vault round-trip those tasks make. Configurable
-  exporter (default off; in-memory for tests; OTLP/HTTP for
-  production).
+- **Cycle 2 `[x]`** (2026-06-03) — OTLP trace exporter on the
+  provisioning path. New
+  [`wg_manager.tracing`](src/wg_manager/tracing.py) module sets up
+  the OTel SDK with three production exporter modes (``none``
+  default = zero overhead, ``console`` for dev, ``otlp-http`` for
+  production) + a ``memory`` mode that ships only for tests. Three
+  span families: **Celery tasks** auto-instrumented via
+  ``CeleryInstrumentor``; **Vault round-trips** — cycle 1's
+  ``vault_call`` extended to also start ``vault.<engine>.<operation>``
+  spans (the wrap site stays single, so metrics + traces share one
+  source of truth); **SSH commands** — new ``ssh_span(operation,
+  **attrs)`` helper wrapped around ``SSHRunner.run`` / ``.sudo``.
+  ``setup_tracing`` invoked at import time from both
+  ``wg_manager.main`` and ``wg_manager.celery_app`` so spans land
+  under whichever process executed them. **Cycle 1 gap closure:**
+  [`tests/test_call_sites_traced.py`](tests/test_call_sites_traced.py)
+  greps the source for every expected wrap site so a future
+  refactor that removes a wrap trips the test before merge — the
+  safety net the cycle 1 commit lacked. 21 new test cases (11
+  behavioural + 10 source-level grep); 4 new OTel runtime deps;
+  [`docs/observability.md`](docs/observability.md) grew a Tracing
+  section with exporter selection, span topology diagram, sample
+  collector config.
 - **Cycle 3 `[ ]`** — Operator dashboard polish + alerting recipes.
   A second Grafana dashboard for the cert-lifecycle view (renewal
   due dates, expiring-soon, revoked-this-week), example Prometheus

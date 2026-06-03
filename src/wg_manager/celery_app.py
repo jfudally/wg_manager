@@ -36,3 +36,16 @@ celery_app.conf.update(
 # Importing here (rather than only from ``main``) means the metrics
 # fire under the celery worker process too, not just the API.
 import wg_manager.metrics  # noqa: F401, E402 — side-effect import
+
+# Phase 3a cycle 2: install the OTel tracer provider + Celery
+# instrumentation under the worker process. Mirror the API-side
+# setup in ``wg_manager.main`` so a worker started without going
+# through main.py (the typical ``celery -A wg_manager.celery_app
+# worker`` invocation) still gets traces.
+from wg_manager.tracing import setup_tracing  # noqa: E402
+
+setup_tracing(
+    exporter_kind=settings.otel_exporter,
+    otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+    service_name=settings.otel_service_name,
+)

@@ -121,11 +121,88 @@ Records latency and outcome (`result="ok"` on clean exit,
 Vault-backed call sites should wrap their round-trips in this
 context manager so the engine/operation labels stay accurate.
 
-## What's coming next
+## Tracing (Phase 3a cycle 2)
 
-- **Cycle 2** — OTLP trace exporter on the four provisioning tasks
-  + sub-spans for SSH connections and Vault round-trips.
-  Configurable exporter (default off; in-memory for tests).
+OpenTelemetry trace exporter on the provisioning path. Three
+exporter modes selected via `OTEL_EXPORTER`:
+
+- **`none`** (default) — zero overhead. The tracer provider is the
+  NoOp default; calls into the wrapping helpers compile to nothing.
+  v0.1.0 operators who don't run a collector pay nothing.
+- **`console`** — every finished span prints to stderr. Local dev.
+- **`otlp-http`** — POSTs to `OTEL_EXPORTER_OTLP_ENDPOINT` (default
+  `http://localhost:4318`). Production wires this at a collector
+  that fans out to Jaeger / Tempo / Honeycomb / etc.
+
+### Span topology
+
+A single provisioning run produces a trace shaped like:
+
+```
+celery.wg_manager.tasks.provision_server           (root)
+├── vault.ssh.sign-user
+├── ssh.run         (cmd="apt install wireguard")
+├── ssh.run         (cmd="wg-quick up wg0")
+├── vault.ssh.sign-host
+└── ssh.run         (cmd="install host cert")
+```
+
+Three families:
+
+| Family | Span name | Attributes | Wrapped by |
+|---|---|---|---|
+| Celery tasks | `celery.<task_name>` | task args | `CeleryInstrumentor` (auto) |
+| Vault round-trips | `vault.<engine>.<operation>` | `vault.engine`, `vault.operation` | `vault_call` ctx mgr |
+| SSH commands | `ssh.<operation>` | `ssh.host`, `ssh.cmd` | `ssh_span` ctx mgr |
+
+The Vault span is emitted by the same `vault_call` context manager
+that records the cycle 1 metrics — one wrap site, two streams. A
+metric-only deployment and a metric+trace deployment never drift.
+
+### Configuring an OTLP collector
+
+A minimal stack: run an OpenTelemetry Collector locally, point
+`OTEL_EXPORTER_OTLP_ENDPOINT` at it, and configure the collector's
+exporters to your preferred backend (Jaeger, Tempo, Honeycomb,
+SigNoz, ...).
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+exporters:
+  otlphttp:
+    endpoint: https://api.honeycomb.io
+    headers:
+      x-honeycomb-team: ${env:HONEYCOMB_API_KEY}
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      exporters: [otlphttp]
+```
+
+Then on the wg-manager side:
+
+```bash
+export OTEL_EXPORTER=otlp-http
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.internal:4318
+export OTEL_SERVICE_NAME=wg-manager
+make run     # API
+make worker  # Celery worker (gets its own setup_tracing call)
+```
+
+The worker process picks up the same env via
+`wg_manager.celery_app`'s top-level `setup_tracing` call — every
+provisioning task gets a trace under the worker, not just the API.
+
+### What's coming next
+
 - **Cycle 3** — Operator dashboard for the cert-lifecycle view
   (renewal due dates, expiring-soon, revoked-this-week), plus
   example Prometheus alerting rules (5xx surge, Vault round-trip

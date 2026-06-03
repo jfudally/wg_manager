@@ -14,6 +14,7 @@ from wg_manager._tls_uvicorn import enable_tls_extension
 from wg_manager.auth import MTLSAuthMiddleware
 from wg_manager.config import Settings, settings
 from wg_manager.metrics import MetricsMiddleware, metrics_response
+from wg_manager.tracing import setup_tracing
 from wg_manager.routers import (
     audit,
     certs,
@@ -32,6 +33,18 @@ from wg_manager.routers import (
 # ``wg_manager.main`` on every restart). See
 # :mod:`wg_manager._tls_uvicorn` for the workaround details.
 enable_tls_extension()
+
+# Phase 3a cycle 2: install the OTel tracer provider at import time.
+# Reads ``OTEL_EXPORTER`` from settings — defaults to ``"none"`` (zero
+# overhead). Idempotent: a second import is a no-op. Lives outside
+# :func:`create_app` so the provider exists before any router is
+# imported and the Celery instrumentor runs before any task module
+# is imported on the worker side.
+setup_tracing(
+    exporter_kind=settings.otel_exporter,
+    otlp_endpoint=settings.otel_exporter_otlp_endpoint,
+    service_name=settings.otel_service_name,
+)
 
 
 def _parse_cors_origins(raw: str) -> list[str]:
