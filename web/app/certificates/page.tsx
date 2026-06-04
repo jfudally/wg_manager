@@ -283,6 +283,7 @@ function IssueCertForm({
   const [ttlDays, setTtlDays] = useState("");
   const [operatorCn, setOperatorCn] = useState("");
   const [pkcs12Password, setPkcs12Password] = useState("");
+  const [tenantSlug, setTenantSlug] = useState("");
 
   const mutation = useMutation({
     mutationFn: (payload: CertificateIssueRequest) =>
@@ -308,6 +309,13 @@ function IssueCertForm({
     if (operatorCn.trim().length > 0) payload.operator_cn = operatorCn.trim();
     if (certType === "dashboard" && pkcs12Password.length > 0) {
       payload.pkcs12_password = pkcs12Password;
+    }
+    // Phase 3b cycle 5 — bake a `tenant:<slug>` SAN into the leaf.
+    if (
+      (certType === "cli" || certType === "dashboard") &&
+      tenantSlug.trim().length > 0
+    ) {
+      payload.tenant_slug = tenantSlug.trim();
     }
     mutation.mutate(payload);
   }
@@ -402,24 +410,46 @@ function IssueCertForm({
           </div>
 
           {certType === "cli" || certType === "dashboard" ? (
-            <div className="md:col-span-2">
-              <Label htmlFor="cert-operator-cn">
-                Operator CN (defaults to CN)
-              </Label>
-              <Input
-                id="cert-operator-cn"
-                value={operatorCn}
-                onChange={(e) => setOperatorCn(e.currentTarget.value)}
-                placeholder="ops@wg.local"
-              />
-              <p className="mt-1 text-xs text-muted-foreground">
-                Must match a registered operator row. Use{" "}
-                <code className="rounded bg-muted px-1 py-0.5">
-                  wg-manager operators add
-                </code>{" "}
-                to seed one.
-              </p>
-            </div>
+            <>
+              <div className="md:col-span-2">
+                <Label htmlFor="cert-operator-cn">
+                  Operator CN (defaults to CN)
+                </Label>
+                <Input
+                  id="cert-operator-cn"
+                  value={operatorCn}
+                  onChange={(e) => setOperatorCn(e.currentTarget.value)}
+                  placeholder="ops@wg.local"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Must match a registered operator row. Use{" "}
+                  <code className="rounded bg-muted px-1 py-0.5">
+                    wg-manager operators add
+                  </code>{" "}
+                  to seed one.
+                </p>
+              </div>
+              <div className="md:col-span-2">
+                <Label htmlFor="cert-tenant-slug">
+                  Tenant slug (optional)
+                </Label>
+                <Input
+                  id="cert-tenant-slug"
+                  value={tenantSlug}
+                  onChange={(e) => setTenantSlug(e.currentTarget.value)}
+                  placeholder="acme"
+                />
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Phase 3b cycle 5 — bakes a{" "}
+                  <code className="rounded bg-muted px-1 py-0.5">
+                    tenant:&lt;slug&gt;
+                  </code>{" "}
+                  SAN into the leaf and records the tenant binding on
+                  the audit row. Leave blank for a tenant-agnostic
+                  cert.
+                </p>
+              </div>
+            </>
           ) : null}
 
           {certType === "dashboard" ? (

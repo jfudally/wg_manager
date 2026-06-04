@@ -1645,7 +1645,7 @@ provisioning path are the three deliverables.
   reference the canonical metrics, every alert has expr +
   annotations.summary).
 
-### Phase 3b — Multi-tenant operator model `[~]` (cycles 1-4 shipped)
+### Phase 3b — Multi-tenant operator model `[x]` (closed 2026-06-04)
 
 **Design decisions** (locked 2026-06-03):
 
@@ -1832,10 +1832,55 @@ Five cycles:
     (`tests/test_tenant_subnet_pool.py`) + 2 new vitest specs.
     Backend pytest 882 passed in ``local`` mode (was 855 on cycle
     3's merge); vitest 54/54; ``tsc --noEmit`` clean.
-- **Cycle 5 `[ ]`** — Dashboard + scoped certs. Tenant CRUD UI on
-  the dashboard. Cert types ``cli`` / ``dashboard`` grow a
-  tenant SAN convention for non-operator service identities that
-  need tenant scoping at issuance time.
+- **Cycle 5 `[x]`** (2026-06-04) — Dashboard + scoped certs.
+  Closes Phase 3b. Tenant CRUD UI shipped in cycle 2/4; cycle 5
+  finishes the surface with explicit ``tenant_id`` on resource
+  POSTs + a ``tenant:<slug>`` SAN convention on ``cli`` /
+  ``dashboard`` cert types.
+
+  Shipped:
+  - **Resource POST tenant resolution.** New
+    ``wg_manager.tenant_scope.resolve_create_tenant`` helper
+    centralises the four decision branches the ROADMAP locks:
+    super-admin without ``tenant_id`` → default tenant (id=1);
+    single-tenant operator without ``tenant_id`` → auto-derive;
+    multi-tenant operator without ``tenant_id`` → 422 demanding an
+    explicit choice (body names every candidate so the dashboard
+    can render the select widget straight from the error);
+    no-tenant operator → 403. Applied to ``POST /ssh-keys`` and
+    ``POST /servers``. Servers' cycle 4 pool-containment check
+    now runs against the *resolved* tenant, not the SSH key's.
+  - **Tenant SAN convention** on operator-/service-client certs.
+    ``wg-manager certs issue --type cli --tenant acme`` +
+    ``POST /certs`` with ``tenant_slug: "acme"`` append a
+    ``tenant:acme`` SAN to the leaf and populate
+    ``Certificate.tenant_id`` on the audit row. Refused on the
+    three server-EKU types (``api``, ``mysql``, ``mysql-client``).
+    Unknown slug → 422 with the slug echoed.
+  - **Dashboard parity.** ``SSHKeyCreate.tenant_id`` +
+    ``ServerCreate.tenant_id`` + ``CertificateIssueRequest.tenant_slug``
+    added to ``web/lib/types.ts``. Certificates page Issue form
+    grows a "Tenant slug (optional)" input that shows only for
+    ``cli`` / ``dashboard`` types and rides through to the POST
+    body. Backend 422 / 403 errors render via the existing Alert
+    pattern.
+  - **Conftest seed.** The in-memory engine fixture now seeds the
+    default tenant at id=1 to mirror Alembic 0014; cycle 2/4
+    helpers that re-inserted the default tenant became upserts.
+  - Tests: 12 new resource-resolution cases
+    (`tests/test_resource_tenant_resolution.py`) + 7 new tenant-SAN
+    cases (`tests/test_cert_tenant_san.py`) + 2 new vitest specs
+    for the cert form. Backend pytest 901 passed in ``local`` mode
+    (was 882 on cycle 4's merge); vitest 56/56; ``tsc --noEmit``
+    clean.
+
+**Phase 3b closed (2026-06-04).** Every sub-phase shipped:
+cycle 1 (schema groundwork) → cycle 2 (OperatorTenant join +
+tenant CRUD) → cycle 3 (per-tenant filtering + role gate) →
+cycle 4 (per-tenant peer pools) → cycle 5 (explicit resource
+tenant + tenant SAN on certs). The next named work-stream is
+Phase 3c (public API versioning) below, which is no longer
+blocked by anything in Phase 3b.
 
 ### Phase 3c — Public API versioning `[ ]`
 

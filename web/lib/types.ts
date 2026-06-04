@@ -38,6 +38,12 @@ export interface SSHKey {
 
 export interface SSHKeyCreate {
   name: string;
+  /**
+   * Phase 3b cycle 5 — optional tenant the row should land in. When
+   * omitted: super-admin / single-tenant operator → auto-derived;
+   * multi-tenant operator → 422.
+   */
+  tenant_id?: number;
 }
 
 /**
@@ -121,6 +127,12 @@ export interface ServerCreate {
    * Must be network-aligned (no host bits set) and `/30` or larger.
    */
   subnet?: string;
+  /**
+   * Phase 3b cycle 5 — tenant the server lands in. Optional; same
+   * resolution rules as `SSHKeyCreate.tenant_id`. The chosen tenant's
+   * `subnet_pool` is what `subnet` must fall inside.
+   */
+  tenant_id?: number;
 }
 
 /**
@@ -391,6 +403,12 @@ export interface CertificateIssueRequest {
    *  certs. Empty string yields an unencrypted bundle (matches the
    *  CLI default). Ignored for other cert types. */
   pkcs12_password?: string;
+  /**
+   * Phase 3b cycle 5 — tenant slug to bake into the leaf as a
+   * `tenant:<slug>` SAN. Allowed only for `cli` / `dashboard`
+   * cert types.
+   */
+  tenant_slug?: string;
 }
 
 /** Response for ``POST /certs``. Mirrors `CertificateIssueResponse`. */

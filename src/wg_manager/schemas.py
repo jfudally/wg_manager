@@ -66,11 +66,16 @@ class SSHKeyCreate(BaseModel):
     ``private_key_b64`` / ``passphrase`` from a prior release gets a
     clear 422 instead of a silently-ignored field that lulls them
     into thinking the credential was stored.
+
+    Phase 3b cycle 5 — optional ``tenant_id`` lets the caller pick
+    which tenant the row lands in. Resolution rules live in
+    :func:`wg_manager.tenant_scope.resolve_create_tenant`.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    tenant_id: int | None = None
 
 
 class SSHKeyUpdate(BaseModel):
@@ -139,6 +144,9 @@ class ServerCreate(BaseModel):
     endpoint_port: int = 51820
     interface: str = "wg0"
     subnet: str | None = None
+    # Phase 3b cycle 5 — explicit tenant resolution. See
+    # :func:`wg_manager.tenant_scope.resolve_create_tenant`.
+    tenant_id: int | None = None
 
     @field_validator("subnet")
     @classmethod
@@ -583,6 +591,12 @@ class CertificateIssueRequest(BaseModel):
     ttl_days: int | None = None
     operator_cn: str | None = None
     pkcs12_password: str = ""
+    # Phase 3b cycle 5 — tenant SAN convention. When set, the API
+    # appends ``tenant:<slug>`` to the SAN list and populates the
+    # resulting :class:`Certificate` row's ``tenant_id``. Allowed only
+    # for ``cli`` / ``dashboard`` cert types (server-EKU certs don't
+    # carry an operator/service-client tenant binding).
+    tenant_slug: str | None = None
 
 
 class CertificateIssueResponse(BaseModel):

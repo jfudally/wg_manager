@@ -82,7 +82,21 @@ def _insert_operator(
 
 
 def _insert_tenant(name: str, slug: str) -> Tenant:
+    """Upsert a tenant by slug — conftest seeds the default tenant at
+    id=1, so a request for ``_insert_tenant('Default', 'default')``
+    returns that pre-existing row rather than colliding."""
     with Session(db_module.engine) as session:
+        existing = session.exec(
+            select(Tenant).where(Tenant.slug == slug)
+        ).first()
+        if existing is not None:
+            return Tenant(
+                id=existing.id,
+                name=existing.name,
+                slug=existing.slug,
+                subnet_pool=existing.subnet_pool,
+                created_at=existing.created_at,
+            )
         row = Tenant(name=name, slug=slug)
         session.add(row)
         session.commit()
@@ -91,6 +105,7 @@ def _insert_tenant(name: str, slug: str) -> Tenant:
             id=row.id,
             name=row.name,
             slug=row.slug,
+            subnet_pool=row.subnet_pool,
             created_at=row.created_at,
         )
 
@@ -192,12 +207,13 @@ class TestGetTenant:
         self, as_admin: tuple[TestClient, Operator]
     ) -> None:
         client, _ = as_admin
-        _insert_tenant("Default", "default")
+        # The conftest seeds the default tenant matching Alembic 0014:
+        # name + slug are both "default" (lowercase).
         resp = client.get("/tenants/default")
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["slug"] == "default"
-        assert body["name"] == "Default"
+        assert body["name"] == "default"
 
     def test_unknown_slug_returns_404(
         self, as_admin: tuple[TestClient, Operator]

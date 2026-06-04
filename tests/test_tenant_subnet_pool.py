@@ -71,7 +71,12 @@ def tenants_env(
     against."""
     monkeypatch.setattr(cli, "_get_engine", lambda url=None: db_module.engine)
     with Session(db_module.engine) as session:
-        if not session.exec(select(Tenant).where(Tenant.id == 1)).first():
+        # The conftest seeds the default tenant with a fallback pool
+        # at id=1; this fixture pins the pool to the value the overlap
+        # tests collide against (was a fresh insert pre-cycle-5; now
+        # an update on the conftest's row).
+        row = session.exec(select(Tenant).where(Tenant.id == 1)).first()
+        if row is None:
             session.add(
                 Tenant(
                     id=1,
@@ -80,7 +85,10 @@ def tenants_env(
                     subnet_pool="10.9.0.0/16",
                 )
             )
-            session.commit()
+        else:
+            row.subnet_pool = "10.9.0.0/16"
+            session.add(row)
+        session.commit()
 
 
 def _invoke(runner: CliRunner, *args: str) -> Any:
@@ -267,11 +275,20 @@ def as_super_admin(client: TestClient) -> Operator:
 
 
 def _seed_default_tenant(pool: str = "10.9.0.0/16") -> Tenant:
+    """Upsert the default tenant — conftest seeds it at id=1, this
+    just pins the desired subnet_pool for the calling test."""
     with Session(db_module.engine) as session:
-        row = Tenant(
-            id=1, name="default", slug="default", subnet_pool=pool
-        )
-        session.add(row)
+        row = session.exec(
+            select(Tenant).where(Tenant.slug == "default")
+        ).first()
+        if row is None:
+            row = Tenant(
+                id=1, name="default", slug="default", subnet_pool=pool
+            )
+            session.add(row)
+        else:
+            row.subnet_pool = pool
+            session.add(row)
         session.commit()
         session.refresh(row)
         return Tenant(
