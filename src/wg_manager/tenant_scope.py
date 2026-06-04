@@ -57,6 +57,7 @@ from wg_manager.models import (
     Operator,
     OperatorRole,
     OperatorTenant,
+    Tenant,
 )
 
 
@@ -212,10 +213,101 @@ def require_tenant_role(
 ScopeDep = Annotated[TenantScope, Depends(get_tenant_scope)]
 
 
+_DEFAULT_TENANT_ID = 1
+
+
+def resolve_create_tenant(
+    scope: TenantScope,
+    session: Session,
+    explicit_tenant_id: int | None,
+    *,
+    allowed_roles: tuple[OperatorRole, ...] = (
+        OperatorRole.admin,
+        OperatorRole.operator,
+    ),
+) -> Tenant:
+    """Resolve the tenant a new resource should land in.
+
+    Phase 3b cycle 5 — the canonical helper every resource-POST
+    handler calls before writing a new row. Centralises the four
+    decision branches the ROADMAP locks in:
+
+    * **Super-admin** — explicit ``tenant_id`` honoured; absent
+      falls back to the default tenant (id 1). Existence of the
+      target tenant is still checked (404 on miss).
+    * **Single-tenant operator** — absent ``tenant_id`` auto-derives
+      from their single join. Explicit ``tenant_id`` must match the
+      operator's tenant (403 otherwise).
+    * **Multi-tenant operator** — absent ``tenant_id`` raises 422
+      with a body that names every candidate so the dashboard can
+      render the select widget straight from the error. Explicit
+      ``tenant_id`` must be in their tenant set.
+    * **No-tenant operator** — every create is 403'd (the operator
+      must be attached to a tenant before they can create).
+
+    The resolved tenant must permit one of ``allowed_roles`` for the
+    operator. Default is ``admin`` / ``operator`` (the create tier);
+    callers asking for ``admin``-only (e.g. ``/tenants`` creation,
+    which already lives behind a global gate) override.
+    """
+    # No-tenant non-super-admin path. Caught up front so the rest of
+    # the helper can assume at least one tenant is in scope.
+    if not scope.is_super_admin and not scope.tenant_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "operator is not attached to any tenant — ask an "
+                "admin to run `wg-manager operators attach-tenant`"
+            ),
+        )
+
+    # Resolve target id.
+    if explicit_tenant_id is not None:
+        target_id = explicit_tenant_id
+    elif scope.is_super_admin:
+        target_id = _DEFAULT_TENANT_ID
+    elif len(scope.tenant_ids) == 1:
+        target_id = scope.tenant_ids[0]
+    else:
+        candidates = ", ".join(str(t) for t in scope.tenant_ids)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"tenant_id is required: operator is attached to "
+                f"multiple tenants ({candidates}); pick one in the body"
+            ),
+        )
+
+    tenant = session.get(Tenant, target_id)
+    if tenant is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"tenant_id {target_id} not found",
+        )
+
+    # Scope + role check.
+    if not scope.is_super_admin:
+        if target_id not in scope.tenant_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"operator is not attached to tenant {target_id}"
+                ),
+            )
+        role = scope.role_in(target_id)
+        if role is None or role not in allowed_roles:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="role not permitted",
+            )
+    return tenant
+
+
 __all__ = [
     "ScopeDep",
     "TenantScope",
     "get_tenant_scope",
     "require_tenant_role",
+    "resolve_create_tenant",
     "scope_filter",
 ]

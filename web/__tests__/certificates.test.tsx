@@ -372,3 +372,82 @@ describe("Certificates page — Phase 2d CP4.2 cert-type dropdown", () => {
     ]);
   });
 });
+
+describe("Certificates page — Phase 3b cycle 5 tenant SAN", () => {
+  it("the tenant slug input shows for cli certs and rides POST body", async () => {
+    const fetchStub = vi.spyOn(global, "fetch").mockImplementation(
+      fetchRouter({
+        "/certs/whoami": makeFetchResponse(200, makeWhoAmI()),
+        "/certs": (url: string, init?: RequestInit) => {
+          if (init?.method === "POST") {
+            return makeFetchResponse(201, {
+              certificate: makeCertificate({
+                id: 42,
+                serial: "9999",
+                cert_type: "cli",
+                tenant_id: 7,
+              }),
+              cert_pem: "leaf-pem",
+              private_pem: "priv-pem",
+              chain_pem: "chain-pem",
+              pkcs12_b64: null,
+            });
+          }
+          return makeFetchResponse(200, []);
+        },
+      }) as typeof fetch,
+    );
+
+    renderPage();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /issue new cert/i }),
+    );
+
+    // Select cli type.
+    const typeSelect = await screen.findByLabelText(/cert type/i);
+    fireEvent.change(typeSelect, { target: { value: "cli" } });
+
+    // The cycle 5 input appears.
+    const tenantInput = await screen.findByLabelText(/tenant slug/i);
+    fireEvent.change(tenantInput, { target: { value: "acme" } });
+
+    // Fill CN + submit.
+    const cnInput = await screen.findByLabelText(/common name/i);
+    fireEvent.change(cnInput, { target: { value: "automation@wg.local" } });
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /issue cert/i }),
+    );
+
+    await waitFor(() => {
+      const post = fetchStub.mock.calls.find(
+        ([url, init]) =>
+          String(url).endsWith("/certs") && init?.method === "POST",
+      );
+      expect(post).toBeDefined();
+      const body = JSON.parse(String(post?.[1]?.body));
+      expect(body.cert_type).toBe("cli");
+      expect(body.common_name).toBe("automation@wg.local");
+      expect(body.tenant_slug).toBe("acme");
+    });
+  });
+
+  it("the tenant slug input is hidden for api certs", async () => {
+    vi.spyOn(global, "fetch").mockImplementation(
+      fetchRouter({
+        "/certs/whoami": makeFetchResponse(200, makeWhoAmI()),
+        "/certs": makeFetchResponse(200, []),
+      }) as typeof fetch,
+    );
+
+    renderPage();
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /issue new cert/i }),
+    );
+
+    // Default cert type is api; the tenant input should be absent.
+    expect(screen.queryByLabelText(/tenant slug/i)).toBeNull();
+  });
+});

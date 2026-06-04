@@ -10,6 +10,51 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3b cycle 5 — explicit tenant on resource POSTs + tenant SAN on
+  certs.** Closes Phase 3b. Cycle 4 inherited the server's tenant from
+  the SSH key; cycle 5 makes the resolution explicit. Cycle 3 added
+  per-operator tenant scope from the `OperatorTenant` join; cycle 5
+  lets non-operator service identities (CI runners, automation
+  accounts) carry a tenant binding via a `tenant:<slug>` SAN baked
+  into the leaf.
+
+  - **Resource POST tenant resolution.** `POST /ssh-keys`,
+    `POST /servers` accept an optional `tenant_id` in the body. The
+    new `wg_manager.tenant_scope.resolve_create_tenant` helper
+    centralises the four decision branches: super-admin without
+    `tenant_id` → default tenant (id=1); single-tenant operator
+    without `tenant_id` → auto-derive; multi-tenant operator
+    without `tenant_id` → 422 demanding an explicit choice (body
+    names every candidate so the dashboard can render the select
+    widget straight from the error); no-tenant operator → 403. The
+    resolved tenant must permit the operator's per-tenant
+    `admin`/`operator` role; `auditor` 403s. Servers' cycle 4
+    pool-containment check now runs against the *resolved* tenant,
+    not the SSH key's.
+  - **Tenant SAN convention on `cli` / `dashboard` certs.**
+    `wg-manager certs issue --type cli --tenant acme` (and the
+    matching `POST /certs` with `tenant_slug: "acme"`) appends a
+    `tenant:acme` DNS-SAN to the leaf and populates
+    `Certificate.tenant_id` on the audit row. Refused on the three
+    server-EKU cert types (`api`, `mysql`, `mysql-client`).
+    Unknown slug → 422.
+  - **Dashboard parity.** `SSHKeyCreate.tenant_id` + `ServerCreate.tenant_id`
+    + `CertificateIssueRequest.tenant_slug` added to
+    `web/lib/types.ts`. Certificates page Issue form grows a
+    "Tenant slug (optional)" input that appears only for cli /
+    dashboard types and rides through to the POST body. Backend's
+    422 / 403 errors render in the existing Alert pattern.
+  - **Conftest seed.** The in-memory engine fixture now seeds the
+    default tenant at id=1 to mirror Alembic 0014; existing test
+    helpers that re-inserted the default tenant became upserts.
+  - **Tests:** 12 new resource-resolution cases
+    (`tests/test_resource_tenant_resolution.py`) + 7 new tenant-SAN
+    cases (`tests/test_cert_tenant_san.py`) + 2 new vitest specs
+    for the cert form. Backend pytest 901 passed in `local` mode
+    (was 882 on cycle 4's merge); vitest 56/56; `tsc --noEmit` clean.
+  - **Phase 3b closes here.** Cycles 1-5 shipped; every bullet on
+    the Phase 3b sub-roadmap is `[x]`. ROADMAP header updated.
+
 - **Phase 3b cycle 4 — per-tenant peer pools (IPAM).** Each tenant
   carries its own `subnet_pool` CIDR; every server's `subnet` must
   lie inside the pool, and two tenants' pools must be disjoint —

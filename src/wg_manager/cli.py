@@ -1119,6 +1119,17 @@ def certs_issue(
             "active Operator row."
         ),
     ),
+    tenant_slug: str | None = typer.Option(
+        None,
+        "--tenant",
+        help=(
+            "Phase 3b cycle 5 — tenant slug to bake into the leaf as "
+            "a `tenant:<slug>` SAN. Allowed for `cli` and `dashboard` "
+            "cert types only (those represent operator / service "
+            "client identities that can carry per-tenant scope). "
+            "Refused on server-EKU types."
+        ),
+    ),
     out_cert: Path | None = typer.Option(
         None, "--out-cert", help="Write the leaf PEM here."
     ),
@@ -1176,10 +1187,25 @@ def certs_issue(
         Certificate,
         CertificateType,
         Operator,
+        Tenant,
     )
     from wg_manager.pki import make_pki_backend
 
     profile = _CERT_PROFILES[cert_type]
+
+    # Phase 3b cycle 5 — ``--tenant`` is only valid on the
+    # operator-/service-client cert types. Reject up front so a
+    # misconfigured invocation against a server-EKU type can't
+    # silently land a confusing leaf.
+    if tenant_slug is not None and profile["server_eku"]:
+        typer.secho(
+            f"--tenant is not allowed for --type {cert_type.value!r} "
+            f"(server-EKU certs don't carry an operator/service-client "
+            f"tenant binding)",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     # Resolve SANs: explicit > type default > [CN] (cli/dashboard).
     if sans:
@@ -1188,6 +1214,10 @@ def certs_issue(
         resolved_sans = list(profile["default_sans"])
     else:
         resolved_sans = [common_name]
+    # Append the ``tenant:<slug>`` SAN before issuance so it's baked
+    # into the leaf signature.
+    if tenant_slug is not None:
+        resolved_sans.append(f"tenant:{tenant_slug}")
 
     ttl = ttl_days if ttl_days is not None else profile["ttl_days"]
     ttl_seconds = ttl * 24 * 60 * 60
@@ -1222,6 +1252,7 @@ def certs_issue(
 
     engine = _get_engine(database_url)
     operator_id: int | None = None
+    resolved_tenant_id: int | None = None
     if profile["requires_operator"]:
         target_cn = operator_cn or common_name
         with Session(engine) as session:
@@ -1238,6 +1269,23 @@ def certs_issue(
                 )
                 raise typer.Exit(code=1)
             operator_id = int(op_row.id or 0)
+    # Phase 3b cycle 5 — resolve the tenant slug to an id so the
+    # audit row records the binding without re-parsing the SAN. Fail
+    # before the PKI round-trip so an unknown slug doesn't leave a
+    # leaf on disk that the cert table never knows about.
+    if tenant_slug is not None:
+        with Session(engine) as session:
+            t_row = session.exec(
+                select(Tenant).where(Tenant.slug == tenant_slug)
+            ).first()
+            if t_row is None:
+                typer.secho(
+                    f"no tenant with slug {tenant_slug!r}",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            resolved_tenant_id = int(t_row.id or 0)
 
     backend = make_pki_backend()
     if profile["server_eku"]:
@@ -1322,6 +1370,7 @@ def certs_issue(
             out_chain_path=(
                 str(out_chain) if out_chain is not None else None
             ),
+            tenant_id=resolved_tenant_id,
         )
         session.add(row)
         session.commit()

@@ -71,6 +71,7 @@ from wg_manager.models import (
     CertificateType,
     Operator,
     OperatorRole,
+    Tenant,
 )
 from wg_manager.pki import Cert, PKIBackend
 from wg_manager.schemas import (
@@ -368,12 +369,41 @@ def issue_cert(
     server keeps no copy. Loss of that body means re-issuing.
     """
     profile = _CERT_PROFILES[payload.cert_type]
+    # Phase 3b cycle 5 — ``tenant_slug`` only valid on operator /
+    # service-client (clientAuth) cert types. Reject early so a
+    # mis-aimed request can't bake a confusing ``tenant:<slug>`` SAN
+    # into a serverAuth listener cert.
+    if payload.tenant_slug is not None and profile["server_eku"]:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"tenant_slug is not allowed for cert_type "
+                f"{payload.cert_type.value!r} — only cli + dashboard "
+                f"certs carry a tenant binding"
+            ),
+        )
     operator_id = _resolve_operator_fk(
         payload.cert_type, payload.common_name, payload.operator_cn, session
     )
     sans = _resolve_sans(payload.cert_type, payload.common_name, payload.sans)
     ttl_days = payload.ttl_days or profile["ttl_days"]
     ttl_seconds = ttl_days * 24 * 60 * 60
+
+    # Phase 3b cycle 5 — resolve the tenant slug + append the SAN.
+    tenant_id: int | None = None
+    if payload.tenant_slug is not None:
+        tenant_row = session.exec(
+            select(Tenant).where(Tenant.slug == payload.tenant_slug)
+        ).first()
+        if tenant_row is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=(
+                    f"no tenant with slug {payload.tenant_slug!r}"
+                ),
+            )
+        tenant_id = int(tenant_row.id or 0)
+        sans = [*sans, f"tenant:{payload.tenant_slug}"]
 
     cert = _mint_leaf(
         backend,
@@ -395,6 +425,7 @@ def issue_cert(
         sans=",".join(cert.sans),
         not_before=cert.not_before,
         not_after=cert.not_after,
+        tenant_id=tenant_id,
     )
     session.add(row)
     session.commit()

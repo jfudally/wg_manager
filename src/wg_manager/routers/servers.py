@@ -12,6 +12,12 @@ from wg_manager import audit
 from wg_manager.config import settings
 from wg_manager.db import get_session
 from wg_manager.ipam import subnet_in_pool
+from wg_manager.tenant_scope import (
+    ScopeDep,
+    require_tenant_role,
+    resolve_create_tenant,
+    scope_filter,
+)
 from wg_manager.models import (
     Client,
     DiscoveredPeer,
@@ -37,11 +43,6 @@ from wg_manager.tasks import (
     rotate_host_cert_task,
 )
 from wg_manager.models import OperatorRole
-from wg_manager.tenant_scope import (
-    ScopeDep,
-    require_tenant_role,
-    scope_filter,
-)
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -54,7 +55,10 @@ _SessionDep = Annotated[Session, Depends(get_session)]
     status_code=status.HTTP_202_ACCEPTED,
 )
 def register_server(
-    payload: ServerCreate, request: Request, session: _SessionDep
+    payload: ServerCreate,
+    request: Request,
+    session: _SessionDep,
+    scope: ScopeDep,
 ) -> ServerRegisterResponse:
     """Register a server and dispatch its provisioning task.
 
@@ -66,6 +70,15 @@ def register_server(
     same transaction as the row insert so a successful register lands
     one ``server.create`` audit row and a failure leaves none.
     """
+    # Phase 3b cycle 5 — resolve the target tenant via the operator
+    # context. Cycle 4 inherited from ``ssh_key.tenant_id`` as a
+    # transitional measure; cycle 5 makes the resolution explicit
+    # and lets the operator pick a tenant other than the SSH key's
+    # (which is sensible: the SSH key's tenant is the tenant
+    # **administering** the credential, not necessarily the tenant
+    # the deployed server serves).
+    tenant = resolve_create_tenant(scope, session, payload.tenant_id)
+
     ssh_key = session.get(SSHKey, payload.ssh_key_id)
     if ssh_key is None:
         raise HTTPException(status_code=404, detail="SSH key not found")
@@ -77,17 +90,11 @@ def register_server(
     server_host = list(network.hosts())[0]
     address = f"{server_host}/{network.prefixlen}"
 
-    # Phase 3b cycle 4 — the server's subnet must lie inside its
-    # tenant's pool. Cycle 4 keeps the tenant resolution simple:
-    # inherit the SSH key's tenant (which itself defaults to the
-    # default tenant via Alembic 0014's back-fill). Cycle 5 will
-    # layer explicit ``tenant_id`` resolution from the operator's
-    # context on top.
-    target_tenant_id = ssh_key.tenant_id or 1
-    tenant = session.get(Tenant, target_tenant_id)
-    if tenant is not None and not subnet_in_pool(
-        str(network), tenant.subnet_pool
-    ):
+    # Phase 3b cycle 4 invariant — the server's subnet must lie inside
+    # its tenant's pool. Phase 3b cycle 5 routes the check through the
+    # resolved tenant (which may differ from the SSH key's tenant).
+    target_tenant_id = int(tenant.id or 0)
+    if not subnet_in_pool(str(network), tenant.subnet_pool):
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(

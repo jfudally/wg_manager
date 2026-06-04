@@ -216,6 +216,24 @@ def engine() -> Generator[Any, None, None]:
     import wg_manager.models  # noqa: F401
 
     SQLModel.metadata.create_all(test_engine)
+    # Phase 3b cycle 1 seeds a default tenant at id=1 via Alembic
+    # 0014; tests use ``create_all`` rather than running migrations,
+    # so seed it here to keep cycle-5's ``resolve_create_tenant``
+    # (which falls back to the default tenant for super-admin /
+    # unscoped callers) working without scattering tenant-row
+    # fixtures across every existing test file.
+    from wg_manager.models import Tenant
+
+    with Session(test_engine) as bootstrap:
+        bootstrap.add(
+            Tenant(
+                id=1,
+                name="default",
+                slug="default",
+                subnet_pool="10.0.0.0/8",
+            )
+        )
+        bootstrap.commit()
     # Swap the module-level engine so any code that reaches for it directly
     # sees the test engine.
     original = db_module.engine

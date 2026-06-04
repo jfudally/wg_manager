@@ -29,6 +29,7 @@ from wg_manager.schemas import SSHKeyCreate, SSHKeyRead, SSHKeyUpdate
 from wg_manager.tenant_scope import (
     ScopeDep,
     require_tenant_role,
+    resolve_create_tenant,
     scope_filter,
 )
 
@@ -39,7 +40,10 @@ _SessionDep = Annotated[Session, Depends(get_session)]
 
 @router.post("", response_model=SSHKeyRead, status_code=status.HTTP_201_CREATED)
 def create_ssh_key(
-    payload: SSHKeyCreate, request: Request, session: _SessionDep
+    payload: SSHKeyCreate,
+    request: Request,
+    session: _SessionDep,
+    scope: ScopeDep,
 ) -> SSHKey:
     """Register a new SSH role.
 
@@ -49,10 +53,16 @@ def create_ssh_key(
     from the SSH CA.
 
     Phase 2e cycle 3 emits one ``ssh_key.create`` audit row inside the
-    same transaction as the insert.
+    same transaction as the insert. Phase 3b cycle 5 resolves the
+    tenant the row lands in via
+    :func:`wg_manager.tenant_scope.resolve_create_tenant`.
 
     :raises HTTPException: 409 if the role name is already taken.
     """
+    # Phase 3b cycle 5 — resolve tenant first so a misconfigured
+    # caller fails before the uniqueness check (cleaner error story).
+    tenant = resolve_create_tenant(scope, session, payload.tenant_id)
+
     existing = session.exec(
         select(SSHKey).where(SSHKey.name == payload.name)
     ).first()
@@ -61,7 +71,7 @@ def create_ssh_key(
             status_code=409,
             detail=f"SSH key named {payload.name!r} already exists",
         )
-    row = SSHKey(name=payload.name)
+    row = SSHKey(name=payload.name, tenant_id=tenant.id)
     session.add(row)
     session.flush()
     session.refresh(row)
