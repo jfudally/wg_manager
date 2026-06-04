@@ -10,6 +10,42 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3d cycle 2 — Celery worker scaling guarantees.** Makes the
+  Celery worker side safe to run as 2+ replicas behind the same
+  broker. Codifies the at-least-once delivery contract every task is
+  written against.
+
+  - **Idempotency audit** of the 6 shipped tasks
+    (provision_server, rotate_host_cert, reconfigure_server,
+    provision_client, discover_peers, discover_all_peers). Verdict:
+    4× `BENIGN_OVERWRITE` + 2× `NATURALLY_IDEMPOTENT`. No
+    `NEEDS_GUARD` findings. Per-row advisory locks (the natural
+    cycle 2 follow-on) deferred to cycle 3, which brings MySQL's
+    `GET_LOCK()` into scope.
+  - **`task_reject_on_worker_lost=True`** added to
+    `celery_app.conf`. Pairs with the existing `task_acks_late=True`
+    to form the at-least-once contract: a SIGKILL'd / OOM'd worker
+    mid-task triggers broker requeue instead of silent task loss.
+  - **Per-task contract pinned in docstrings.** Each task grew a
+    `Phase 3d cycle 2` stanza naming its idempotency classification
+    + reasoning. A regression test greps for the marker so a
+    refactor that rewrites a task body without re-examining the
+    audit trips a clear failure.
+  - **No beat scheduler.** Zero periodic tasks exist in the
+    codebase. The "single-beat vs distributed-beat" decision is
+    deferred until a periodic task is actually needed (cert renewal
+    sweep is the obvious first candidate).
+  - **Docs.** `docs/deploy/ha-control-plane.md` grew a "Celery
+    worker scaling" section with the at-least-once contract table,
+    the per-task idempotency table, an "Adding a new task"
+    checklist (matches the existing Statelessness checklist
+    pattern), and the cycle 3 advisory-lock deferral note.
+  - **Tests:** 9 new cases (`tests/test_celery_ha_config.py`) —
+    config flags pinned, every task name registered with
+    `celery_app`, every task's `__doc__` carries the cycle 2
+    audit-verdict marker. Backend pytest 937/937 in `local` mode
+    (was 928 on cycle 1's merge).
+
 - **Phase 3d cycle 1 — statelessness audit + `/healthz` + `/readyz`
   + HA startup guards.** Foundational slice of Phase 3d (HA control
   plane). Verifies the API is safe to run as two+ replicas behind a

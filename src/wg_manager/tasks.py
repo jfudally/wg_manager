@@ -209,6 +209,16 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
     currently-``ready`` client for this server, so repeated invocations are
     safe even when the node was left half-configured.
 
+    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE** on serial replay.
+    Remote SSH commands are guarded (``apt-get install`` is idempotent;
+    ``_ensure_keypair`` runs ``test -s … || generate``; ``wg-quick
+    down/up`` converges). Re-running converges to the same end state.
+    Two workers racing the same ``server_id`` simultaneously is a
+    deployment-time concern (brief interface flap, dpkg waits on its
+    own lock) — the cycle 2 ROADMAP documents the per-row advisory
+    lock as the cycle 3 follow-up. Safe under ``acks_late=True`` +
+    ``reject_on_worker_lost=True`` re-delivery from cycle 2's config.
+
     :param server_id: Primary key of the :class:`Server` row to provision.
     :type server_id: int
     :return: Summary of the final state.
@@ -293,6 +303,11 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
     versions guarded with — every ``SSHKey`` row is now CA-mode by
     construction, so the task can dial unconditionally.
 
+    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE**. Re-running mints
+    a fresh cert (wastes one Vault signature) and overwrites the row's
+    ``host_cert_*`` columns + the remote files. No operator-visible
+    inconsistency. Safe under at-least-once re-delivery.
+
     :param server_id: Primary key of the :class:`Server` whose host
         cert should be rotated.
     :return: ``{"status", "server_id", "serial", "valid_before"}``.
@@ -365,6 +380,11 @@ def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
     automatically after a successful client provision so new peers are
     picked up without a full re-provision of the hub.
 
+    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE**. Renders the same
+    ``wg0.conf`` from the current DB state and restarts ``wg-quick``. No
+    DB writes. Concurrent runs from two workers cause a brief interface
+    flap; serial replay is a no-op. Safe under at-least-once re-delivery.
+
     :param server_id: Primary key of the :class:`Server` row to reconfigure.
     :type server_id: int
     :return: Summary of the reconfigure result.
@@ -415,6 +435,13 @@ def provision_client_task(self, client_id: int) -> dict[str, Any]:
 
     On success the task commits the client in ``ready`` state and dispatches
     :func:`reconfigure_server_task` so the hub picks up the new peer.
+
+    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE**. Remote SSH
+    commands are guarded the same way ``provision_server_task`` is.
+    Re-running re-enqueues ``reconfigure_server_task.delay()`` (a
+    duplicate hub reconfigure — wasted work but a safe no-op
+    operationally). Safe under at-least-once re-delivery; concurrent
+    runs from two workers race for the same row's status flip.
 
     :param client_id: Primary key of the :class:`Client` row to provision.
     :type client_id: int
@@ -493,6 +520,12 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
     :class:`Client` on the same server are flagged ``is_managed=True`` so
     the operator can tell observed peers apart from wg-manager-controlled
     ones.
+
+    Phase 3d cycle 2 idempotency: **NATURALLY_IDEMPOTENT**. Read-only
+    SSH + upsert keyed on ``(server_id, public_key)``. Two workers
+    racing the same ``server_id`` converge to the same row set with
+    the later writer winning ``last_seen_at`` — no operator-visible
+    inconsistency. Safe at-least-once.
 
     Discovery is a read operation, so an SSH-level failure for this
     server is **not** treated as a task failure: the error is logged and
@@ -617,6 +650,11 @@ def discover_all_peers_task(self) -> dict[str, Any]:
 
     Per-server SSH failures are logged and skipped — they do **not** abort
     the batch. The aggregated result counts successful and failed servers
+
+    Phase 3d cycle 2 idempotency: **NATURALLY_IDEMPOTENT** (inherits
+    from :func:`discover_peers_task` which it calls per-server as a
+    plain Python invocation — not ``.delay()``, so the whole batch
+    runs on whichever worker picked up the parent). Safe at-least-once.
     and includes the per-server result payload so the operator can drill
     into individual failures.
 

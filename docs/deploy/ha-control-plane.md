@@ -136,14 +136,76 @@ The dev posture (`TLS_REQUIRED=false`, used by the test suite and
 local development) is permitted to run the local backends
 unpinned.
 
+## Celery worker scaling (Phase 3d cycle 2)
+
+The Celery side is safe to run as 2+ workers behind the same broker.
+Cycle 2 added the at-least-once delivery contract and a per-task
+idempotency review.
+
+### Delivery contract
+
+Two Celery config flags together produce at-least-once delivery:
+
+| Flag | Value | Effect |
+|---|---|---|
+| `task_acks_late` | `True` (shipped Phase 1) | Tasks acknowledged on success, not receipt. A worker that picks up a task and dies before completing it leaves the task in the broker. |
+| `task_reject_on_worker_lost` | `True` (cycle 2) | Hard worker death (SIGKILL, OOM, container terminated) is treated as a failure — the broker re-queues. Without this, a SIGKILL'd worker mid-task drops the task silently. |
+
+Together: **every task in `wg_manager.tasks` may be delivered more
+than once**, and every task is written to be safe under re-delivery.
+
+### Per-task idempotency table
+
+| Task | Verdict | Reason |
+|---|---|---|
+| `provision_server_task` | **BENIGN_OVERWRITE** | Remote SSH commands are guarded (`apt-get install` is idempotent; `_ensure_keypair` runs `test -s … \|\| generate`; `wg-quick down/up` converges). |
+| `rotate_host_cert_task` | **BENIGN_OVERWRITE** | Re-run mints another cert (wastes a Vault signature) and overwrites the remote files + DB columns. |
+| `reconfigure_server_task` | **BENIGN_OVERWRITE** | Renders the same `wg0.conf` from current DB state. Concurrent runs cause a brief interface flap. |
+| `provision_client_task` | **BENIGN_OVERWRITE** | Same guarding as `provision_server_task`; re-enqueues a duplicate `reconfigure_server_task` (safe). |
+| `discover_peers_task` | **NATURALLY_IDEMPOTENT** | Read-only SSH + upsert keyed on `(server_id, public_key)`. |
+| `discover_all_peers_task` | **NATURALLY_IDEMPOTENT** | Inherits from `discover_peers_task`. |
+
+Each verdict is also pinned in the task's `__doc__` so a refactor
+that rewrites a task body without re-examining the audit trips the
+docstring-presence test in `tests/test_celery_ha_config.py`.
+
+### What's NOT pinned in cycle 2
+
+**Per-row advisory locks.** When two workers race the same
+`server_id`, the audit verdict ("BENIGN_OVERWRITE") is operationally
+safe but wastes Vault signatures and causes brief interface flaps.
+Cycle 3 (MySQL primary + replica routing) is the natural place to
+add advisory locks since it brings the MySQL-specific
+`GET_LOCK(name, timeout)` surface into scope. Until then, the
+operator's runbook is: if you need exactly-once for a sensitive
+operation, dispatch the task once and let the result polling
+(`GET /tasks/{id}`) deduplicate at the caller.
+
+### Adding a new task
+
+The Statelessness checklist above applies, plus:
+
+- [ ] Classify the task as `NATURALLY_IDEMPOTENT`, `BENIGN_OVERWRITE`,
+      or `NEEDS_GUARD`. If the third, you must add the guard before
+      shipping.
+- [ ] Add the verdict to the task's `__doc__` in a `Phase 3d cycle 2`
+      stanza — the test in `tests/test_celery_ha_config.py` will
+      enforce the marker is present.
+- [ ] Add the task to `_EXPECTED_TASK_NAMES` in that same test so a
+      future refactor that drops the `@celery_app.task` decorator
+      trips a clear assertion.
+- [ ] Update the per-task table above.
+
 ## What's next
 
-Phase 3d ships in cycles. Cycle 1 (this doc) lands the
-statelessness audit + `/healthz` + `/readyz` + startup guards.
-Subsequent cycles will layer:
+Phase 3d ships in cycles:
 
-- **Cycle 2** — Celery worker scaling guarantees (beat scheduler
-  safety, task idempotency review).
-- **Cycle 3** — MySQL primary + read replica routing.
+- **Cycle 1 (shipped)** — statelessness audit + `/healthz` + `/readyz`
+  + startup guards.
+- **Cycle 2 (shipped)** — Celery worker scaling contract +
+  `task_reject_on_worker_lost` + per-task idempotency audit.
+- **Cycle 3** — MySQL primary + read replica routing. Brings
+  `GET_LOCK()` into scope for the per-row advisory locks deferred
+  from cycle 2.
 - **Cycle 4** — docker-compose `ha` profile with the LB +
   multi-replica example.

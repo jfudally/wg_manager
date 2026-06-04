@@ -1979,8 +1979,48 @@ behaviour in practice.
     in ``local`` mode (was 914 on Phase 3c's merge); vitest
     unaffected; ``tsc --noEmit`` unaffected.
 
-- **Cycle 2 `[ ]`** — Celery worker scaling guarantees. Beat
-  scheduler safety, task idempotency review.
+- **Cycle 2 `[x]`** (2026-06-04) — Celery worker scaling
+  guarantees. Beat scheduler safety, task idempotency review.
+
+  Shipped:
+  - **Per-task idempotency audit** of the six Celery tasks
+    (provision_server, rotate_host_cert, reconfigure_server,
+    provision_client, discover_peers, discover_all_peers).
+    Verdict: 4× ``BENIGN_OVERWRITE`` + 2× ``NATURALLY_IDEMPOTENT``.
+    No ``NEEDS_GUARD`` findings — single-worker replay is safe
+    today, and concurrent two-worker races on the same row are
+    BENIGN at the cost of wasted Vault signatures / brief interface
+    flaps. Per-row advisory locks deferred to cycle 3 (which brings
+    MySQL's ``GET_LOCK`` into scope).
+  - **At-least-once delivery contract.**
+    ``task_reject_on_worker_lost=True`` added to ``celery_app.conf``
+    so a SIGKILL'd / OOM'd worker mid-task triggers broker requeue
+    instead of silent task loss. Pairs with the existing
+    ``task_acks_late=True`` to form the at-least-once contract every
+    task is written against.
+  - **Docstring contract.** Each of the six tasks grew a
+    ``Phase 3d cycle 2`` stanza in its docstring naming its
+    idempotency classification + the reasoning. The test in
+    ``tests/test_celery_ha_config.py`` greps for the marker so a
+    refactor that rewrites a task body without re-examining the
+    audit trips a clear failure.
+  - **Beat scheduler.** None shipped — the codebase has zero
+    periodic tasks. The "single-beat or distributed-beat" decision
+    is deferred until a periodic task is actually needed (cert
+    renewal sweep is the obvious first candidate; lives outside
+    cycle 2's scope).
+  - **Docs.** ``docs/deploy/ha-control-plane.md`` grew a "Celery
+    worker scaling" section with the at-least-once contract table,
+    the per-task idempotency table, an "Adding a new task"
+    checklist (matches the existing Statelessness checklist
+    pattern), and the per-row advisory lock cycle 3 deferral note.
+  - Tests: 9 new cases (`tests/test_celery_ha_config.py`) —
+    ``acks_late=True`` + ``reject_on_worker_lost=True`` pinned at
+    the config level, every shipped task name registered with
+    ``celery_app``, every task's ``__doc__`` carries the
+    ``Phase 3d cycle 2`` audit-verdict marker. Backend pytest
+    937/937 in ``local`` mode (was 928 on cycle 1's merge);
+    vitest unaffected; ``tsc --noEmit`` unaffected.
 - **Cycle 3 `[ ]`** — MySQL primary + read-replica routing.
 - **Cycle 4 `[ ]`** — docker-compose ``ha`` profile with the
   LB + multi-replica example.
