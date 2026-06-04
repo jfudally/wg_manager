@@ -45,6 +45,59 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
     tests pin the source-of-truth shape so a refactor that drops a
     service or breaks the passthrough contract trips before merge.
 
+- **Production-shaped docker-compose overlay
+  (`docker-compose.prod.yml`).** Adds an operator path from
+  "dev stack on my laptop" to "single-host non-HA stack on a real
+  box". Layers on top of the existing `docker-compose.yml` (which
+  stays the dev file) via `docker compose -f docker-compose.yml
+  -f docker-compose.prod.yml up` — or the new `make prod-up`
+  wrapper.
+
+  - **Three new services.** `api` (mTLS-enforcing FastAPI on public
+    443), `worker` (Celery), `web` (Next.js dashboard on public
+    3000). Both API + worker build the Phase 2f `Dockerfile`; web
+    builds `web/Dockerfile`. All three pin `restart: always` so the
+    box rebooting brings the stack with it.
+  - **Production posture on the API + worker.** `TLS_REQUIRED=true`,
+    `DATABASE_TLS_REQUIRED=true`, all three substrate backends
+    (`CRYPTO_BACKEND` / `SSH_CA_BACKEND` / `PKI_BACKEND`) pinned to
+    `vault`. The HA startup guard (Phase 3d cycle 1) rejects
+    `local` + `TLS_REQUIRED=true` without pinned PEMs anyway —
+    pinning to `vault` is the only honest production posture.
+  - **Hardened data tier.** Overrides on `mysql` / `valkey` /
+    `vault` source every secret from `${VAR}` interpolation
+    (`.env.prod`) using Compose's `${VAR:?msg}` fail-loud syntax
+    so a missing value blocks `compose up` instead of silently
+    defaulting to a vulnerable string. The dev compose's well-
+    known `dev-only-root` Vault token, `rootpw` MySQL root
+    password, and unauthenticated Valkey are all replaced; data
+    tier host port mappings drop to `127.0.0.1` only.
+  - **`.env.prod.example`** documents every interpolation the
+    overlay reads, with inline comments on how to generate strong
+    values for each. Gitignore extended to keep the populated
+    `.env.prod` out of the repo.
+  - **`make prod-up` / `prod-down` / `prod-logs` / `prod-config`**
+    wrappers around `docker compose --env-file .env.prod
+    -f docker-compose.yml -f docker-compose.prod.yml ...`. The
+    `prod-up` target guard refuses to start without `.env.prod`
+    on disk.
+  - **Operator runbook** at `docs/deploy/single-host-prod.md`
+    covers the one-time bootstrap sequence (mint MySQL TLS bundle
+    → bring up data tier → bootstrap Vault substrate → mint API
+    + operator certs → apply migrations → restart api/worker/web),
+    the day-2 reference (volume → state mapping, restart behaviour,
+    backup commands), the documented limitations vs. fully
+    production-ready (Vault still in dev mode, no reverse proxy,
+    no in-stack Prometheus, single MySQL, single worker), and the
+    upgrade-to-HA path.
+  - **Tests:** 33 overlay-shape cases
+    (`tests/test_compose_prod_overlay.py`) + 3 env-template cases
+    (`tests/test_env_prod_example.py`) = 36 new. Pure parse-and-assert,
+    matches the Phase 2f `test_dockerfile.py` and cycle 4a
+    `test_compose_ha_profile.py` pattern. Pins: service presence
+    (api/worker/web), restart-always, mTLS + DB-TLS + Vault
+    backends, no hardcoded dev secrets, every `${VAR}` documented.
+
 - **Phase 3d cycle 3 — per-row advisory locks on mutating Celery
   tasks.** Closes the multi-worker concurrency gap cycle 2
   flagged (BENIGN_OVERWRITE on contention). The 4 mutating tasks
