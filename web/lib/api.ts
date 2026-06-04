@@ -27,6 +27,7 @@ import type {
   HostCertRotateResponse,
   OperatorTenantAttachRequest,
   OperatorTenantRead,
+  TenantUpdate,
   SSHKey,
   SSHKeyCreate,
   SSHKeyUpdate,
@@ -399,10 +400,21 @@ export const api = {
   getTenant: (slug: string) => request<Tenant>(`/tenants/${slug}`),
   /**
    * Create a new tenant namespace. Admin only. Slug derives from
-   * `name` server-side when omitted.
+   * `name` server-side when omitted; `subnet_pool` (Phase 3b cycle 4)
+   * defaults to the model fallback when omitted.
    */
   createTenant: (payload: TenantCreate) =>
     request<Tenant>("/tenants", { method: "POST", body: payload }),
+  /**
+   * Partial-update a tenant (Phase 3b cycle 4). Currently the only
+   * patchable field is `subnet_pool`. Refuses with 409 on overlap
+   * with another tenant's pool.
+   */
+  updateTenant: (slug: string, payload: TenantUpdate) =>
+    request<Tenant>(`/tenants/${slug}`, {
+      method: "PATCH",
+      body: payload,
+    }),
   /**
    * Attach an operator to a tenant with a per-tenant role. Admin
    * only. Returns the joined row with the resolved tenant + operator

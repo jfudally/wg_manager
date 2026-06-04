@@ -1645,7 +1645,7 @@ provisioning path are the three deliverables.
   reference the canonical metrics, every alert has expr +
   annotations.summary).
 
-### Phase 3b — Multi-tenant operator model `[~]` (cycles 1-3 shipped)
+### Phase 3b — Multi-tenant operator model `[~]` (cycles 1-4 shipped)
 
 **Design decisions** (locked 2026-06-03):
 
@@ -1787,10 +1787,51 @@ Five cycles:
     delete scoping, and audit-event tenant_id population. Backend
     pytest 855 passed in ``local`` mode (was 824 on cycle 2's
     merge); vitest 52/52; ``tsc --noEmit`` clean.
-- **Cycle 4 `[ ]`** — Per-tenant peer pools. IPAM partitioned per
-  tenant: each tenant has its own subnet allocation; no IP
-  collisions between tenants. ``Server.subnet`` no longer the
-  global IP space — it's a tenant-scoped slice.
+- **Cycle 4 `[x]`** (2026-06-04) — Per-tenant peer pools. IPAM
+  partitioned per tenant: each tenant has its own subnet
+  allocation; no IP collisions between tenants. ``Server.subnet``
+  no longer the global IP space — it's a tenant-scoped slice.
+
+  Shipped:
+  - **Schema** — :class:`Tenant` grows a ``subnet_pool`` NOT NULL
+    ``VARCHAR(64)`` column via Alembic 0016. Back-fill seeds the
+    reserved ``id=1`` default tenant with the operator's
+    ``Settings.default_subnet`` (so a v0.1.0 deployment keeps every
+    existing server inside its tenant's pool without operator
+    action); any other tenant rows added between cycles 2 and 4
+    back-fill to ``10.0.0.0/8`` — the operator tightens via PATCH
+    when they're ready.
+  - **IPAM helpers** — new ``subnet_in_pool(subnet, pool)`` (strict
+    containment) and ``pools_overlap(a, b)`` (overlap check) in
+    [`wg_manager.ipam`](src/wg_manager/ipam.py). The existing
+    ``allocate_client_ip`` walks the server's subnet unchanged;
+    cross-tenant non-collision falls out of pools being disjoint
+    by construction.
+  - **CLI** — ``wg-manager tenants create --subnet-pool 10.42.0.0/16``
+    stores the pool; without the flag the row carries the model
+    default. Overlap with an existing tenant is rejected with a
+    non-zero exit + a message naming the colliding tenant.
+    ``tenants list / get`` JSON grows the ``subnet_pool`` field.
+  - **HTTP** — ``TenantCreate`` body grows optional ``subnet_pool``;
+    ``TenantRead`` surfaces it; new ``PATCH /tenants/{slug}`` accepts
+    a ``TenantUpdate`` body. Overlap → 409 (PATCH excludes the
+    row being updated so an in-place narrow doesn't self-collide);
+    malformed CIDR → 422.
+  - **Per-server pool enforcement** — ``POST /servers`` rejects a
+    ``subnet`` outside the resolved tenant's pool with HTTP 422.
+    The tenant resolution inherits the SSH key's tenant (which
+    itself defaults to the default tenant via the cycle 1 back-fill)
+    — explicit operator-context resolution lands in cycle 5
+    alongside the dashboard tenant picker.
+  - **Dashboard parity** — inventory table grows a "Subnet pool"
+    column; Create form grows a `Subnet pool (optional)` input;
+    detail panel header surfaces the pool in a monospace span.
+    ``Tenant`` / ``TenantCreate`` / new ``TenantUpdate`` types
+    updated; new ``api.updateTenant`` method.
+  - Tests: 9 alembic-0016 cases + 18 plumbing cases
+    (`tests/test_tenant_subnet_pool.py`) + 2 new vitest specs.
+    Backend pytest 882 passed in ``local`` mode (was 855 on cycle
+    3's merge); vitest 54/54; ``tsc --noEmit`` clean.
 - **Cycle 5 `[ ]`** — Dashboard + scoped certs. Tenant CRUD UI on
   the dashboard. Cert types ``cli`` / ``dashboard`` grow a
   tenant SAN convention for non-operator service identities that

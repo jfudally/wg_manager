@@ -718,13 +718,29 @@ class TenantCreate(BaseModel):
     """Body for ``POST /tenants``.
 
     Slug is optional: when omitted the router derives a kebab-case
-    form from ``name`` so a simple ``{"name": "Acme"}`` body works.
+    form from ``name``. ``subnet_pool`` is optional: when omitted the
+    row carries the model default (the RFC1918 fallback the migration
+    seeds non-default tenants with). Phase 3b cycle 4.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     name: str
     slug: str | None = None
+    subnet_pool: str | None = None
+
+
+class TenantUpdate(BaseModel):
+    """Body for ``PATCH /tenants/{slug}``.
+
+    Currently only ``subnet_pool`` is patchable — the name + slug
+    are identity that downstream rows reference, so renaming a tenant
+    is deferred to a future cycle.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    subnet_pool: str | None = None
 
 
 class TenantRead(BaseModel):
@@ -735,6 +751,7 @@ class TenantRead(BaseModel):
     id: int
     name: str
     slug: str
+    subnet_pool: str
     created_at: datetime
 
 

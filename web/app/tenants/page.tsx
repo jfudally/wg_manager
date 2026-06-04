@@ -101,6 +101,7 @@ export default function TenantsPage() {
 
   const [createName, setCreateName] = useState("");
   const [createSlug, setCreateSlug] = useState("");
+  const [createPool, setCreatePool] = useState("");
   const [attachCn, setAttachCn] = useState("");
   const [attachRole, setAttachRole] = useState<OperatorRole>("operator");
 
@@ -152,6 +153,7 @@ export default function TenantsPage() {
                 <TableRow>
                   <TableHead>Name</TableHead>
                   <TableHead>Slug</TableHead>
+                  <TableHead>Subnet pool</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="w-32" />
                 </TableRow>
@@ -164,6 +166,9 @@ export default function TenantsPage() {
                     </TableCell>
                     <TableCell className="font-mono text-xs">
                       {tenant.slug}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {tenant.subnet_pool}
                     </TableCell>
                     <TableCell className="text-xs">
                       {formatDateTime(tenant.created_at)}
@@ -209,9 +214,11 @@ export default function TenantsPage() {
               createMutation.mutate({
                 name: createName.trim(),
                 slug: createSlug.trim() || undefined,
+                subnet_pool: createPool.trim() || undefined,
               });
               setCreateName("");
               setCreateSlug("");
+              setCreatePool("");
             }}
           >
             <div className="flex flex-col gap-1">
@@ -231,6 +238,22 @@ export default function TenantsPage() {
                 value={createSlug}
                 onChange={(e) => setCreateSlug(e.target.value)}
               />
+            </div>
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="tenant-create-pool">
+                Subnet pool (optional)
+              </Label>
+              <Input
+                id="tenant-create-pool"
+                placeholder="10.42.0.0/16"
+                value={createPool}
+                onChange={(e) => setCreatePool(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                CIDR carving the tenant&apos;s slice of the WireGuard
+                IP space. Must be disjoint from every other
+                tenant&apos;s pool. Defaults to 10.0.0.0/8 when blank.
+              </p>
             </div>
             {createMutation.isError ? (
               <Alert variant="error" title="Could not create tenant">
@@ -259,10 +282,15 @@ export default function TenantsPage() {
               </span>
             </CardTitle>
             <CardDescription>
-              Operators attached to this tenant. Cycle 3 will enforce
-              the per-tenant role on every cert-bearing request;
-              today it&apos;s recorded but not consulted by the auth
-              middleware.
+              Subnet pool{" "}
+              <code className="font-mono text-xs">
+                {selectedTenant.subnet_pool}
+              </code>{" "}
+              — every server in this tenant must allocate its
+              subnet from inside the pool. Operators below have
+              per-tenant access; their per-tenant role gates which
+              endpoints they can hit on this tenant&apos;s
+              resources.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-6">

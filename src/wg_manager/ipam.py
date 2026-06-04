@@ -1,4 +1,15 @@
-"""IP address management for the WireGuard subnet."""
+"""IP address management for the WireGuard subnet.
+
+Phase 3b cycle 4 partitions IP space per tenant. Each
+:class:`wg_manager.models.Tenant` carries a ``subnet_pool`` CIDR;
+every server's ``subnet`` must lie inside its tenant's pool, and two
+tenants' pools must be disjoint so a client IP in one tenant cannot
+collide with a client IP in another. The new :func:`subnet_in_pool`
+and :func:`pools_overlap` helpers are the two predicates the routers
++ CLI consult; :func:`allocate_client_ip` (Phase 1) is unchanged
+because it already walks the *server's* subnet — which is now
+guaranteed to live inside the tenant's pool.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +23,45 @@ from wg_manager.models import Client, Server
 
 class IPPoolExhausted(RuntimeError):
     """Raised when no free host addresses remain in the subnet."""
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b cycle 4 — per-tenant pool predicates
+# ---------------------------------------------------------------------------
+
+
+def _parse_pool(value: str) -> IPv4Network:
+    """Strictly parse a CIDR string. Raises :class:`ValueError` on
+    malformed input — callers translate to the right HTTP / CLI shape."""
+    return IPv4Network(value, strict=True)
+
+
+def subnet_in_pool(subnet: str, pool: str) -> bool:
+    """Return ``True`` iff ``subnet`` lies fully inside ``pool``.
+
+    A subnet that overlaps but isn't a strict subnet (e.g. a /16
+    candidate against a /17 pool) returns ``False`` — partial
+    overlap is still a collision risk, so the predicate is "strict
+    containment", not "overlap".
+
+    Both arguments are CIDR strings; malformed input raises
+    :class:`ValueError`.
+    """
+    s = _parse_pool(subnet)
+    p = _parse_pool(pool)
+    return s.subnet_of(p)
+
+
+def pools_overlap(a: str, b: str) -> bool:
+    """Return ``True`` iff the two CIDR pools share any addresses.
+
+    Two non-overlapping pools is the cycle 4 invariant the
+    ``POST /tenants`` overlap-rejection enforces. Identical pools
+    overlap; a subset overlaps its parent.
+    """
+    pa = _parse_pool(a)
+    pb = _parse_pool(b)
+    return pa.overlaps(pb)
 
 
 def _host_from_cidr(value: str) -> IPv4Address:
