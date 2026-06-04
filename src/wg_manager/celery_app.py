@@ -26,6 +26,14 @@ celery_app.conf.update(
     accept_content=["json"],
     task_track_started=True,
     task_acks_late=True,
+    # Phase 3d cycle 2 — pair with ``task_acks_late=True`` to form
+    # the at-least-once delivery contract every task is written
+    # against. Without this, a worker that's SIGKILL'd / OOM'd
+    # mid-task drops the task silently (Celery's "worker lost"
+    # state never re-queues). With it, the broker requeues so
+    # another worker retries — which the cycle 2 idempotency
+    # audit verifies every task is safe under.
+    task_reject_on_worker_lost=True,
     result_expires=3600,
     timezone="UTC",
     enable_utc=True,
