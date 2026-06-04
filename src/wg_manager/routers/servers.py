@@ -34,6 +34,12 @@ from wg_manager.tasks import (
     provision_server_task,
     rotate_host_cert_task,
 )
+from wg_manager.models import OperatorRole
+from wg_manager.tenant_scope import (
+    ScopeDep,
+    require_tenant_role,
+    scope_filter,
+)
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 
@@ -95,6 +101,7 @@ def register_server(
         before=None,
         after=row.model_dump(mode="json"),
         payload={"hostname": row.hostname},
+        tenant_id=row.tenant_id,
     )
     session.commit()
     session.refresh(row)
@@ -136,16 +143,38 @@ def reprovision_server(server_id: int, session: _SessionDep) -> ServerRegisterRe
 
 
 @router.get("", response_model=list[ServerRead])
-def list_servers(session: _SessionDep) -> list[Server]:
-    """Return all registered servers."""
-    return list(session.exec(select(Server)).all())
+def list_servers(session: _SessionDep, scope: ScopeDep) -> list[Server]:
+    """Return all registered servers visible to the calling operator.
+
+    Phase 3b cycle 3 narrows the result set to the operator's tenant
+    join set. Super-admin (global ``Operator.role = admin``) sees
+    every row; non-super-admin operators see only the rows whose
+    ``tenant_id`` is in their :class:`OperatorTenant` joins. An
+    operator with no joins gets an empty list rather than a 403 — a
+    fresh install can still hit the endpoint without locking itself
+    out before the attach action runs.
+    """
+    query = select(Server)
+    where_expr = scope_filter(scope, Server)
+    if where_expr is not None:
+        query = query.where(where_expr)
+    return list(session.exec(query).all())
 
 
 @router.get("/{server_id}", response_model=ServerRead)
-def get_server(server_id: int, session: _SessionDep) -> Server:
-    """Return a single server by ID."""
+def get_server(
+    server_id: int, session: _SessionDep, scope: ScopeDep
+) -> Server:
+    """Return a single server by ID.
+
+    Phase 3b cycle 3 returns 404 (not 403) to an operator whose
+    scope doesn't include the row's tenant — the existence of the
+    row in another tenant must not be leaked to a probing operator.
+    """
     row = session.get(Server, server_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="Server not found")
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
         raise HTTPException(status_code=404, detail="Server not found")
     return row
 
@@ -156,6 +185,7 @@ def update_server(
     payload: ServerUpdate,
     request: Request,
     session: _SessionDep,
+    scope: ScopeDep,
 ) -> Server:
     """Partially update operator-supplied fields on a server.
 
@@ -181,6 +211,16 @@ def update_server(
     if row is None:
         raise HTTPException(status_code=404, detail="Server not found")
 
+    # Phase 3b cycle 3 — non-super-admin operators see 404 (not 403)
+    # for rows in tenants they aren't joined to so the row's
+    # existence isn't leaked. Per-tenant role check happens next:
+    # ``admin`` and ``operator`` admit; ``auditor`` 403s.
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
+        raise HTTPException(status_code=404, detail="Server not found")
+    require_tenant_role(
+        scope, row.tenant_id, OperatorRole.admin, OperatorRole.operator
+    )
+
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
 
     new_key_id = updates.get("ssh_key_id")
@@ -204,6 +244,7 @@ def update_server(
         before=before,
         after=row.model_dump(mode="json"),
         payload={"hostname": row.hostname, "fields": sorted(updates.keys())},
+        tenant_id=row.tenant_id,
     )
     session.commit()
     session.refresh(row)
@@ -214,6 +255,7 @@ def update_server(
 def delete_server(
     server_id: int,
     session: _SessionDep,
+    scope: ScopeDep,
     force: bool = False,
 ) -> None:
     """Delete a server row.
@@ -234,6 +276,15 @@ def delete_server(
     row = session.get(Server, server_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Server not found")
+
+    # Phase 3b cycle 3 — same 404-on-out-of-scope / 403-on-wrong-role
+    # shape as PATCH so existence isn't leaked and auditors can't
+    # delete.
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
+        raise HTTPException(status_code=404, detail="Server not found")
+    require_tenant_role(
+        scope, row.tenant_id, OperatorRole.admin, OperatorRole.operator
+    )
 
     attached_clients = list(
         session.exec(select(Client).where(Client.server_id == server_id)).all()

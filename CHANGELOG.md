@@ -10,6 +10,58 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3b cycle 3 — tenant-aware filtering + per-tenant role gate.**
+  The first cycle that **actually enforces** the multi-tenant model.
+  Cycles 1 + 2 shipped pure schema groundwork; cycle 3 reads the
+  `OperatorTenant` join at request time and uses it to narrow every
+  list query, gate every mutation, and tag every audit event with
+  the affected resource's tenant.
+
+  - **Middleware tenant resolution.** `MTLSAuthMiddleware.dispatch`
+    now also reads the operator's `OperatorTenant` join rows once
+    per admitted request and stashes
+    `request.state.tenant_ids` / `tenant_roles` / `is_super_admin`.
+    Super-admin = global `Operator.role == admin` per the ROADMAP
+    design lock — bypasses every per-tenant gate. The `OPTIONS`
+    preflight and `TLS_REQUIRED=false` passthrough branches both
+    leave the slots as `None` so handlers can distinguish "auth
+    disabled" from "auth admitted with empty set".
+  - **Tenant scope helper** (`wg_manager.tenant_scope`). New
+    `TenantScope` frozen value object + `get_tenant_scope` FastAPI
+    dependency + `scope_filter(scope, Model)` (returns a
+    `Model.tenant_id IN (...)` expression, or `None` when no filter
+    applies) + `require_tenant_role(scope, tenant_id, *allowed)`
+    (HTTP 403 unless the operator has one of `allowed` per-tenant
+    roles on `tenant_id`; super-admin bypass).
+  - **List filtering applied** to `/servers`, `/clients`,
+    `/ssh-keys`. Non-super-admin operators see only the rows whose
+    `tenant_id` is in their `OperatorTenant` join set; an operator
+    with no joins gets `[]` (not 403). Super-admin sees every row.
+  - **404-on-out-of-scope** for the single-row `GET` /
+    `PATCH` / `DELETE` shapes — the existence of a row in another
+    tenant is never leaked to a probing operator.
+  - **Per-tenant role gate** on `PATCH` / `DELETE` of `/servers`,
+    `/clients`, `/ssh-keys`. `admin` and `operator` per-tenant roles
+    admit; `auditor` 403s. Super-admin bypasses.
+  - **AuditEvent.tenant_id populated.** `audit.persist()` grew an
+    optional `tenant_id` kwarg; the servers / clients / ssh_keys /
+    certs mutating endpoints thread the resource's `tenant_id`
+    through so an auditor reviewing the trail can filter per
+    tenant. The audit log line emitted alongside the row also
+    carries `tenant_id`.
+  - **Dashboard surface.** `Server` / `Client` / `SSHKey` /
+    `Certificate` schemas + TypeScript types grow an optional
+    `tenant_id` field so the dashboard can render tenant tags. The
+    deeper "tenant picker on resource create" + per-list tenant
+    column polish lands in cycle 5 alongside the IPAM partitioning.
+  - **Tests:** 6 new middleware tenant-resolution cases
+    (`TestTenantSetResolution` in `tests/test_auth.py`), 25 new
+    cases in `tests/test_tenant_scope.py` covering the value
+    object, `scope_filter`, `require_tenant_role`, server list +
+    get-by-id + patch + delete scoping, and audit-event tenant_id
+    population. Backend pytest 855 passed in `local` mode (was 824
+    on cycle 2's merge); vitest 52/52; `tsc --noEmit` clean.
+
 - **Phase 3b cycle 2 — `OperatorTenant` join + tenant CRUD surface.**
   Cycle 1 shipped the `Tenant` row + nullable FKs. Cycle 2 layers the
   many-to-many association: one operator can be attached to many

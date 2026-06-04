@@ -47,7 +47,13 @@ from starlette.types import ASGIApp
 from wg_manager import db as db_module
 from wg_manager.audit import audit_logger, emit as _emit_audit
 from wg_manager.config import Settings
-from wg_manager.models import Certificate, Operator, OperatorRole, OperatorStatus
+from wg_manager.models import (
+    Certificate,
+    Operator,
+    OperatorRole,
+    OperatorStatus,
+    OperatorTenant,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -307,10 +313,16 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
         if not self._settings.tls_required:
             request.state.cert_subject = None
             request.state.operator = None
+            request.state.tenant_ids = None
+            request.state.tenant_roles = None
+            request.state.is_super_admin = None
             return await call_next(request)
         if request.method == "OPTIONS":
             request.state.cert_subject = None
             request.state.operator = None
+            request.state.tenant_ids = None
+            request.state.tenant_roles = None
+            request.state.is_super_admin = None
             return await call_next(request)
         method = request.method
         path = request.url.path
@@ -375,8 +387,18 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
                 {"detail": "operator cert revoked"},
                 status_code=status.HTTP_401_UNAUTHORIZED,
             )
+        # Phase 3b cycle 3 — resolve the operator's tenant set once
+        # per request so list filters and mutation gates can consult
+        # ``request.state`` directly. Super-admin (global role=admin)
+        # bypasses per-tenant filtering downstream regardless of how
+        # many join rows the operator has; non-super-admins are
+        # scoped to ``tenant_ids``.
+        tenant_ids, tenant_roles = self._resolve_tenant_set(operator)
         request.state.cert_subject = subject
         request.state.operator = operator
+        request.state.tenant_ids = tenant_ids
+        request.state.tenant_roles = tenant_roles
+        request.state.is_super_admin = operator.role == OperatorRole.admin
         _emit_audit(
             "auth.admit",
             cn=subject.common_name,
@@ -386,6 +408,46 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
             path=path,
         )
         return await call_next(request)
+
+    def _resolve_tenant_set(
+        self, operator: Operator
+    ) -> tuple[tuple[int, ...], dict[int, OperatorRole]]:
+        """Read every ``OperatorTenant`` join row for ``operator``.
+
+        Returns the parallel ``(tuple_of_ids, role_map)`` pair the
+        middleware stashes on ``request.state``. The tuple is
+        deterministic (id-sorted) so a list endpoint can pin the
+        order it walks tenant_ids on; the dict is keyed by tenant_id
+        so the mutation gate is O(1) per check.
+
+        Pure-DB read; opens its own short-lived :class:`Session`
+        against the module-level engine, mirroring
+        :meth:`_resolve_operator` so the test suite exercises the
+        same path. A driver error returns the empty pair — list
+        endpoints turn that into "no rows visible", which is
+        operationally the same as a non-attached operator and
+        safer than admitting a stale view.
+        """
+        op_id = operator.id
+        if op_id is None:
+            return (), {}
+        try:
+            with Session(db_module.engine) as session:
+                rows = session.exec(
+                    select(OperatorTenant).where(
+                        OperatorTenant.operator_id == op_id
+                    )
+                ).all()
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "tenant-set lookup for operator_id=%s failed: %s",
+                op_id,
+                exc,
+            )
+            return (), {}
+        ids = tuple(sorted(int(r.tenant_id) for r in rows))
+        roles = {int(r.tenant_id): r.role for r in rows}
+        return ids, roles
 
     def _serial_is_revoked(self, serial: int) -> bool:
         """Return ``True`` iff the audit registry has a revoked row for ``serial``.

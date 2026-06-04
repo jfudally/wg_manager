@@ -24,8 +24,13 @@ from sqlmodel import Session, select
 
 from wg_manager import audit
 from wg_manager.db import get_session
-from wg_manager.models import Client, SSHKey, Server
+from wg_manager.models import Client, OperatorRole, SSHKey, Server
 from wg_manager.schemas import SSHKeyCreate, SSHKeyRead, SSHKeyUpdate
+from wg_manager.tenant_scope import (
+    ScopeDep,
+    require_tenant_role,
+    scope_filter,
+)
 
 router = APIRouter(prefix="/ssh-keys", tags=["ssh-keys"])
 
@@ -70,6 +75,7 @@ def create_ssh_key(
         before=None,
         after=row.model_dump(mode="json"),
         payload={"name": row.name},
+        tenant_id=row.tenant_id,
     )
     session.commit()
     session.refresh(row)
@@ -77,16 +83,27 @@ def create_ssh_key(
 
 
 @router.get("", response_model=list[SSHKeyRead])
-def list_ssh_keys(session: _SessionDep) -> list[SSHKey]:
-    """List all registered SSH roles (metadata only)."""
-    return list(session.exec(select(SSHKey)).all())
+def list_ssh_keys(
+    session: _SessionDep, scope: ScopeDep
+) -> list[SSHKey]:
+    """List all registered SSH roles (metadata only), scoped to the
+    operator's tenants. Super-admin sees every row."""
+    query = select(SSHKey)
+    where_expr = scope_filter(scope, SSHKey)
+    if where_expr is not None:
+        query = query.where(where_expr)
+    return list(session.exec(query).all())
 
 
 @router.get("/{key_id}", response_model=SSHKeyRead)
-def get_ssh_key(key_id: int, session: _SessionDep) -> SSHKey:
-    """Return metadata for a single SSH role."""
+def get_ssh_key(
+    key_id: int, session: _SessionDep, scope: ScopeDep
+) -> SSHKey:
+    """Return metadata for a single SSH role; 404 to out-of-scope operators."""
     row = session.get(SSHKey, key_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="SSH key not found")
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
         raise HTTPException(status_code=404, detail="SSH key not found")
     return row
 
@@ -96,6 +113,7 @@ def update_ssh_key(
     key_id: int,
     payload: SSHKeyUpdate,
     session: _SessionDep,
+    scope: ScopeDep,
 ) -> SSHKey:
     """Partially update an SSH role.
 
@@ -113,6 +131,11 @@ def update_ssh_key(
     row = session.get(SSHKey, key_id)
     if row is None:
         raise HTTPException(status_code=404, detail="SSH key not found")
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
+        raise HTTPException(status_code=404, detail="SSH key not found")
+    require_tenant_role(
+        scope, row.tenant_id, OperatorRole.admin, OperatorRole.operator
+    )
 
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
 
@@ -137,11 +160,18 @@ def update_ssh_key(
 
 
 @router.delete("/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_ssh_key(key_id: int, session: _SessionDep) -> None:
+def delete_ssh_key(
+    key_id: int, session: _SessionDep, scope: ScopeDep
+) -> None:
     """Delete an SSH role. Returns 409 if still referenced by a server or client."""
     row = session.get(SSHKey, key_id)
     if row is None:
         raise HTTPException(status_code=404, detail="SSH key not found")
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
+        raise HTTPException(status_code=404, detail="SSH key not found")
+    require_tenant_role(
+        scope, row.tenant_id, OperatorRole.admin, OperatorRole.operator
+    )
 
     ref_server = session.exec(
         select(Server).where(Server.ssh_key_id == key_id)
