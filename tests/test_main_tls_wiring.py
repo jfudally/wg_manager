@@ -56,6 +56,13 @@ class TestCreateAppInstallsMTLSMiddleware:
         proving the middleware is enforcing — not just present in the
         stack."""
         monkeypatch.setenv("TLS_REQUIRED", "true")
+        # Phase 3d cycle 1 — production posture + the conftest's
+        # default local backends trip the HA startup guard (unpinned
+        # local PKI/SSH CA → divergent across replicas). This test
+        # cares only about the auth middleware behaviour, so pin
+        # both backends to vault to bypass the guard cleanly.
+        monkeypatch.setenv("PKI_BACKEND", "vault")
+        monkeypatch.setenv("SSH_CA_BACKEND", "vault")
         # ``create_app`` reads from a fresh ``Settings()`` at call time,
         # which picks up the monkey-patched env. The previously-imported
         # module-level ``app`` is unaffected.
@@ -80,6 +87,11 @@ class TestCreateAppInstallsMTLSMiddleware:
         when ``tls_required=True`` — the browser can't send the cert
         until preflight clears."""
         monkeypatch.setenv("TLS_REQUIRED", "true")
+        # Phase 3d cycle 1 — see the previous test's note. The HA
+        # guard fires on unpinned local PKI/SSH CA in production
+        # posture.
+        monkeypatch.setenv("PKI_BACKEND", "vault")
+        monkeypatch.setenv("SSH_CA_BACKEND", "vault")
         # The Settings default ``cors_origins`` points at :3000 (Phase 1
         # default before the Rancher Desktop port-bump). The test asserts
         # the :3100 dashboard origin is echoed back, so pin the env var

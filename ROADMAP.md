@@ -1925,12 +1925,65 @@ Shipped:
   mode (was 901 on Phase 3b's close); vitest 57/57;
   ``tsc --noEmit`` clean.
 
-### Phase 3d — HA control plane `[ ]`
+### Phase 3d — HA control plane `[~]` (cycle 1 shipped)
 
 Two-replica FastAPI behind a load balancer; Celery workers
 horizontally scaled; MySQL primary + replica with failover.
 Largest scope — needs 3a's observability to verify failover
 behaviour in practice.
+
+- **Cycle 1 `[x]`** (2026-06-04) — Statelessness audit +
+  ``/healthz`` + ``/readyz`` + production startup guards.
+  Foundational slice; subsequent cycles build on the "every
+  endpoint is stateless and every replica is interchangeable"
+  guarantee.
+
+  Shipped:
+  - **Statelessness audit.** Walked every module on the request
+    path and classified module-level state. Verdict: the API is
+    mostly stateless. Two genuine cross-replica hazards
+    surfaced — the ``LocalDevPKI`` and ``LocalDevSSHCA`` per-
+    process root-cert caches in dev backends would mint divergent
+    roots across replicas if unpinned. Production (Vault for both)
+    eliminates the hazard.
+  - **Probe surface.** New
+    [`wg_manager.routers.health`](src/wg_manager/routers/health.py)
+    ships ``/healthz`` (liveness — unconditional 200; does not
+    touch the DB) and ``/readyz`` (readiness — 200 when MySQL is
+    reachable, 503 with per-dep status otherwise). Dual-mounted
+    at ``/v1`` per Phase 3c. Both bypass mTLS via the new
+    ``MTLSAuthMiddleware.is_health_path`` exemption (load
+    balancers don't carry operator certs) and are exempt from the
+    deprecation envelope (operational, not API surface).
+  - **HA startup guards.** New
+    ``wg_manager.main._enforce_ha_startup_guards`` hard-fails at
+    ``create_app()`` time when ``TLS_REQUIRED=true`` AND
+    ``PKI_BACKEND=local`` (or ``SSH_CA_BACKEND=local``) without
+    the corresponding ``*_LOCAL_DEV_*`` PEMs pinned. Error names
+    the env vars to set so an operator fixes the misconfiguration
+    without reading source. Dev posture (``TLS_REQUIRED=false``)
+    is permitted to run the local backends unpinned.
+  - **Deployment doc.** New
+    [`docs/deploy/ha-control-plane.md`](docs/deploy/ha-control-plane.md)
+    captures the topology (passthrough LB, no session
+    stickiness, mTLS termination at the replica), the probe
+    contract (why two probes, not one), a Statelessness checklist
+    for future maintainers reviewing new endpoints, and an nginx
+    LB example.
+  - Tests: 9 health-probe cases (``tests/test_health.py``) + 5
+    startup-guard cases (``tests/test_ha_startup_guards.py``).
+    Two existing ``test_main_tls_wiring.py`` cases updated to
+    pin ``PKI_BACKEND=vault`` + ``SSH_CA_BACKEND=vault`` since
+    they exercise production posture (``TLS_REQUIRED=true``) and
+    would otherwise trip the new guard. Backend pytest 928/928
+    in ``local`` mode (was 914 on Phase 3c's merge); vitest
+    unaffected; ``tsc --noEmit`` unaffected.
+
+- **Cycle 2 `[ ]`** — Celery worker scaling guarantees. Beat
+  scheduler safety, task idempotency review.
+- **Cycle 3 `[ ]`** — MySQL primary + read-replica routing.
+- **Cycle 4 `[ ]`** — docker-compose ``ha`` profile with the
+  LB + multi-replica example.
 
 ### Phase 3e — Helm chart / Terraform module `[ ]`
 
