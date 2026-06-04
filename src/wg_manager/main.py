@@ -23,6 +23,7 @@ from wg_manager.routers import (
     servers,
     ssh_keys,
     tasks,
+    tenants,
 )
 
 # uvicorn 0.44 doesn't implement the ASGI-TLS extension natively
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
     application.include_router(crypto.router)
     application.include_router(certs.router)
     application.include_router(audit.router)
+    application.include_router(tenants.router)
 
     # Phase 3a cycle 1: /metrics endpoint exposes the Prometheus
     # registry in the standard text format. Sits behind the mTLS

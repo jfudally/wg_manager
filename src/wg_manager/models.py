@@ -407,6 +407,63 @@ class Operator(SQLModel, table=True):
     __str__ = __repr__
 
 
+class OperatorTenant(SQLModel, table=True):
+    """Per-tenant role for an :class:`Operator` (Phase 3b cycle 2).
+
+    Cycle 1 shipped the :class:`Tenant` row + nullable ``tenant_id``
+    FKs. Cycle 2 layers the many-to-many association: one operator
+    can be attached to many tenants, one tenant can host many
+    operators, and the **per-tenant role** lives on the join — so a
+    user can be ``admin`` in their own tenant and ``auditor`` in
+    another without two separate operator rows.
+
+    Why a surrogate primary key instead of a composite ``(operator_id,
+    tenant_id)`` PK? Pure ergonomics: a join row gets referenced by
+    audit events and dashboard URLs, and a single ``id`` reads more
+    cleanly than a two-tuple in those places. The uniqueness invariant
+    is enforced by an explicit unique constraint on the FK pair, so
+    the schema is functionally identical to the composite-PK shape.
+
+    Cycle 3 grows :class:`wg_manager.auth.MTLSAuthMiddleware` to read
+    the per-tenant role from this table on every cert-bearing request.
+    Cycle 2 itself ships zero behaviour change — the row exists,
+    the CLI/API can mutate it, but the auth gate still consults the
+    operator's *global* :attr:`Operator.role`.
+
+    :ivar id: Surrogate primary key.
+    :ivar operator_id: FK to :class:`Operator`. Not nullable.
+    :ivar tenant_id: FK to :class:`Tenant`. Not nullable.
+    :ivar role: Per-tenant permission tier. Defaults to
+        :attr:`OperatorRole.operator` (principle of least privilege —
+        admins must be set explicitly per-tenant too).
+    :ivar created_at: UTC timestamp the join was created.
+    """
+
+    __table_args__ = (
+        UniqueConstraint(
+            "operator_id",
+            "tenant_id",
+            name="uq_operatortenant_operator_tenant",
+        ),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    operator_id: int = Field(foreign_key="operator.id", index=True)
+    tenant_id: int = Field(foreign_key="tenant.id", index=True)
+    role: OperatorRole = Field(default=OperatorRole.operator)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+    def __repr__(self) -> str:
+        return (
+            f"OperatorTenant(id={self.id!r}, "
+            f"operator_id={self.operator_id!r}, "
+            f"tenant_id={self.tenant_id!r}, role={self.role!r}, "
+            f"created_at={self.created_at!r})"
+        )
+
+    __str__ = __repr__
+
+
 class DiscoveredPeer(SQLModel, table=True):
     """A WireGuard peer observed on a :class:`Server` via ``wg show <iface> dump``.
 

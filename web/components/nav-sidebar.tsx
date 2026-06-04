@@ -17,6 +17,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/discovered-peers", label: "Discovered Peers" },
   { href: "/crypto", label: "Crypto" },
   { href: "/certificates", label: "Certificates" },
+  { href: "/tenants", label: "Tenants" },
   { href: "/audit", label: "Audit log" },
 ];
 

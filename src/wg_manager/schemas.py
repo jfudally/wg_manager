@@ -694,3 +694,65 @@ class AuditEventListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ---------------------------------------------------------------------------
+# Tenants — Phase 3b cycle 2
+# ---------------------------------------------------------------------------
+
+
+class TenantCreate(BaseModel):
+    """Body for ``POST /tenants``.
+
+    Slug is optional: when omitted the router derives a kebab-case
+    form from ``name`` so a simple ``{"name": "Acme"}`` body works.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    slug: str | None = None
+
+
+class TenantRead(BaseModel):
+    """Public view of a :class:`wg_manager.models.Tenant` row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    slug: str
+    created_at: datetime
+
+
+class OperatorTenantAttachRequest(BaseModel):
+    """Body for ``POST /tenants/{slug}/operators``.
+
+    Defaults the per-tenant role to ``operator`` (principle of least
+    privilege) — admins must be set explicitly per tenant too.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    cn: str
+    role: OperatorRole = OperatorRole.operator
+
+
+class OperatorTenantRead(BaseModel):
+    """Public view of an :class:`wg_manager.models.OperatorTenant` join row.
+
+    Surfaces the resolved tenant slug / name + operator CN alongside
+    the join's per-tenant role so the dashboard renders the table
+    without a second lookup.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: int
+    tenant_slug: str
+    tenant_name: str
+    operator_id: int
+    operator_cn: str
+    role: OperatorRole
+    created_at: datetime
