@@ -2021,9 +2021,57 @@ behaviour in practice.
     ``Phase 3d cycle 2`` audit-verdict marker. Backend pytest
     937/937 in ``local`` mode (was 928 on cycle 1's merge);
     vitest unaffected; ``tsc --noEmit`` unaffected.
-- **Cycle 3 `[ ]`** — MySQL primary + read-replica routing.
-- **Cycle 4 `[ ]`** — docker-compose ``ha`` profile with the
-  LB + multi-replica example.
+- **Cycle 3 `[x]`** (2026-06-04) — Per-row advisory locks on the
+  four mutating Celery tasks. Original ROADMAP wording was "MySQL
+  primary + read-replica routing"; cycle 3 instead landed the
+  advisory locks deferred from cycle 2 (which is the more
+  immediate safety win), with read-replica routing rolled into
+  cycle 4 alongside the compose ha-profile.
+
+  Shipped:
+  - **Lock helper** — new
+    [`wg_manager.locks`](src/wg_manager/locks.py) module exposes
+    ``lock_name_for(scope, row_id)`` (``wgm:server:7`` shape) and
+    ``task_row_lock(session, scope, row_id, timeout_seconds=5)``
+    context manager. On MySQL, the lock uses
+    ``GET_LOCK(name, timeout)`` + ``RELEASE_LOCK(name)``. On
+    SQLite (test suite), a no-op acquire that always yields
+    ``True``. Failed acquire yields ``False`` — not an error;
+    the caller decides whether to skip or retry. Connection-
+    scoped so a worker crash leaves no stranded lock.
+  - **Applied to the 4 mutating tasks.** Each acquires its row
+    lock at task entry:
+    - ``provision_server_task`` → ``wgm:server:<server_id>``
+    - ``rotate_host_cert_task`` → ``wgm:server:<server_id>``
+    - ``reconfigure_server_task`` → ``wgm:server:<server_id>``
+    - ``provision_client_task`` → ``wgm:client:<client_id>``
+
+    On contention the task returns
+    ``{"status": "skipped", "reason": "concurrent_run", ...}``
+    without making any SSH / DB-mutation side effects. The
+    skipped result rides through the API's ``GET /tasks/{id}``
+    polling path so operators see the skip in the dashboard.
+  - **Verdicts updated.** The 4 mutating tasks' Phase 3d cycle 2
+    docstring stanzas flipped from ``BENIGN_OVERWRITE`` to
+    ``GUARDED_BY_ROW_LOCK``. The ``test_celery_ha_config.py``
+    regression test's marker grep still passes (the
+    ``Phase 3d cycle 2`` stanza is preserved).
+  - **Docs.** ``docs/deploy/ha-control-plane.md`` Celery section
+    rewrote the per-task verdict table + added an "Advisory lock
+    contract" subsection explaining the name shape, the
+    ``GET_LOCK`` timeout, the SQLite no-op path, and the
+    monkey-patch pattern tests use to exercise the contended
+    branch.
+  - Tests: 8 lock-helper cases (``tests/test_locks.py``) + 8
+    task-level integration cases (``tests/test_task_locks.py``)
+    pinning the lock-acquired path (each task records the
+    expected ``(scope, row_id)``) and the contended path (each
+    task returns ``skipped`` and fires zero SSH commands).
+    Backend pytest 953/953 in ``local`` mode (was 937 on
+    cycle 2's merge).
+
+- **Cycle 4 `[ ]`** — docker-compose ``ha`` profile with the LB +
+  multi-replica example, plus the deferred read-replica routing.
 
 ### Phase 3e — Helm chart / Terraform module `[ ]`
 

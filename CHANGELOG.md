@@ -10,6 +10,50 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3d cycle 3 — per-row advisory locks on mutating Celery
+  tasks.** Closes the multi-worker concurrency gap cycle 2
+  flagged (BENIGN_OVERWRITE on contention). The 4 mutating tasks
+  now serialize on a MySQL `GET_LOCK` advisory lock keyed on the
+  row they mutate.
+
+  - **Lock helper.** New `wg_manager.locks` module exposes
+    `lock_name_for(scope, row_id)` (`wgm:server:7` shape) and
+    `task_row_lock(session, scope, row_id, timeout_seconds=5)`
+    context manager. On MySQL the lock uses
+    `GET_LOCK(name, timeout)` + `RELEASE_LOCK(name)`; on SQLite
+    (test suite) a no-op acquire that yields `True`. Failed
+    acquire yields `False` — the caller decides whether to skip
+    or retry. Connection-scoped so a worker crash leaves no
+    stranded lock.
+  - **Applied to the 4 mutating tasks.** `provision_server_task`,
+    `rotate_host_cert_task`, `reconfigure_server_task` lock on
+    `wgm:server:<server_id>`; `provision_client_task` locks on
+    `wgm:client:<client_id>`. On contention the task returns
+    `{"status": "skipped", "reason": "concurrent_run", ...}`
+    without any SSH / DB-mutation side effects. Skipped result
+    rides through the `GET /tasks/{id}` API so operators see the
+    skip.
+  - **Verdicts updated.** The 4 mutating tasks' Phase 3d cycle 2
+    docstring stanzas flipped from `BENIGN_OVERWRITE` to
+    `GUARDED_BY_ROW_LOCK`. The cycle 2 marker test still passes.
+  - **Docs.** `docs/deploy/ha-control-plane.md` Celery section
+    rewrote the per-task verdict table + added an "Advisory lock
+    contract" subsection explaining the name shape, the
+    `GET_LOCK` timeout, the SQLite no-op path, and the
+    monkey-patch pattern tests use to exercise the contended
+    branch.
+  - **ROADMAP scope note.** Original ROADMAP cycle 3 wording was
+    "MySQL primary + read-replica routing"; cycle 3 instead
+    landed the advisory locks deferred from cycle 2 (more
+    immediate safety win), with read-replica routing folded into
+    cycle 4 alongside the compose ha-profile.
+  - **Tests:** 8 lock-helper cases (`tests/test_locks.py`) + 8
+    task-level integration cases (`tests/test_task_locks.py`)
+    pinning the lock-acquired path (each task records the
+    expected `(scope, row_id)`) and the contended path (each
+    task returns `skipped` and fires zero SSH commands). Backend
+    pytest 953/953 in `local` mode (was 937 on cycle 2's merge).
+
 - **Phase 3d cycle 2 — Celery worker scaling guarantees.** Makes the
   Celery worker side safe to run as 2+ replicas behind the same
   broker. Codifies the at-least-once delivery contract every task is

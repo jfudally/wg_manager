@@ -158,28 +158,46 @@ than once**, and every task is written to be safe under re-delivery.
 
 | Task | Verdict | Reason |
 |---|---|---|
-| `provision_server_task` | **BENIGN_OVERWRITE** | Remote SSH commands are guarded (`apt-get install` is idempotent; `_ensure_keypair` runs `test -s … \|\| generate`; `wg-quick down/up` converges). |
-| `rotate_host_cert_task` | **BENIGN_OVERWRITE** | Re-run mints another cert (wastes a Vault signature) and overwrites the remote files + DB columns. |
-| `reconfigure_server_task` | **BENIGN_OVERWRITE** | Renders the same `wg0.conf` from current DB state. Concurrent runs cause a brief interface flap. |
-| `provision_client_task` | **BENIGN_OVERWRITE** | Same guarding as `provision_server_task`; re-enqueues a duplicate `reconfigure_server_task` (safe). |
-| `discover_peers_task` | **NATURALLY_IDEMPOTENT** | Read-only SSH + upsert keyed on `(server_id, public_key)`. |
+| `provision_server_task` | **GUARDED_BY_ROW_LOCK** | Cycle 3 added `task_row_lock("server", server_id)` around the body. Concurrent workers serialize at the lock; on contention the second worker skips. Remote SSH commands remain re-run safe as the belt to the lock's suspenders. |
+| `rotate_host_cert_task` | **GUARDED_BY_ROW_LOCK** | `task_row_lock("server", server_id)`. No racing Vault signatures. |
+| `reconfigure_server_task` | **GUARDED_BY_ROW_LOCK** | `task_row_lock("server", server_id)`. No racing `wg-quick` flaps. |
+| `provision_client_task` | **GUARDED_BY_ROW_LOCK** | `task_row_lock("client", client_id)`. Follow-up `reconfigure_server_task` takes its own lock. |
+| `discover_peers_task` | **NATURALLY_IDEMPOTENT** | Read-only SSH + upsert keyed on `(server_id, public_key)`. No lock needed — concurrent reads converge on the same row set. |
 | `discover_all_peers_task` | **NATURALLY_IDEMPOTENT** | Inherits from `discover_peers_task`. |
 
 Each verdict is also pinned in the task's `__doc__` so a refactor
 that rewrites a task body without re-examining the audit trips the
 docstring-presence test in `tests/test_celery_ha_config.py`.
 
-### What's NOT pinned in cycle 2
+### Advisory lock contract (cycle 3)
 
-**Per-row advisory locks.** When two workers race the same
-`server_id`, the audit verdict ("BENIGN_OVERWRITE") is operationally
-safe but wastes Vault signatures and causes brief interface flaps.
-Cycle 3 (MySQL primary + replica routing) is the natural place to
-add advisory locks since it brings the MySQL-specific
-`GET_LOCK(name, timeout)` surface into scope. Until then, the
-operator's runbook is: if you need exactly-once for a sensitive
-operation, dispatch the task once and let the result polling
-(`GET /tasks/{id}`) deduplicate at the caller.
+The four mutating tasks acquire a MySQL advisory lock keyed on the
+row they mutate:
+
+```python
+with task_row_lock(session, "server", server_id) as acquired:
+    if not acquired:
+        return {"status": "skipped", "reason": "concurrent_run", ...}
+    # ... do the work ...
+```
+
+Lock-name shape: `wgm:<scope>:<row_id>` (e.g. `wgm:server:7`,
+`wgm:client:42`). The `wgm:` prefix keeps the namespace clean if
+the operator's MySQL is shared with other apps using `GET_LOCK`.
+
+Acquire shape: `GET_LOCK(name, 5)` — five-second wait, then fail.
+The "fail fast" timeout is suitable for at-least-once delivery:
+letting the broker re-deliver in a few seconds is cheaper than
+queuing waiters indefinitely.
+
+Release shape: `RELEASE_LOCK(name)` runs on context exit. The lock
+is also auto-released when the underlying connection closes, so a
+worker crash mid-task leaves no stranded lock.
+
+On SQLite (the test suite), `task_row_lock` is a no-op acquire —
+SQLite's `StaticPool` has no multi-connection contention shape
+worth modelling. Task-level integration tests monkey-patch the
+lock function to simulate the contended branch.
 
 ### Adding a new task
 
@@ -204,8 +222,8 @@ Phase 3d ships in cycles:
   + startup guards.
 - **Cycle 2 (shipped)** — Celery worker scaling contract +
   `task_reject_on_worker_lost` + per-task idempotency audit.
-- **Cycle 3** — MySQL primary + read replica routing. Brings
-  `GET_LOCK()` into scope for the per-row advisory locks deferred
-  from cycle 2.
+- **Cycle 3 (shipped)** — per-row advisory locks on the 4 mutating
+  tasks. Verdicts upgraded from BENIGN_OVERWRITE to
+  GUARDED_BY_ROW_LOCK. Read-replica routing deferred to cycle 4.
 - **Cycle 4** — docker-compose `ha` profile with the LB +
-  multi-replica example.
+  multi-replica example, plus the deferred read-replica routing.
