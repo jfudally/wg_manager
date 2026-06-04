@@ -1882,10 +1882,48 @@ tenant + tenant SAN on certs). The next named work-stream is
 Phase 3c (public API versioning) below, which is no longer
 blocked by anything in Phase 3b.
 
-### Phase 3c — Public API versioning `[ ]`
+### Phase 3c — Public API versioning `[x]` (shipped 2026-06-04)
 
 OpenAPI versioning, deprecation policy, ``/v1/`` / ``/v2/``
 namespace. Best done after we know what 3b changes.
+
+Shipped:
+
+- **Dual mount.** Every shipped router answers at both
+  ``/<resource>`` and ``/v1/<resource>`` — identical handler,
+  identical response body + status. The dashboard BFF + CLI cut
+  over to ``/v1``; third-party integrations have until the
+  operator-configured sunset date to migrate.
+- **Deprecation envelope** (RFC 9745). Every legacy-path response
+  carries ``Deprecation: true`` + ``Sunset: <date>`` + ``Link:
+  <doc>; rel="deprecation"``. New
+  [`wg_manager.api_versioning`](src/wg_manager/api_versioning.py)
+  module ships ``DeprecationMiddleware`` (stamps the headers +
+  emits one ``api.deprecation`` audit line per legacy hit so
+  operators can SIEM-query for callers still on the legacy
+  surface) and ``build_v1_openapi`` (filters the OpenAPI spec to
+  ``/v1/*`` paths with a pinned ``info.version = "1.0"``). Sunset
+  date + link target operator-tunable via
+  ``API_LEGACY_SUNSET_DATE`` + ``API_DEPRECATION_DOC_URL`` settings.
+- **CLI cutover.** ``cli._make_http_client`` suffixes the base
+  URL with ``/v1`` so every existing call site (which uses
+  relative ``/ssh-keys`` etc) lands on the versioned namespace.
+- **Dashboard BFF cutover.**
+  [`web/lib/proxy.ts`](web/lib/proxy.ts) rewrites every inbound
+  ``/api/proxy/<path>`` to ``<upstream>/v1/<path>``. Strips an
+  existing ``v1/`` prefix so callers that pre-pended it don't
+  get a double prefix.
+- **Docs.** New
+  [`docs/api-versioning.md`](docs/api-versioning.md) walks the
+  deprecation envelope, the semver contract, the cutover guidance,
+  and the removal timeline.
+- Tests: 13 new versioning cases
+  (`tests/test_api_versioning.py`) — dual mount, deprecation
+  headers on legacy / absent on v1, audit emission, OpenAPI
+  filtering — plus 1 new vitest case pinning the BFF's
+  no-double-prefix guard. Backend pytest 914/914 in ``local``
+  mode (was 901 on Phase 3b's close); vitest 57/57;
+  ``tsc --noEmit`` clean.
 
 ### Phase 3d — HA control plane `[ ]`
 

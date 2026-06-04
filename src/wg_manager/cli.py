@@ -88,10 +88,20 @@ app.add_typer(tenants_app, name="tenants")
 def _make_http_client(api_url: str) -> httpx.Client:
     """Build an :class:`httpx.Client` pinned to the target API.
 
-    Tests monkeypatch this function to route requests at an ASGI transport
-    backed by the FastAPI app instead of hitting a real network socket.
+    Phase 3c — the base URL is suffixed with ``/v1`` so every call
+    site (which uses relative paths like ``/ssh-keys``) lands on the
+    versioned namespace. Operators who need to target the legacy
+    surface (e.g. for testing the deprecation envelope) can set
+    ``WG_MANAGER_API_URL`` to the bare host without ``/v1``.
+
+    Tests monkeypatch this function to route requests at an ASGI
+    transport backed by the FastAPI app instead of hitting a real
+    network socket.
     """
-    return httpx.Client(base_url=api_url, timeout=30.0)
+    base = api_url.rstrip("/")
+    if not base.endswith("/v1"):
+        base = f"{base}/v1"
+    return httpx.Client(base_url=base, timeout=30.0)
 
 
 @app.callback()

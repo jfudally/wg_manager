@@ -11,6 +11,7 @@ from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from wg_manager._tls_uvicorn import enable_tls_extension
+from wg_manager.api_versioning import DeprecationMiddleware, build_v1_openapi
 from wg_manager.auth import MTLSAuthMiddleware
 from wg_manager.config import Settings, settings
 from wg_manager.metrics import MetricsMiddleware, metrics_response
@@ -100,14 +101,32 @@ def create_app() -> FastAPI:
     # itself; see :mod:`wg_manager.metrics`.
     application.add_middleware(MetricsMiddleware)
 
-    application.include_router(ssh_keys.router)
-    application.include_router(servers.router)
-    application.include_router(clients.router)
-    application.include_router(tasks.router)
-    application.include_router(crypto.router)
-    application.include_router(certs.router)
-    application.include_router(audit.router)
-    application.include_router(tenants.router)
+    # Phase 3c — deprecation envelope on legacy unprefixed paths.
+    # Stamps Deprecation/Sunset/Link on every response from a path
+    # that doesn't start with /v1, and emits one structured
+    # api.deprecation audit line so operators can grep for legacy
+    # callers. Added innermost so it sees the response body the
+    # router produced.
+    application.add_middleware(DeprecationMiddleware, settings=app_settings)
+
+    # Routers ship at both / and /v1/ so existing CLI / dashboard
+    # / third-party integrations keep working. Each include_router
+    # call uses the router's intrinsic prefix; the second call
+    # wraps it under /v1.
+    _ROUTERS = (
+        ssh_keys.router,
+        servers.router,
+        clients.router,
+        tasks.router,
+        crypto.router,
+        certs.router,
+        audit.router,
+        tenants.router,
+    )
+    for r in _ROUTERS:
+        application.include_router(r)
+    for r in _ROUTERS:
+        application.include_router(r, prefix="/v1")
 
     # Phase 3a cycle 1: /metrics endpoint exposes the Prometheus
     # registry in the standard text format. Sits behind the mTLS
@@ -117,6 +136,12 @@ def create_app() -> FastAPI:
     def metrics() -> Response:
         body, content_type = metrics_response()
         return Response(content=body, media_type=content_type)
+
+    # Phase 3c — explicit v1 OpenAPI surface for typed clients that
+    # want to generate only against the versioned contract.
+    @application.get("/v1/openapi.json", include_in_schema=False)
+    def v1_openapi() -> dict:
+        return build_v1_openapi(application)
 
     return application
 

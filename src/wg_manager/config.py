@@ -267,5 +267,20 @@ class Settings(BaseSettings):
     # use ``"*"`` to allow any origin (dev only; not safe for production).
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001"
 
+    # Phase 3c — public API versioning. Every router that shipped at
+    # an unprefixed path is dual-mounted at ``/v1/<same>``; the
+    # unprefixed responses carry an RFC 9745 ``Deprecation: true`` +
+    # ``Sunset`` envelope so operators see the migration window in
+    # their integration's response headers. The sunset date is
+    # operator-tunable so an organisation can extend the deprecation
+    # window without a code change.
+    api_legacy_sunset_date: str = "2027-01-01"
+    # URL the deprecation ``Link`` header points at. Defaults to the
+    # in-repo policy doc; production deployments can override with a
+    # public URL hosted next to their changelog.
+    api_deprecation_doc_url: str = (
+        "https://github.com/jfudally/wg_manager/blob/main/docs/api-versioning.md"
+    )
+
 
 settings = Settings()
