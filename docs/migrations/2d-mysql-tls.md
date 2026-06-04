@@ -27,6 +27,11 @@ trusts is the same one the FastAPI listener carries.
   backend is reachable.
 - The database is currently up: `make db-up` works.
 
+If the database is up but already has
+`require_secure_transport=ON` enforced and you don't yet have a
+client cert, skip ahead to
+[§9 Bootstrap on a TLS-enforced DB](#9-bootstrap-on-a-tls-enforced-db).
+
 ## 2. Mint the server cert
 
 ```bash
@@ -130,3 +135,45 @@ If a cert expired and the API can no longer connect:
 
 The data volume (`wg_manager_mysql_data`) is untouched throughout —
 this is a config-level recovery, not a data-level one.
+
+## 9. Bootstrap on a TLS-enforced DB
+
+What if the MySQL container is up with `require_secure_transport=ON`
+but you've never minted certs into `tls/mysql/`? The §2 / §3 path
+(`make mysql-tls-issue`, `wg-manager certs issue --type
+mysql-client`) requires DB access to write the audit row — which the
+TLS gate refuses without certs. Chicken-and-egg.
+
+The script `scripts/bootstrap_mysql_tls_files.py` breaks the cycle by
+going **straight to the PKI backend** to mint the four PEM files
+without writing to the `certificate` table:
+
+```bash
+uv run python scripts/bootstrap_mysql_tls_files.py
+```
+
+It writes:
+
+- `tls/mysql/server.crt` / `server.key` / `ca.crt` — mysqld material
+- `tls/mysql/client.crt` / `client.key` / `client-ca.crt` —
+  app/worker material
+
+After the script finishes:
+
+```bash
+docker compose restart mysql
+
+export DATABASE_TLS_REQUIRED=true
+export DATABASE_TLS_CA_PEM=tls/mysql/client-ca.crt
+export DATABASE_TLS_CERT_PEM=tls/mysql/client.crt
+export DATABASE_TLS_KEY_PEM=tls/mysql/client.key
+
+make migrate                          # now connects over TLS
+uv run wg-manager operators list      # confirms the dance worked
+```
+
+Once the DB is reachable again, the operator may re-mint the same
+identities through the normal `wg-manager certs issue --type mysql`
++ `--type mysql-client` paths to land audit rows for the certs that
+are actually in production. The bootstrap script's job ends at
+"DB reachable" — the canonical issuance path stays the CLI.

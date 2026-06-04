@@ -55,11 +55,13 @@ from wg_manager.models import (
     OperatorTenant,
     Tenant,
 )
+from wg_manager.ipam import pools_overlap
 from wg_manager.schemas import (
     OperatorTenantAttachRequest,
     OperatorTenantRead,
     TenantCreate,
     TenantRead,
+    TenantUpdate,
 )
 
 router = APIRouter(prefix="/tenants", tags=["tenants"])
@@ -236,7 +238,83 @@ def create_tenant(
                 f"(id={existing_name.id})"
             ),
         )
+    # Phase 3b cycle 4 — validate the pool shape + reject overlap
+    # with any existing tenant's pool.
+    target_pool = body.subnet_pool
+    if target_pool is not None:
+        try:
+            from ipaddress import IPv4Network
+
+            IPv4Network(target_pool, strict=True)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"invalid subnet_pool {target_pool!r}: {exc}",
+            ) from exc
+        _reject_pool_overlap(session, target_pool)
     row = Tenant(name=body.name, slug=target_slug)
+    if target_pool is not None:
+        row.subnet_pool = target_pool
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def _reject_pool_overlap(
+    session: Session,
+    pool: str,
+    *,
+    exclude_id: int | None = None,
+) -> None:
+    """Raise 409 if ``pool`` overlaps an existing tenant's pool.
+
+    ``exclude_id`` lets ``PATCH`` skip the tenant being updated when
+    checking — otherwise an in-place narrowing would self-collide.
+    """
+    rows = session.exec(select(Tenant)).all()
+    for other in rows:
+        if exclude_id is not None and other.id == exclude_id:
+            continue
+        if not other.subnet_pool:
+            continue
+        if pools_overlap(pool, other.subnet_pool):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"subnet_pool {pool!r} overlaps tenant "
+                    f"{other.slug!r}'s pool {other.subnet_pool!r}"
+                ),
+            )
+
+
+@router.patch("/{slug}", response_model=TenantRead)
+def update_tenant(
+    slug: str,
+    body: TenantUpdate,
+    _: Annotated[Operator, Depends(_RequireAdmin)],
+    session: Annotated[Session, Depends(get_session)],
+) -> Tenant:
+    """Partial-update a tenant. Currently only ``subnet_pool``.
+
+    Refuses with 422 on a malformed pool, 409 on overlap with
+    another tenant's pool.
+    """
+    row = _require_tenant(session, slug)
+    if body.subnet_pool is not None:
+        try:
+            from ipaddress import IPv4Network
+
+            IPv4Network(body.subnet_pool, strict=True)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail=f"invalid subnet_pool {body.subnet_pool!r}: {exc}",
+            ) from exc
+        _reject_pool_overlap(
+            session, body.subnet_pool, exclude_id=row.id
+        )
+        row.subnet_pool = body.subnet_pool
     session.add(row)
     session.commit()
     session.refresh(row)

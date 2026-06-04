@@ -173,12 +173,27 @@ class Tenant(SQLModel, table=True):
         ``^[a-z0-9-]+$`` shape; cycle 1 keeps it permissive so the
         schema migration doesn't depend on validator code that
         ships later.
+    :ivar subnet_pool: CIDR string carving out the tenant's slice of
+        the WireGuard IP space (Phase 3b cycle 4). Every server's
+        ``subnet`` must lie inside the pool; two tenants with non-
+        overlapping pools can issue overlapping client IPs without
+        colliding. Tenants created on a v0.1.0 deployment back-fill
+        to ``Settings.default_subnet``; tenants added between cycles
+        2 and 4 back-fill to ``10.0.0.0/8`` (the largest RFC1918
+        block, so an operator never sees a "no IPs" failure on an
+        unconfigured tenant — they tighten the pool via PATCH once
+        they're ready).
     :ivar created_at: UTC timestamp the row was created.
     """
 
     id: int | None = Field(default=None, primary_key=True)
     name: str = Field(unique=True, index=True, max_length=64)
     slug: str = Field(unique=True, index=True, max_length=64)
+    # Default matches the Alembic 0016 fallback. Operators creating a
+    # tenant through the CLI / API supply their own pool; this default
+    # keeps tests + direct-DB inserts working without scattering an
+    # explicit ``subnet_pool="..."`` across every fixture.
+    subnet_pool: str = Field(default="10.0.0.0/8", max_length=64)
     created_at: datetime = Field(default_factory=_utcnow)
 
 

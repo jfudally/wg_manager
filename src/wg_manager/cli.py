@@ -1931,6 +1931,16 @@ def tenants_create(
             "of --name."
         ),
     ),
+    subnet_pool: str | None = typer.Option(
+        None,
+        "--subnet-pool",
+        help=(
+            "CIDR carving the tenant's slice of the WireGuard IP "
+            "space (Phase 3b cycle 4). Required to be disjoint from "
+            "every existing tenant's pool. Defaults to the model "
+            "fallback ('10.0.0.0/8') when omitted."
+        ),
+    ),
     database_url: str | None = typer.Option(
         None,
         "--database-url",
@@ -1945,11 +1955,24 @@ def tenants_create(
     tenant (``slug='default'``) is created by Alembic 0014 — every
     pre-Phase-3b row gets back-filled there.
     """
+    from ipaddress import IPv4Network
+
     from sqlmodel import Session
 
+    from wg_manager.ipam import pools_overlap
     from wg_manager.models import Tenant
 
     target_slug = slug or _slugify(name)
+    if subnet_pool is not None:
+        try:
+            IPv4Network(subnet_pool, strict=True)
+        except (ValueError, TypeError) as exc:
+            typer.secho(
+                f"invalid --subnet-pool {subnet_pool!r}: {exc}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
     engine = _get_engine(database_url)
     with Session(engine) as session:
         existing = session.exec(
@@ -1974,13 +1997,28 @@ def tenants_create(
                 err=True,
             )
             raise typer.Exit(code=1)
+        if subnet_pool is not None:
+            for other in session.exec(select(Tenant)).all():
+                if other.subnet_pool and pools_overlap(
+                    subnet_pool, other.subnet_pool
+                ):
+                    typer.secho(
+                        f"--subnet-pool {subnet_pool!r} overlaps "
+                        f"tenant {other.slug!r}'s pool "
+                        f"{other.subnet_pool!r}",
+                        fg=typer.colors.RED,
+                        err=True,
+                    )
+                    raise typer.Exit(code=1)
         row = Tenant(name=name, slug=target_slug)
+        if subnet_pool is not None:
+            row.subnet_pool = subnet_pool
         session.add(row)
         session.commit()
         session.refresh(row)
         typer.echo(
             f"created tenant id={row.id} name={row.name!r} "
-            f"slug={row.slug!r}"
+            f"slug={row.slug!r} subnet_pool={row.subnet_pool!r}"
         )
 
 
@@ -2009,6 +2047,7 @@ def tenants_list(
             "id": row.id,
             "name": row.name,
             "slug": row.slug,
+            "subnet_pool": row.subnet_pool,
             "created_at": (
                 row.created_at.isoformat() if row.created_at else None
             ),
@@ -2053,6 +2092,7 @@ def tenants_get(
         "id": row.id,
         "name": row.name,
         "slug": row.slug,
+        "subnet_pool": row.subnet_pool,
         "created_at": (
             row.created_at.isoformat() if row.created_at else None
         ),

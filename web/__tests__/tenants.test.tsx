@@ -53,6 +53,7 @@ function makeTenant(overrides: Partial<Tenant> = {}): Tenant {
     id: 1,
     name: "Default",
     slug: "default",
+    subnet_pool: "10.9.0.0/16",
     created_at: "2026-06-03T00:00:00Z",
     ...overrides,
   };
@@ -313,6 +314,73 @@ describe("Tenants page — detail + operators", () => {
           init?.method === "DELETE",
       );
       expect(calls.length).toBeGreaterThan(0);
+    });
+  });
+});
+
+describe("Tenants page — subnet pool (cycle 4)", () => {
+  it("renders the subnet pool column in the inventory", async () => {
+    vi.spyOn(global, "fetch").mockImplementation(
+      fetchRouter({
+        "/tenants": makeFetchResponse(200, [
+          makeTenant({
+            id: 1,
+            name: "Default",
+            slug: "default",
+            subnet_pool: "10.9.0.0/16",
+          }),
+        ]),
+      }) as typeof fetch,
+    );
+
+    renderPage();
+
+    expect(await screen.findByText("10.9.0.0/16")).toBeInTheDocument();
+  });
+
+  it("submits subnet_pool with the create body when supplied", async () => {
+    const fetchStub = vi.spyOn(global, "fetch").mockImplementation(
+      fetchRouter({
+        "/tenants": (url, init) => {
+          if (init?.method === "POST") {
+            return makeFetchResponse(
+              201,
+              makeTenant({
+                id: 2,
+                name: "Acme",
+                slug: "acme",
+                subnet_pool: "10.42.0.0/16",
+              }),
+            );
+          }
+          return makeFetchResponse(200, [
+            makeTenant({ subnet_pool: "10.9.0.0/16" }),
+          ]);
+        },
+      }) as typeof fetch,
+    );
+
+    renderPage();
+
+    await screen.findByText("Default");
+
+    const nameInput = await screen.findByLabelText(/name/i);
+    const slugInput = await screen.findByLabelText(/slug/i);
+    const poolInput = await screen.findByLabelText(/subnet pool/i);
+    fireEvent.change(nameInput, { target: { value: "Acme" } });
+    fireEvent.change(slugInput, { target: { value: "acme" } });
+    fireEvent.change(poolInput, { target: { value: "10.42.0.0/16" } });
+
+    fireEvent.click(await screen.findByRole("button", { name: /create/i }));
+
+    await waitFor(() => {
+      const calls = fetchStub.mock.calls.filter(
+        ([url, init]) =>
+          String(url).endsWith("/tenants") && init?.method === "POST",
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      const body = JSON.parse(String(calls[calls.length - 1][1]?.body));
+      expect(body.subnet_pool).toBe("10.42.0.0/16");
     });
   });
 });

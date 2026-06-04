@@ -500,6 +500,12 @@ export interface Tenant {
   id: number;
   name: string;
   slug: string;
+  /**
+   * Phase 3b cycle 4 — CIDR carving the tenant's slice of the
+   * WireGuard IP space. Every server's subnet must lie inside the
+   * pool; pools must be disjoint across tenants.
+   */
+  subnet_pool: string;
   /** ISO-8601 UTC timestamp. */
   created_at: string;
 }
@@ -508,6 +514,16 @@ export interface Tenant {
 export interface TenantCreate {
   name: string;
   slug?: string;
+  /**
+   * CIDR pool (Phase 3b cycle 4). Optional — when omitted the row
+   * carries the model default (`10.0.0.0/8`).
+   */
+  subnet_pool?: string;
+}
+
+/** Body for `PATCH /tenants/{slug}` (Phase 3b cycle 4). */
+export interface TenantUpdate {
+  subnet_pool?: string;
 }
 
 /**

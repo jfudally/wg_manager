@@ -11,12 +11,14 @@ from sqlmodel import Session, select
 from wg_manager import audit
 from wg_manager.config import settings
 from wg_manager.db import get_session
+from wg_manager.ipam import subnet_in_pool
 from wg_manager.models import (
     Client,
     DiscoveredPeer,
     NodeStatus,
     SSHKey,
     Server,
+    Tenant,
 )
 from wg_manager.schemas import (
     DiscoverAllResponse,
@@ -75,6 +77,25 @@ def register_server(
     server_host = list(network.hosts())[0]
     address = f"{server_host}/{network.prefixlen}"
 
+    # Phase 3b cycle 4 — the server's subnet must lie inside its
+    # tenant's pool. Cycle 4 keeps the tenant resolution simple:
+    # inherit the SSH key's tenant (which itself defaults to the
+    # default tenant via Alembic 0014's back-fill). Cycle 5 will
+    # layer explicit ``tenant_id`` resolution from the operator's
+    # context on top.
+    target_tenant_id = ssh_key.tenant_id or 1
+    tenant = session.get(Tenant, target_tenant_id)
+    if tenant is not None and not subnet_in_pool(
+        str(network), tenant.subnet_pool
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"subnet {str(network)!r} is outside tenant "
+                f"{tenant.slug!r}'s pool {tenant.subnet_pool!r}"
+            ),
+        )
+
     row = Server(
         hostname=payload.hostname,
         ssh_port=payload.ssh_port,
@@ -87,6 +108,7 @@ def register_server(
         address=address,
         public_key="",
         status=NodeStatus.pending,
+        tenant_id=target_tenant_id,
     )
     session.add(row)
     session.flush()

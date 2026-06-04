@@ -10,6 +10,55 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3b cycle 4 — per-tenant peer pools (IPAM).** Each tenant
+  carries its own `subnet_pool` CIDR; every server's `subnet` must
+  lie inside the pool, and two tenants' pools must be disjoint —
+  so a client IP in one tenant cannot collide with a client IP in
+  another. Closes the "IP collisions between tenants" half of the
+  Phase 3b design lock.
+
+  - **Schema.** `Tenant` grows a `subnet_pool` NOT NULL VARCHAR(64)
+    column via Alembic 0016. The migration back-fills the reserved
+    `id=1` default tenant with `Settings.default_subnet` so a v0.1.0
+    deployment keeps every existing server inside its tenant's pool
+    without operator action; any other tenant rows added between
+    cycles 2 and 4 back-fill to the RFC1918 fallback `10.0.0.0/8`
+    (the largest private block — operators tighten via PATCH).
+  - **IPAM helpers** in `wg_manager.ipam`: `subnet_in_pool(subnet,
+    pool)` (strict containment check) + `pools_overlap(a, b)`
+    (overlap check). The existing `allocate_client_ip` walks the
+    server's subnet unchanged; cross-tenant non-collision falls out
+    of pools being disjoint by construction.
+  - **CLI.** `wg-manager tenants create --subnet-pool 10.42.0.0/16`
+    stores the pool; without the flag the row carries the model
+    default. Overlap with an existing tenant is rejected with a
+    non-zero exit + a message naming the colliding tenant. `tenants
+    list/get` JSON output grows the `subnet_pool` field.
+  - **HTTP.** `TenantCreate` body grows optional `subnet_pool`;
+    `TenantRead` surfaces it; new `PATCH /tenants/{slug}` accepts a
+    `TenantUpdate` body to widen/narrow the pool. Overlap is
+    rejected with HTTP 409 (and excludes the row being updated on
+    PATCH so an in-place narrow doesn't self-collide). Malformed
+    CIDR → 422.
+  - **Per-server pool enforcement.** `POST /servers` rejects a
+    `subnet` that lies outside the resolved tenant's pool with HTTP
+    422; the existing default-subnet path inherits the SSH key's
+    tenant so a v0.1.0 deployment keeps working. The row's
+    `tenant_id` is populated from the resolved tenant.
+  - **Dashboard parity.** Tenants page inventory grows a "Subnet
+    pool" column; create form grows a `Subnet pool (optional)`
+    input; the per-tenant detail panel header surfaces the pool in
+    a monospace span. `Tenant` / `TenantCreate` / new `TenantUpdate`
+    types updated; new `api.updateTenant` method.
+  - **Tests:** 9 new alembic-0016 cases (`tests/test_alembic_0016.py`)
+    + 18 new plumbing cases (`tests/test_tenant_subnet_pool.py`)
+    covering CLI create/list/get with pool, API POST + overlap
+    rejection, IPAM helpers, per-server pool enforcement, and
+    cross-tenant non-collision. 2 new vitest specs covering the
+    inventory subnet column + the create-form pool submission.
+    Backend pytest 882/882 in `local` mode (was 855 on cycle 3's
+    merge); vitest 54/54; `tsc --noEmit` clean.
+
 - **Phase 3b cycle 3 — tenant-aware filtering + per-tenant role gate.**
   The first cycle that **actually enforces** the multi-tenant model.
   Cycles 1 + 2 shipped pure schema groundwork; cycle 3 reads the
