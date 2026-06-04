@@ -119,6 +119,125 @@ services:
     volumes:
       - wg_manager_sshd_e2e_state:/wg-manager-e2e
 
+  # ---------------------------------------------------------------------------
+  # Phase 3d cycle 4a — HA control-plane demo (`ha` profile).
+  # ---------------------------------------------------------------------------
+  #
+  # Materialises the two-replica + LB topology from
+  # docs/deploy/ha-control-plane.md on a single host:
+  #
+  #   client ──TLS──┐
+  #                 ▼
+  #              nginx lb (8443, TCP passthrough)
+  #               ├──► api1 (8001 host / 8000 container)
+  #               └──► api2 (8002 host / 8000 container)
+  #               (both replicas share mysql + vault + valkey)
+  #
+  # Brings up with:
+  #   docker compose --profile ha up -d --build      # or: make ha-up
+  # Curl through the LB:
+  #   curl --cacert tls/ca-bundle.crt https://127.0.0.1:8443/healthz
+  # Curl a single replica directly (for debugging):
+  #   curl --cacert tls/ca-bundle.crt https://127.0.0.1:8001/healthz
+  #   curl --cacert tls/ca-bundle.crt https://127.0.0.1:8002/healthz
+  #
+  # The replicas reuse the existing dev cert bundle in tls/ (CN=
+  # 127.0.0.1) — the bind-mount is read-only so a compromised replica
+  # can't rewrite the trust anchor everyone shares. `TLS_REQUIRED` is
+  # `false` so the demo doesn't have to mint operator client certs
+  # before it starts producing useful output; flip to `true` for the
+  # full mTLS dance.
+
+  api1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wg-manager:dev
+    container_name: wg_manager_api1
+    profiles: ["ha"]
+    depends_on:
+      mysql:
+        condition: service_started
+      vault:
+        condition: service_healthy
+      valkey:
+        condition: service_started
+    environment:
+      # Hostnames here are compose-network DNS, not host loopback.
+      DATABASE_URL: mysql+pymysql://wg:wg@mysql:3306/wg_manager
+      CELERY_BROKER_URL: redis://valkey:6379/0
+      CELERY_RESULT_BACKEND: redis://valkey:6379/0
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-only-root
+      CRYPTO_BACKEND: vault
+      SSH_CA_BACKEND: vault
+      # `local` is honest for a single-host demo. The HA startup
+      # guard (Phase 3d cycle 1) blocks `local` + TLS_REQUIRED=true
+      # without pinned PEMs; `TLS_REQUIRED=false` keeps that guard
+      # silent for the demo.
+      PKI_BACKEND: local
+      TLS_REQUIRED: "false"
+      TLS_CERT_PEM: /app/tls/server.crt
+      TLS_KEY_PEM: /app/tls/server.key
+      TLS_CA_BUNDLE_PEM: /app/tls/ca-bundle.crt
+      AUTH_BOOTSTRAP_OPERATOR_CN: dev-operator
+      # 0.0.0.0 inside the container — the host port mapping below
+      # is what scopes external reachability to 127.0.0.1.
+      BIND_HOST: 0.0.0.0
+      BIND_PORT: "8000"
+    volumes:
+      - ./tls:/app/tls:ro
+    ports:
+      - "127.0.0.1:8001:8000"
+
+  api2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: wg-manager:dev
+    container_name: wg_manager_api2
+    profiles: ["ha"]
+    depends_on:
+      mysql:
+        condition: service_started
+      vault:
+        condition: service_healthy
+      valkey:
+        condition: service_started
+    environment:
+      DATABASE_URL: mysql+pymysql://wg:wg@mysql:3306/wg_manager
+      CELERY_BROKER_URL: redis://valkey:6379/0
+      CELERY_RESULT_BACKEND: redis://valkey:6379/0
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: dev-only-root
+      CRYPTO_BACKEND: vault
+      SSH_CA_BACKEND: vault
+      PKI_BACKEND: local
+      TLS_REQUIRED: "false"
+      TLS_CERT_PEM: /app/tls/server.crt
+      TLS_KEY_PEM: /app/tls/server.key
+      TLS_CA_BUNDLE_PEM: /app/tls/ca-bundle.crt
+      AUTH_BOOTSTRAP_OPERATOR_CN: dev-operator
+      BIND_HOST: 0.0.0.0
+      BIND_PORT: "8000"
+    volumes:
+      - ./tls:/app/tls:ro
+    ports:
+      - "127.0.0.1:8002:8000"
+
+  lb:
+    image: nginx:1.27-alpine
+    container_name: wg_manager_lb
+    profiles: ["ha"]
+    depends_on:
+      - api1
+      - api2
+    ports:
+      - "127.0.0.1:8443:8443"
+    volumes:
+      # Read-only so a compromised LB can't rewrite its routing.
+      - ./docker/nginx/wg-manager.conf:/etc/nginx/nginx.conf:ro
+
 volumes:
   wg_manager_mysql_data:
   wg_manager_valkey_data:

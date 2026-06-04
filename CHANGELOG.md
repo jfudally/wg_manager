@@ -10,6 +10,41 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3d cycle 4a — docker-compose `ha` profile + nginx
+  passthrough LB.** Materialises the two-replica + LB topology from
+  `docs/deploy/ha-control-plane.md` on a single host so an operator
+  can verify failover end-to-end before deploying a real two-host
+  setup.
+
+  - **Compose `ha` profile.** Three new services in
+    `docker-compose.yml`, all gated behind `profiles: ["ha"]`:
+    `api1` (host port 8001), `api2` (host port 8002), and `lb`
+    (host port 8443, `nginx:1.27-alpine`). Both replicas build the
+    existing Phase 2f `Dockerfile`, bind-mount the dev cert bundle
+    in `tls/` read-only, and reuse the default-profile data tier
+    (mysql + valkey + vault + vector — unprofiled so it comes up
+    under both flows).
+  - **nginx LB config** at `docker/nginx/wg-manager.conf` is
+    `stream {}`-mode TCP passthrough — the HA topology forbids TLS
+    termination at the LB so the mTLS handshake lands on the
+    replica intact. Two upstreams (`api1:8000`, `api2:8000`) with
+    passive `max_fails=3 fail_timeout=10s` checks, single listener
+    on `8443`.
+  - **Makefile** grew `ha-up` / `ha-down` / `ha-logs` mirroring the
+    `db-up` family.
+  - **Docs.** `docs/deploy/ha-control-plane.md` gained a "Running
+    the ha profile locally" section with the three-endpoint table,
+    a failover-smoke recipe, and the explicit list of what cycle
+    4a does **not** ship (active `/readyz` probing at the LB, TLS
+    termination at the LB, MySQL primary→replica plumbing).
+  - **Tests:** 19 compose-shape cases
+    (`tests/test_compose_ha_profile.py`) + 7 nginx-config cases
+    (`tests/test_nginx_lb_config.py`) — pure YAML/text parse-and-
+    assert, matches the Phase 2f `test_dockerfile.py` pattern. CI's
+    image-build workflow remains the live compose validator; these
+    tests pin the source-of-truth shape so a refactor that drops a
+    service or breaks the passthrough contract trips before merge.
+
 - **Phase 3d cycle 3 — per-row advisory locks on mutating Celery
   tasks.** Closes the multi-worker concurrency gap cycle 2
   flagged (BENIGN_OVERWRITE on contention). The 4 mutating tasks

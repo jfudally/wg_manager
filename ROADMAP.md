@@ -2070,8 +2070,46 @@ behaviour in practice.
     Backend pytest 953/953 in ``local`` mode (was 937 on
     cycle 2's merge).
 
-- **Cycle 4 `[ ]`** — docker-compose ``ha`` profile with the LB +
-  multi-replica example, plus the deferred read-replica routing.
+- **Cycle 4a `[x]`** (2026-06-04) — docker-compose ``ha`` profile
+  with the LB + multi-replica example.
+
+  Shipped:
+  - **Compose `ha` profile.** Three new services in
+    ``docker-compose.yml``, gated behind ``profiles: ["ha"]``:
+    ``api1`` (host port 8001), ``api2`` (host port 8002), and
+    ``lb`` (host port 8443, ``nginx:1.27-alpine``). Both replicas
+    build the existing Phase 2f ``Dockerfile``, bind-mount the dev
+    cert bundle in ``tls/`` read-only, and reuse the default-
+    profile data tier (mysql + valkey + vault + vector — unprofiled
+    so it comes up under both the default and ha flows).
+  - **nginx LB config** at ``docker/nginx/wg-manager.conf`` is
+    ``stream {}``-mode TCP passthrough — the HA topology forbids
+    TLS termination at the LB so the mTLS handshake lands on the
+    replica intact. Two upstreams (``api1:8000``, ``api2:8000``)
+    with passive ``max_fails=3 fail_timeout=10s`` checks, single
+    ``listen 8443;`` directive.
+  - **Makefile** grew ``ha-up`` / ``ha-down`` / ``ha-logs``
+    mirroring the ``db-up`` family.
+  - **Docs.** ``docs/deploy/ha-control-plane.md`` gained a "Running
+    the ha profile locally" section with the three-endpoint table,
+    a failover-smoke recipe, and the explicit list of what cycle
+    4a does NOT ship (active ``/readyz`` probing at the LB, TLS
+    termination at the LB, MySQL primary→replica plumbing — all
+    deferred or intentionally out of scope).
+  - Tests: 19 compose-shape cases
+    (``tests/test_compose_ha_profile.py``) + 7 nginx-config cases
+    (``tests/test_nginx_lb_config.py``). Pure YAML/text parse-and-
+    assert, matches the Phase 2f ``test_dockerfile.py`` pattern.
+    Backend pytest 979/979 in ``local`` mode (was 953 on cycle 3's
+    merge).
+
+- **Cycle 4b `[ ]`** — read-replica routing in the app. Split
+  ``get_session`` into a write dep (primary) + ``get_read_session``
+  (replica when configured, primary fallback otherwise). New
+  ``DATABASE_REPLICA_URL`` setting; every ``@router.get`` flips to
+  the read dep; ``/readyz`` extended to report replica reachability
+  when configured. Compose primary→replica plumbing remains
+  operator-provided.
 
 ### Phase 3e — Helm chart / Terraform module `[ ]`
 
