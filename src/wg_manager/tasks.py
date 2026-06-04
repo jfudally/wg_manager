@@ -28,6 +28,7 @@ from sqlmodel import Session, select
 from wg_manager.celery_app import celery_app
 from wg_manager.config import Settings
 from wg_manager.host_ssh import HostCertInstallError, install_host_cert
+from wg_manager.locks import task_row_lock
 from wg_manager.models import (
     Client,
     DiscoveredPeer,
@@ -209,15 +210,16 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
     currently-``ready`` client for this server, so repeated invocations are
     safe even when the node was left half-configured.
 
-    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE** on serial replay.
-    Remote SSH commands are guarded (``apt-get install`` is idempotent;
-    ``_ensure_keypair`` runs ``test -s … || generate``; ``wg-quick
-    down/up`` converges). Re-running converges to the same end state.
-    Two workers racing the same ``server_id`` simultaneously is a
-    deployment-time concern (brief interface flap, dpkg waits on its
-    own lock) — the cycle 2 ROADMAP documents the per-row advisory
-    lock as the cycle 3 follow-up. Safe under ``acks_late=True`` +
-    ``reject_on_worker_lost=True`` re-delivery from cycle 2's config.
+    Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK** (cycle 3
+    upgraded from BENIGN_OVERWRITE). Acquires
+    :func:`wg_manager.locks.task_row_lock` on ``wgm:server:<id>``
+    before any SSH or DB-mutation work. A second worker that races
+    the same ``server_id`` is held off at the lock (or, if the lock
+    is held already, returns ``{"status": "skipped"}`` and lets
+    the broker re-deliver later). Remote SSH commands remain
+    guarded for re-run safety (``apt-get install`` is idempotent;
+    ``_ensure_keypair`` runs ``test -s … || generate``); the lock
+    is the cycle 3 belt to cycle 2's suspenders.
 
     :param server_id: Primary key of the :class:`Server` row to provision.
     :type server_id: int
@@ -228,64 +230,75 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
     from wg_manager.db import engine
 
     with Session(engine) as session:
-        server = session.get(Server, server_id)
-        if server is None:
-            raise ValueError(f"Server {server_id} not found")
-        ssh_key = session.get(SSHKey, server.ssh_key_id)
-        if ssh_key is None:
-            _mark_error(session, server)
-            raise ValueError(f"SSH key {server.ssh_key_id} not found")
+        # Phase 3d cycle 3 — advisory lock keyed on the server row.
+        # Another worker concurrently provisioning the same server
+        # makes us skip rather than race; broker re-delivery picks
+        # us back up once the holding worker finishes.
+        with task_row_lock(session, "server", server_id) as acquired:
+            if not acquired:
+                return {
+                    "status": "skipped",
+                    "reason": "concurrent_run",
+                    "server_id": server_id,
+                }
+            server = session.get(Server, server_id)
+            if server is None:
+                raise ValueError(f"Server {server_id} not found")
+            ssh_key = session.get(SSHKey, server.ssh_key_id)
+            if ssh_key is None:
+                _mark_error(session, server)
+                raise ValueError(f"SSH key {server.ssh_key_id} not found")
 
-        clients = _ready_clients_for(session, server_id)
+            clients = _ready_clients_for(session, server_id)
 
-        try:
-            with _open_runner(
-                host=server.hostname,
-                port=server.ssh_port,
-                username=server.ssh_username,
-                ssh_key=ssh_key,
-            ) as runner:
-                public_key = provision_server(runner, server, clients)
-                # CP3: mint + install the host cert on the same SSH
-                # session — CP4.4 made this unconditional, so every
-                # successful provision lands a fresh cert on the host
-                # and the matching ``host_cert_*`` columns on the row.
-                _install_host_cert(
-                    runner=runner,
-                    server=server,
-                    settings=Settings(),
+            try:
+                with _open_runner(
+                    host=server.hostname,
+                    port=server.ssh_port,
+                    username=server.ssh_username,
+                    ssh_key=ssh_key,
+                ) as runner:
+                    public_key = provision_server(runner, server, clients)
+                    # CP3: mint + install the host cert on the same SSH
+                    # session — CP4.4 made this unconditional, so every
+                    # successful provision lands a fresh cert on the host
+                    # and the matching ``host_cert_*`` columns on the row.
+                    _install_host_cert(
+                        runner=runner,
+                        server=server,
+                        settings=Settings(),
+                    )
+            except _SSH_EXPECTED_ERRORS as exc:
+                # Expected: timeout / auth / refused / non-zero remote command.
+                # Log a single tidy line and convert to a clean failure.
+                logger.error(
+                    "server %s provisioning failed for %s: %s",
+                    server_id,
+                    server.hostname,
+                    exc,
                 )
-        except _SSH_EXPECTED_ERRORS as exc:
-            # Expected: timeout / auth / refused / non-zero remote command.
-            # Log a single tidy line and convert to a clean failure.
-            logger.error(
-                "server %s provisioning failed for %s: %s",
-                server_id,
-                server.hostname,
-                exc,
-            )
-            _mark_error(session, server)
-            raise _fail_clean(
-                f"server {server_id} ({server.hostname}) provisioning failed: {exc}"
-            ) from None
-        except Exception:
-            # Unexpected: keep the traceback so we don't paper over bugs.
-            logger.exception("server %s provisioning failed", server_id)
-            _mark_error(session, server)
-            raise
+                _mark_error(session, server)
+                raise _fail_clean(
+                    f"server {server_id} ({server.hostname}) provisioning failed: {exc}"
+                ) from None
+            except Exception:
+                # Unexpected: keep the traceback so we don't paper over bugs.
+                logger.exception("server %s provisioning failed", server_id)
+                _mark_error(session, server)
+                raise
 
-        server.public_key = public_key
-        server.status = NodeStatus.ready
-        session.add(server)
-        session.commit()
-        session.refresh(server)
-        return {
-            "server_id": server.id,
-            "status": server.status.value,
-            "public_key": server.public_key,
-            "address": server.address,
-            "peer_count": len(clients),
-        }
+            server.public_key = public_key
+            server.status = NodeStatus.ready
+            session.add(server)
+            session.commit()
+            session.refresh(server)
+            return {
+                "server_id": server.id,
+                "status": server.status.value,
+                "public_key": server.public_key,
+                "address": server.address,
+                "peer_count": len(clients),
+            }
 
 
 @celery_app.task(name="wg_manager.tasks.rotate_host_cert", bind=True)
@@ -303,10 +316,12 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
     versions guarded with — every ``SSHKey`` row is now CA-mode by
     construction, so the task can dial unconditionally.
 
-    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE**. Re-running mints
-    a fresh cert (wastes one Vault signature) and overwrites the row's
-    ``host_cert_*`` columns + the remote files. No operator-visible
-    inconsistency. Safe under at-least-once re-delivery.
+    Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK** (cycle 3
+    upgraded from BENIGN_OVERWRITE). Acquires
+    :func:`wg_manager.locks.task_row_lock` on ``wgm:server:<id>``
+    before minting the cert. Concurrent rotations on the same
+    ``server_id`` see one workflow finish before the other
+    proceeds (no wasted Vault signatures from racing workers).
 
     :param server_id: Primary key of the :class:`Server` whose host
         cert should be rotated.
@@ -320,56 +335,64 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
     settings = Settings()
 
     with Session(engine) as session:
-        server = session.get(Server, server_id)
-        if server is None:
-            raise ValueError(f"Server {server_id} not found")
-        ssh_key = session.get(SSHKey, server.ssh_key_id)
-        if ssh_key is None:
-            raise ValueError(f"SSH key {server.ssh_key_id} not found")
+        # Phase 3d cycle 3 — advisory lock keyed on the server row.
+        with task_row_lock(session, "server", server_id) as acquired:
+            if not acquired:
+                return {
+                    "status": "skipped",
+                    "reason": "concurrent_run",
+                    "server_id": server_id,
+                }
+            server = session.get(Server, server_id)
+            if server is None:
+                raise ValueError(f"Server {server_id} not found")
+            ssh_key = session.get(SSHKey, server.ssh_key_id)
+            if ssh_key is None:
+                raise ValueError(f"SSH key {server.ssh_key_id} not found")
 
-        try:
-            with _open_runner(
-                host=server.hostname,
-                port=server.ssh_port,
-                username=server.ssh_username,
-                ssh_key=ssh_key,
-            ) as runner:
-                ca = make_ssh_ca_backend(settings)
-                cert = install_host_cert(
-                    runner=runner,
-                    server=server,
-                    ca=ca,
-                    ttl_seconds=settings.ssh_host_cert_ttl_seconds,
+            try:
+                with _open_runner(
+                    host=server.hostname,
+                    port=server.ssh_port,
+                    username=server.ssh_username,
+                    ssh_key=ssh_key,
+                ) as runner:
+                    ca = make_ssh_ca_backend(settings)
+                    cert = install_host_cert(
+                        runner=runner,
+                        server=server,
+                        ca=ca,
+                        ttl_seconds=settings.ssh_host_cert_ttl_seconds,
+                    )
+                    _persist_host_cert(server, cert, ca.ca_public_key)
+            except _SSH_EXPECTED_ERRORS as exc:
+                logger.error(
+                    "host-cert rotation failed for server %s (%s): %s",
+                    server_id,
+                    server.hostname,
+                    exc,
                 )
-                _persist_host_cert(server, cert, ca.ca_public_key)
-        except _SSH_EXPECTED_ERRORS as exc:
-            logger.error(
-                "host-cert rotation failed for server %s (%s): %s",
-                server_id,
-                server.hostname,
-                exc,
-            )
-            raise _fail_clean(
-                f"host-cert rotation failed for server {server_id} "
-                f"({server.hostname}): {exc}"
-            ) from None
+                raise _fail_clean(
+                    f"host-cert rotation failed for server {server_id} "
+                    f"({server.hostname}): {exc}"
+                ) from None
 
-        session.add(server)
-        session.commit()
-        session.refresh(server)
-        return {
-            "status": "ok",
-            "server_id": server_id,
-            "serial": server.host_cert_serial,
-            # ISO-8601 string keeps the dict JSON-serialisable for the
-            # ``GET /tasks/{id}`` response. The DB-side datetime is
-            # already UTC.
-            "valid_before": (
-                server.host_cert_valid_before.isoformat()
-                if server.host_cert_valid_before
-                else None
-            ),
-        }
+            session.add(server)
+            session.commit()
+            session.refresh(server)
+            return {
+                "status": "ok",
+                "server_id": server_id,
+                "serial": server.host_cert_serial,
+                # ISO-8601 string keeps the dict JSON-serialisable for the
+                # ``GET /tasks/{id}`` response. The DB-side datetime is
+                # already UTC.
+                "valid_before": (
+                    server.host_cert_valid_before.isoformat()
+                    if server.host_cert_valid_before
+                    else None
+                ),
+            }
 
 
 @celery_app.task(name="wg_manager.tasks.reconfigure_server", bind=True)
@@ -380,10 +403,12 @@ def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
     automatically after a successful client provision so new peers are
     picked up without a full re-provision of the hub.
 
-    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE**. Renders the same
-    ``wg0.conf`` from the current DB state and restarts ``wg-quick``. No
-    DB writes. Concurrent runs from two workers cause a brief interface
-    flap; serial replay is a no-op. Safe under at-least-once re-delivery.
+    Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK** (cycle 3
+    upgraded from BENIGN_OVERWRITE). Acquires
+    :func:`wg_manager.locks.task_row_lock` on ``wgm:server:<id>``
+    so concurrent reconfigures on the same server can't cause an
+    interface flap. Renders the same ``wg0.conf`` from the current
+    DB state and restarts ``wg-quick``.
 
     :param server_id: Primary key of the :class:`Server` row to reconfigure.
     :type server_id: int
@@ -394,39 +419,47 @@ def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
     from wg_manager.db import engine
 
     with Session(engine) as session:
-        server = session.get(Server, server_id)
-        if server is None:
-            raise ValueError(f"Server {server_id} not found")
-        ssh_key = session.get(SSHKey, server.ssh_key_id)
-        if ssh_key is None:
-            raise ValueError(f"SSH key {server.ssh_key_id} not found")
+        # Phase 3d cycle 3 — advisory lock on the server row.
+        with task_row_lock(session, "server", server_id) as acquired:
+            if not acquired:
+                return {
+                    "status": "skipped",
+                    "reason": "concurrent_run",
+                    "server_id": server_id,
+                }
+            server = session.get(Server, server_id)
+            if server is None:
+                raise ValueError(f"Server {server_id} not found")
+            ssh_key = session.get(SSHKey, server.ssh_key_id)
+            if ssh_key is None:
+                raise ValueError(f"SSH key {server.ssh_key_id} not found")
 
-        clients = _ready_clients_for(session, server_id)
+            clients = _ready_clients_for(session, server_id)
 
-        try:
-            with _open_runner(
-                host=server.hostname,
-                port=server.ssh_port,
-                username=server.ssh_username,
-                ssh_key=ssh_key,
-            ) as runner:
-                reconfigure_server(runner, server, clients)
-        except _SSH_EXPECTED_ERRORS as exc:
-            logger.error(
-                "server %s reconfigure failed for %s: %s",
-                server_id,
-                server.hostname,
-                exc,
-            )
-            raise _fail_clean(
-                f"server {server_id} ({server.hostname}) reconfigure failed: {exc}"
-            ) from None
+            try:
+                with _open_runner(
+                    host=server.hostname,
+                    port=server.ssh_port,
+                    username=server.ssh_username,
+                    ssh_key=ssh_key,
+                ) as runner:
+                    reconfigure_server(runner, server, clients)
+            except _SSH_EXPECTED_ERRORS as exc:
+                logger.error(
+                    "server %s reconfigure failed for %s: %s",
+                    server_id,
+                    server.hostname,
+                    exc,
+                )
+                raise _fail_clean(
+                    f"server {server_id} ({server.hostname}) reconfigure failed: {exc}"
+                ) from None
 
-        return {
-            "server_id": server_id,
-            "peer_count": len(clients),
-            "peers": [c.name for c in clients],
-        }
+            return {
+                "server_id": server_id,
+                "peer_count": len(clients),
+                "peers": [c.name for c in clients],
+            }
 
 
 @celery_app.task(name="wg_manager.tasks.provision_client", bind=True)
@@ -436,12 +469,14 @@ def provision_client_task(self, client_id: int) -> dict[str, Any]:
     On success the task commits the client in ``ready`` state and dispatches
     :func:`reconfigure_server_task` so the hub picks up the new peer.
 
-    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE**. Remote SSH
-    commands are guarded the same way ``provision_server_task`` is.
-    Re-running re-enqueues ``reconfigure_server_task.delay()`` (a
-    duplicate hub reconfigure — wasted work but a safe no-op
-    operationally). Safe under at-least-once re-delivery; concurrent
-    runs from two workers race for the same row's status flip.
+    Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK** (cycle 3
+    upgraded from BENIGN_OVERWRITE). Acquires
+    :func:`wg_manager.locks.task_row_lock` on ``wgm:client:<id>``
+    before any SSH work. The follow-up ``reconfigure_server_task``
+    dispatch takes its own lock on ``wgm:server:<server_id>``.
+    Concurrent provisions on the same client serialize at the
+    lock; on contention the second worker skips and lets the
+    broker re-deliver.
 
     :param client_id: Primary key of the :class:`Client` row to provision.
     :type client_id: int
@@ -452,55 +487,63 @@ def provision_client_task(self, client_id: int) -> dict[str, Any]:
     from wg_manager.db import engine
 
     with Session(engine) as session:
-        client = session.get(Client, client_id)
-        if client is None:
-            raise ValueError(f"Client {client_id} not found")
-        server = session.get(Server, client.server_id)
-        if server is None:
-            _mark_error(session, client)
-            raise ValueError(f"Server {client.server_id} not found")
-        client_key = session.get(SSHKey, client.ssh_key_id)
-        if client_key is None:
-            _mark_error(session, client)
-            raise ValueError("SSH key for client is missing")
+        # Phase 3d cycle 3 — advisory lock on the client row.
+        with task_row_lock(session, "client", client_id) as acquired:
+            if not acquired:
+                return {
+                    "status": "skipped",
+                    "reason": "concurrent_run",
+                    "client_id": client_id,
+                }
+            client = session.get(Client, client_id)
+            if client is None:
+                raise ValueError(f"Client {client_id} not found")
+            server = session.get(Server, client.server_id)
+            if server is None:
+                _mark_error(session, client)
+                raise ValueError(f"Server {client.server_id} not found")
+            client_key = session.get(SSHKey, client.ssh_key_id)
+            if client_key is None:
+                _mark_error(session, client)
+                raise ValueError("SSH key for client is missing")
 
-        try:
-            with _open_runner(
-                host=client.hostname,
-                port=client.ssh_port,
-                username=client.ssh_username,
-                ssh_key=client_key,
-            ) as client_runner:
-                client_pubkey = provision_client(client_runner, client, server)
-        except _SSH_EXPECTED_ERRORS as exc:
-            logger.error(
-                "client %s provisioning failed for %s: %s",
-                client_id,
-                client.hostname,
-                exc,
-            )
-            _mark_error(session, client)
-            raise _fail_clean(
-                f"client {client_id} ({client.hostname}) provisioning failed: {exc}"
-            ) from None
-        except Exception:
-            logger.exception("client %s provisioning failed", client_id)
-            _mark_error(session, client)
-            raise
+            try:
+                with _open_runner(
+                    host=client.hostname,
+                    port=client.ssh_port,
+                    username=client.ssh_username,
+                    ssh_key=client_key,
+                ) as client_runner:
+                    client_pubkey = provision_client(client_runner, client, server)
+            except _SSH_EXPECTED_ERRORS as exc:
+                logger.error(
+                    "client %s provisioning failed for %s: %s",
+                    client_id,
+                    client.hostname,
+                    exc,
+                )
+                _mark_error(session, client)
+                raise _fail_clean(
+                    f"client {client_id} ({client.hostname}) provisioning failed: {exc}"
+                ) from None
+            except Exception:
+                logger.exception("client %s provisioning failed", client_id)
+                _mark_error(session, client)
+                raise
 
-        client.public_key = client_pubkey
-        client.status = NodeStatus.ready
-        session.add(client)
-        session.commit()
-        session.refresh(client)
-        server_id = server.id
-        result = {
-            "client_id": client.id,
-            "status": client.status.value,
-            "address": client.address,
-            "public_key": client.public_key,
-            "server_id": server_id,
-        }
+            client.public_key = client_pubkey
+            client.status = NodeStatus.ready
+            session.add(client)
+            session.commit()
+            session.refresh(client)
+            server_id = server.id
+            result = {
+                "client_id": client.id,
+                "status": client.status.value,
+                "address": client.address,
+                "public_key": client.public_key,
+                "server_id": server_id,
+            }
 
     # Dispatch the follow-up server reconfigure outside the session so the
     # hub task opens its own clean session / connection.
