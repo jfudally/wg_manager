@@ -214,6 +214,82 @@ The Statelessness checklist above applies, plus:
       trips a clear assertion.
 - [ ] Update the per-task table above.
 
+## Running the ha profile locally (Phase 3d cycle 4a)
+
+The docker-compose `ha` profile brings the topology shown above up
+on a single host so an operator can verify failover behaviour before
+deploying a real two-host setup. The profile layers two API
+replicas + an nginx TCP-passthrough LB on top of the existing
+default-profile data tier (mysql + valkey + vault + vector); the
+data tier comes up under both the default flow and the ha flow.
+
+### Boot the profile
+
+```bash
+make ha-up                  # docker compose --profile ha up -d --build
+make ha-logs                # tail all ha services
+make ha-down                # docker compose --profile ha down
+```
+
+### Three reachable endpoints from the host
+
+| Endpoint | Routes to | Use when |
+|---|---|---|
+| `https://127.0.0.1:8443/healthz` | nginx LB → api1 OR api2 | Normal operator traffic |
+| `https://127.0.0.1:8001/healthz` | api1 directly | Debugging — bypasses the LB |
+| `https://127.0.0.1:8002/healthz` | api2 directly | Debugging — bypasses the LB |
+
+All three require `--cacert tls/ca-bundle.crt`. The ha profile pins
+`TLS_REQUIRED=false` so client certs aren't enforced — that keeps
+the demo runnable without minting the operator-cert pair the full
+mTLS dance needs. Flip the env to `true` in both `api1` and `api2`
+and pass `--cert tls/client.crt --key tls/client.key` to exercise
+the full mTLS path.
+
+### Failover smoke
+
+Stop one replica and curl repeatedly through the LB:
+
+```bash
+docker compose --profile ha stop api1
+
+for _ in $(seq 1 6); do
+  curl --cacert tls/ca-bundle.crt -s https://127.0.0.1:8443/healthz
+  echo
+done
+
+docker compose --profile ha start api1
+```
+
+The first one or two requests after `stop api1` may show a single
+connect failure each as nginx's passive health check
+(`max_fails=3 fail_timeout=10s` in
+`docker/nginx/wg-manager.conf`) takes api1 out of rotation;
+subsequent requests route exclusively to api2 until api1 is healthy
+again.
+
+### What's intentionally not in cycle 4a
+
+- **Active `/readyz` probing at the LB.** OSS nginx's `stream`
+  module ships passive checks only — active HTTPS probing of an
+  mTLS upstream needs nginx-plus or a sidecar. The demo's failover
+  story relies on passive `max_fails`/`fail_timeout`, which is
+  sufficient at this scale. A production deployment that needs
+  active probing can run an external prober that toggles
+  `server ... down;` markers via nginx OSS's dynamic-config
+  mechanisms.
+- **TLS termination at the LB.** Forbidden by the topology — mTLS
+  belongs at each replica so `MTLSAuthMiddleware` reads the real
+  operator CN. Cycle 4a's nginx config is `stream {}`-mode
+  passthrough only; a future edit that drops in `proxy_pass
+  https://...` trips `tests/test_nginx_lb_config.py`.
+- **MySQL primary→replica plumbing.** Read-replica **routing** (the
+  app-side dep that splits `get_session` into `get_session` for
+  writes and `get_read_session` for reads) lands in cycle 4b; the
+  compose primary→replica wiring is operator-provided for now,
+  documented next to the `DATABASE_REPLICA_URL` setting once that
+  lands.
+
 ## What's next
 
 Phase 3d ships in cycles:
@@ -225,5 +301,9 @@ Phase 3d ships in cycles:
 - **Cycle 3 (shipped)** — per-row advisory locks on the 4 mutating
   tasks. Verdicts upgraded from BENIGN_OVERWRITE to
   GUARDED_BY_ROW_LOCK. Read-replica routing deferred to cycle 4.
-- **Cycle 4** — docker-compose `ha` profile with the LB +
-  multi-replica example, plus the deferred read-replica routing.
+- **Cycle 4a (shipped)** — docker-compose `ha` profile with the LB
+  + multi-replica example.
+- **Cycle 4b** — read-replica routing in the app: split
+  `get_session` into write + read deps, add a `DATABASE_REPLICA_URL`
+  setting, flip every `@router.get` to the read dep, extend
+  `/readyz` to report replica reachability.
