@@ -10,6 +10,46 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3c — public API versioning (`/v1` namespace + deprecation
+  policy).** Every router that shipped under an unprefixed path is
+  now **dual-mounted** at the same path under `/v1`. Existing
+  integrations keep working unchanged; new callers opt into the
+  explicit version. The CLI and dashboard BFF are cut over to
+  `/v1`; third-party callers have until the operator-configured
+  sunset date to migrate.
+
+  - **Dual mount.** `/ssh-keys`, `/servers`, `/clients`, `/certs`,
+    `/tenants`, `/audit`, `/crypto`, `/tasks` all answer at both
+    `/<resource>` and `/v1/<resource>`. Identical handler, identical
+    response body + status.
+  - **Deprecation envelope** (RFC 9745). Every legacy-path response
+    carries `Deprecation: true`, `Sunset: <date>`, and
+    `Link: <doc>; rel="deprecation"`. New
+    `wg_manager.api_versioning.DeprecationMiddleware` stamps the
+    headers and emits one `api.deprecation` audit line per legacy
+    hit so operators can SIEM-query for callers still on the legacy
+    surface. The sunset date and link target are operator-tunable
+    via `API_LEGACY_SUNSET_DATE` + `API_DEPRECATION_DOC_URL` settings.
+  - **Versioned OpenAPI surface.** `/v1/openapi.json` filters the
+    spec to `/v1/*` paths only and pins `info.version = "1.0"`. The
+    existing `/openapi.json` continues to surface both spaces.
+  - **CLI cutover.** `cli._make_http_client` suffixes the base URL
+    with `/v1` so every existing call site (which uses relative
+    `/ssh-keys` etc) lands on the versioned namespace.
+  - **Dashboard BFF cutover.** `lib/proxy.forwardToUpstream` rewrites
+    every inbound `/api/proxy/<path>` to `<upstream>/v1/<path>`.
+    Strips an existing `v1/` prefix so callers that pre-pended it
+    don't get a double prefix.
+  - **Docs.** New `docs/api-versioning.md` walks the deprecation
+    envelope, the semver contract, the cutover guidance, and the
+    removal timeline.
+  - **Tests:** 13 new versioning cases
+    (`tests/test_api_versioning.py`) — dual mount, deprecation
+    headers on legacy / absent on v1, audit emission, OpenAPI
+    filtering — plus 1 new vitest case pinning the BFF's no-double-
+    prefix guard. Backend pytest 914/914 in `local` mode (was 901
+    on Phase 3b's close); vitest 57/57; `tsc --noEmit` clean.
+
 - **Phase 3b cycle 5 — explicit tenant on resource POSTs + tenant SAN on
   certs.** Closes Phase 3b. Cycle 4 inherited the server's tenant from
   the SSH key; cycle 5 makes the resolution explicit. Cycle 3 added

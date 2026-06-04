@@ -93,7 +93,19 @@ export async function forwardToUpstream(
   upstreamBaseUrl: string,
   fetcher: UpstreamFetcher,
 ): Promise<Response> {
-  const targetPath = "/" + pathSegments.join("/");
+  // Phase 3c — every BFF call lands on /v1/* upstream. The dashboard
+  // sends `/api/proxy/<resource>`; the proxy rewrites to
+  // `<upstream>/v1/<resource>`. Operators who set
+  // `WG_MANAGER_API_UPSTREAM` to include `/v1` (or callers that
+  // already pre-pended `/v1/` in pathSegments) don't get a double
+  // prefix because we strip an existing `/v1` first.
+  const joined = pathSegments.join("/");
+  const withoutV1 = joined.startsWith("v1/")
+    ? joined.slice(3)
+    : joined === "v1"
+      ? ""
+      : joined;
+  const targetPath = "/v1/" + withoutV1;
   const { search } = new URL(request.url);
   const url = `${upstreamBaseUrl}${targetPath}${search}`;
 

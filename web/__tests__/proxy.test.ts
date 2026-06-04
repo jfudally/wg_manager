@@ -55,7 +55,10 @@ describe("forwardToUpstream", () => {
       fetcher,
     );
 
-    expect(fetcher.last?.url).toBe("https://api.test:8000/clients?force=true");
+    // Phase 3c — BFF rewrites every path to the /v1 namespace.
+    expect(fetcher.last?.url).toBe(
+      "https://api.test:8000/v1/clients?force=true",
+    );
     expect(fetcher.last?.method).toBe("GET");
     expect(res.status).toBe(200);
     expect(await res.text()).toBe('[{"id":1,"name":"lab"}]');
@@ -76,8 +79,25 @@ describe("forwardToUpstream", () => {
       fetcher,
     );
 
-    expect(fetcher.last?.url).toBe("https://api.test:8000/servers/7/discover");
+    // Phase 3c — BFF rewrites every path to the /v1 namespace.
+    expect(fetcher.last?.url).toBe(
+      "https://api.test:8000/v1/servers/7/discover",
+    );
     expect(fetcher.last?.method).toBe("POST");
+  });
+
+  it("does not double-prepend /v1 when the inbound path already carries it", async () => {
+    const fetcher = fakeFetcher({});
+
+    const req = new Request("http://localhost:3000/api/proxy/v1/clients");
+    await forwardToUpstream(
+      req,
+      ["v1", "clients"],
+      "https://api.test:8000",
+      fetcher,
+    );
+
+    expect(fetcher.last?.url).toBe("https://api.test:8000/v1/clients");
   });
 
   it("forwards a JSON POST body byte-for-byte", async () => {
