@@ -43,6 +43,31 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PROD_OVERLAY = REPO_ROOT / "docker-compose.prod.yml"
 
 
+class _ComposeLoader(yaml.SafeLoader):
+    """SafeLoader that tolerates Compose-specific tags (``!reset``,
+    ``!override``).
+
+    Compose v2.20+ uses these tags to control how multi-file overlays
+    merge list-valued keys (``ports``, ``environment``, etc.). PyYAML's
+    stock SafeLoader rejects them as unknown. We register passthrough
+    constructors so the loader returns the underlying scalar / list /
+    mapping unchanged — the test assertions don't care about the merge
+    semantics, only the final shape.
+    """
+
+    @staticmethod
+    def _passthrough(loader: yaml.Loader, node: yaml.Node) -> object:
+        if isinstance(node, yaml.MappingNode):
+            return loader.construct_mapping(node)
+        if isinstance(node, yaml.SequenceNode):
+            return loader.construct_sequence(node)
+        return loader.construct_scalar(node)
+
+
+_ComposeLoader.add_constructor("!reset", _ComposeLoader._passthrough)
+_ComposeLoader.add_constructor("!override", _ComposeLoader._passthrough)
+
+
 @pytest.fixture(scope="module")
 def overlay_doc() -> dict:
     """Parsed overlay document or fail the suite.
@@ -54,7 +79,7 @@ def overlay_doc() -> dict:
         f"{PROD_OVERLAY} is missing — the production-shaped overlay "
         "must ship so an operator has a single-host non-HA path."
     )
-    return yaml.safe_load(PROD_OVERLAY.read_text())
+    return yaml.load(PROD_OVERLAY.read_text(), Loader=_ComposeLoader)
 
 
 @pytest.fixture(scope="module")

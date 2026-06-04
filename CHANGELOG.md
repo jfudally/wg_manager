@@ -45,6 +45,49 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
     tests pin the source-of-truth shape so a refactor that drops a
     service or breaks the passthrough contract trips before merge.
 
+- **End-to-end verification of the prod overlay surfaced four bugs;
+  all four fixed.** Walking the runbook on a clean Docker host
+  exercised every shipped code path the overlay touches and turned
+  up code-level shape mismatches between what the docs promised and
+  what the code delivered. Each is fixed with a regression test.
+
+  - **Compose `ports:` list merge** — the overlay's
+    `127.0.0.1:3306:3306` mappings were being concatenated with the
+    dev file's `0.0.0.0:3307:3306` instead of replacing it, so the
+    second host-port bind failed silently. Fixed with Compose v2.20's
+    `!override` tag on `mysql` / `valkey` / `vault` ports. Test
+    fixtures grew a custom `ComposeLoader` so PyYAML tolerates the
+    `!override` / `!reset` Compose-specific tags.
+  - **PEM chain newline missing.** `VaultPKI._issue_leaf` joined the
+    Vault `ca_chain` list with `"".join(...)` and `LocalDevPKI`
+    used `intermediate_pem + root_pem`. When the upstream PEM
+    lacked a trailing newline (Vault's modern API output), the
+    result was `-----END CERTIFICATE----------BEGIN CERTIFICATE-----`
+    on one line — rejected by strict consumers (`openssl x509`,
+    Python `ssl.SSLContext.load_verify_locations`, pymysql's
+    `ssl={ca: ...}`). New `wg_manager.pki._join_pems(*pems)` helper
+    normalises to strict-parser-safe output and is used at both
+    sites. 10 regression cases in `tests/test_pki_chain_join.py`.
+  - **Alembic `env.py` ignored MySQL TLS args.**
+    `engine_from_config(config_section, prefix="sqlalchemy.")` built
+    its engine without the `connect_args = {"ssl": {...}}` dict
+    `wg_manager.db._resolve_mysql_ssl` produces — so `make migrate`
+    against a `require_secure_transport=ON` MySQL failed with
+    `(3159) Connections using insecure transport are prohibited`.
+    Fixed by importing `_resolve_mysql_ssl` and passing
+    `connect_args=...` into `engine_from_config`. 3 regression
+    cases in `tests/test_alembic_env_tls.py`.
+  - **API healthcheck assumed `/healthz` bypasses mTLS at the TLS
+    layer; uvicorn's `ssl.CERT_REQUIRED` says otherwise.** The
+    Phase 3d cycle 1 doc claim is at the app layer
+    (`MTLSAuthMiddleware` skips auth for `/healthz`), but uvicorn
+    drops the TLS handshake first when no client cert is present.
+    The overlay's healthcheck now presents the operator client
+    cert (the `./tls` bind-mount already makes it available); the
+    inline comment + the runbook's "Known limitations" table both
+    flag the underlying doc-vs-implementation gap as planned
+    follow-on work.
+
 - **Production-shaped docker-compose overlay
   (`docker-compose.prod.yml`).** Adds an operator path from
   "dev stack on my laptop" to "single-host non-HA stack on a real
