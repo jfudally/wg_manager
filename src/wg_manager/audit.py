@@ -183,6 +183,7 @@ def persist(
     after: dict[str, Any] | None,
     payload: dict[str, Any] | None = None,
     request_id: str | None = None,
+    tenant_id: int | None = None,
 ) -> "AuditEvent":
     """Insert one :class:`AuditEvent` row + emit the matching log line.
 
@@ -247,6 +248,7 @@ def persist(
         after_hash=after_hash,
         payload=payload_blob,
         request_id=request_id,
+        tenant_id=tenant_id,
     )
     session.add(row)
     session.flush()
@@ -262,5 +264,6 @@ def persist(
         before_hash=before_hash,
         after_hash=after_hash,
         request_id=request_id,
+        tenant_id=tenant_id,
     )
     return row

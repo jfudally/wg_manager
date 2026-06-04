@@ -1645,7 +1645,7 @@ provisioning path are the three deliverables.
   reference the canonical metrics, every alert has expr +
   annotations.summary).
 
-### Phase 3b — Multi-tenant operator model `[~]` (cycles 1-2 shipped)
+### Phase 3b — Multi-tenant operator model `[~]` (cycles 1-3 shipped)
 
 **Design decisions** (locked 2026-06-03):
 
@@ -1735,11 +1735,58 @@ Five cycles:
     ``-1``; ``-1`` silently turns into "downgrade only the topmost
     revision" once 0015 lands on top, which would have let the
     test pass while testing nothing.
-- **Cycle 3 `[ ]`** — Tenant-aware filtering. Middleware reads the
-  operator's tenant set from the join table + filters every list
-  query. Mutating endpoints assert the operator has per-tenant
-  ``admin`` / ``operator`` role on the target's tenant. Audit
-  events record ``tenant_id``.
+- **Cycle 3 `[x]`** (2026-06-03) — Tenant-aware filtering.
+  Middleware reads the operator's tenant set from the join table +
+  filters every list query. Mutating endpoints assert the operator
+  has per-tenant ``admin`` / ``operator`` role on the target's
+  tenant. Audit events record ``tenant_id``.
+
+  Shipped:
+  - **Middleware tenant resolution.** New
+    ``MTLSAuthMiddleware._resolve_tenant_set`` reads the operator's
+    :class:`OperatorTenant` join rows once per admitted request and
+    stashes ``request.state.tenant_ids`` (sorted tuple),
+    ``tenant_roles`` (per-tenant role map), and ``is_super_admin``
+    (global ``Operator.role == admin`` bypass). OPTIONS preflight +
+    ``TLS_REQUIRED=false`` passthrough leave the slots ``None`` so
+    handlers can distinguish "auth disabled" from "admitted empty".
+  - **Tenant scope helper** (new
+    [`wg_manager.tenant_scope`](src/wg_manager/tenant_scope.py)).
+    Frozen ``TenantScope`` value object; ``get_tenant_scope``
+    FastAPI dep (reads from middleware-populated state, falls back
+    to DB lookup so the ``TLS_REQUIRED=false`` test path works
+    without test-side state injection); ``scope_filter(scope,
+    Model)`` returns a ``Model.tenant_id IN (...)`` expression or
+    ``None`` for super-admin; ``require_tenant_role`` raises 403
+    unless the operator has one of the listed per-tenant roles on
+    the target tenant.
+  - **List filtering** applied to ``/servers``, ``/clients``,
+    ``/ssh-keys``. Single-row ``GET`` / ``PATCH`` / ``DELETE``
+    returns 404 (not 403) on out-of-scope rows so the existence of
+    a row in another tenant is never leaked. ``PATCH`` / ``DELETE``
+    additionally call ``require_tenant_role(scope, row.tenant_id,
+    OperatorRole.admin, OperatorRole.operator)`` so auditor 403s
+    even when in scope.
+  - **AuditEvent.tenant_id populated.** ``audit.persist()`` grew an
+    optional ``tenant_id`` kwarg; threaded through every mutating
+    endpoint's ``audit.persist`` call (server.create, server.update,
+    client.delete, ssh_key.create, certificate.revoke). The
+    structured audit log line emitted alongside the row also carries
+    ``tenant_id``.
+  - **Schema + dashboard surface.** ``ServerRead`` / ``ClientRead``
+    / ``SSHKeyRead`` / ``CertificateRead`` schemas grow optional
+    ``tenant_id`` fields; matching ``tenant_id?: number | null``
+    additions in ``web/lib/types.ts``. Cycle 5 will polish the
+    dashboard with a tenant picker on resource create and a tenant
+    column on every list table.
+  - Tests: 6 new middleware tenant-resolution cases (``TestTenantSetResolution``
+    in [`tests/test_auth.py`](tests/test_auth.py)) + 25 new cases
+    in [`tests/test_tenant_scope.py`](tests/test_tenant_scope.py)
+    covering the value object, ``scope_filter``,
+    ``require_tenant_role``, server list / get-by-id / patch /
+    delete scoping, and audit-event tenant_id population. Backend
+    pytest 855 passed in ``local`` mode (was 824 on cycle 2's
+    merge); vitest 52/52; ``tsc --noEmit`` clean.
 - **Cycle 4 `[ ]`** — Per-tenant peer pools. IPAM partitioned per
   tenant: each tenant has its own subnet allocation; no IP
   collisions between tenants. ``Server.subnet`` no longer the

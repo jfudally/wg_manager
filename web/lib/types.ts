@@ -28,6 +28,12 @@ export interface SSHKey {
    * a future backend variant has a place to land.
    */
   mode: SSHKeyMode;
+  /**
+   * Phase 3b cycle 3 — tenant FK on the row. Nullable for legacy
+   * rows; pre-cycle-1 rows backfilled by Alembic 0014 carry
+   * `tenant_id=1` (the default tenant).
+   */
+  tenant_id: number | null;
 }
 
 export interface SSHKeyCreate {
@@ -82,6 +88,11 @@ export interface Server {
    * Used to flag rows pinned to a CA that's since been rotated.
    */
   host_cert_ca_public_key?: string | null;
+  /**
+   * Phase 3b cycle 3 — tenant FK. Nullable; backfilled rows carry
+   * `tenant_id=1`.
+   */
+  tenant_id?: number | null;
 }
 
 /**
@@ -151,6 +162,11 @@ export interface Client {
   is_manual: boolean;
   status: NodeStatus;
   created_at: string;
+  /**
+   * Phase 3b cycle 3 — tenant FK. Nullable; backfilled rows carry
+   * `tenant_id=1`.
+   */
+  tenant_id?: number | null;
 }
 
 export interface ClientCreate {
@@ -357,6 +373,11 @@ export interface Certificate {
   revoked: boolean;
   revoked_at: string | null;
   created_at: string;
+  /**
+   * Phase 3b cycle 3 — tenant FK. Nullable; backfilled rows carry
+   * `tenant_id=1`.
+   */
+  tenant_id?: number | null;
 }
 
 /** Body for ``POST /certs``. Mirrors `CertificateIssueRequest`. */

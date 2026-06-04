@@ -22,7 +22,13 @@ from wg_manager.schemas import (
     ClientRegisterResponse,
     ClientUpdate,
 )
+from wg_manager.models import OperatorRole
 from wg_manager.tasks import provision_client_task, reconfigure_server_task
+from wg_manager.tenant_scope import (
+    ScopeDep,
+    require_tenant_role,
+    scope_filter,
+)
 from wg_manager.wireguard import (
     generate_wireguard_keypair,
     render_manual_client_config,
@@ -232,9 +238,19 @@ def reprovision_client(client_id: int, session: _SessionDep) -> ClientRegisterRe
 
 
 @router.get("", response_model=list[ClientRead])
-def list_clients(session: _SessionDep) -> list[Client]:
-    """Return all registered clients."""
-    return list(session.exec(select(Client)).all())
+def list_clients(
+    session: _SessionDep, scope: ScopeDep
+) -> list[Client]:
+    """Return all registered clients visible to the calling operator.
+
+    Phase 3b cycle 3 narrows the result set to the operator's tenant
+    join set; super-admin sees every row.
+    """
+    query = select(Client)
+    where_expr = scope_filter(scope, Client)
+    if where_expr is not None:
+        query = query.where(where_expr)
+    return list(session.exec(query).all())
 
 
 @router.get(
@@ -304,17 +320,24 @@ def export_ssh_config(session: _SessionDep) -> str:
 
 
 @router.get("/{client_id}", response_model=ClientRead)
-def get_client(client_id: int, session: _SessionDep) -> Client:
-    """Return a single client by ID."""
+def get_client(
+    client_id: int, session: _SessionDep, scope: ScopeDep
+) -> Client:
+    """Return a single client by ID; 404 to out-of-scope operators."""
     row = session.get(Client, client_id)
     if row is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
         raise HTTPException(status_code=404, detail="Client not found")
     return row
 
 
 @router.patch("/{client_id}", response_model=ClientRead)
 def update_client(
-    client_id: int, payload: ClientUpdate, session: _SessionDep
+    client_id: int,
+    payload: ClientUpdate,
+    session: _SessionDep,
+    scope: ScopeDep,
 ) -> Client:
     """Partially update operator-supplied fields on a client.
 
@@ -330,6 +353,13 @@ def update_client(
     row = session.get(Client, client_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Client not found")
+    # Phase 3b cycle 3 — same 404-on-out-of-scope / per-tenant role
+    # gate shape as /servers.
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
+        raise HTTPException(status_code=404, detail="Client not found")
+    require_tenant_role(
+        scope, row.tenant_id, OperatorRole.admin, OperatorRole.operator
+    )
 
     updates = payload.model_dump(exclude_unset=True, exclude_none=True)
 
@@ -363,7 +393,10 @@ def update_client(
     status_code=status.HTTP_202_ACCEPTED,
 )
 def delete_client(
-    client_id: int, request: Request, session: _SessionDep
+    client_id: int,
+    request: Request,
+    session: _SessionDep,
+    scope: ScopeDep,
 ) -> ClientDeleteResponse:
     """Delete a client and dispatch a hub reconfigure to drop the peer.
 
@@ -383,8 +416,15 @@ def delete_client(
     row = session.get(Client, client_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Client not found")
+    # Phase 3b cycle 3 gate.
+    if not scope.is_super_admin and row.tenant_id not in scope.tenant_ids:
+        raise HTTPException(status_code=404, detail="Client not found")
+    require_tenant_role(
+        scope, row.tenant_id, OperatorRole.admin, OperatorRole.operator
+    )
 
     server_id = row.server_id
+    row_tenant_id = row.tenant_id
     before = row.model_dump(mode="json")
     session.delete(row)
     audit.persist(
@@ -397,6 +437,7 @@ def delete_client(
         before=before,
         after=None,
         payload={"name": before.get("name"), "server_id": server_id},
+        tenant_id=row_tenant_id,
     )
     session.commit()
 

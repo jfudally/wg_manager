@@ -266,12 +266,28 @@ def _build_app(
     def open_route(request: Request) -> dict:
         subject = getattr(request.state, "cert_subject", None)
         op = getattr(request.state, "operator", None)
+        tenant_ids = getattr(request.state, "tenant_ids", None)
+        tenant_roles = getattr(request.state, "tenant_roles", None)
+        is_super_admin = getattr(request.state, "is_super_admin", None)
         return {
             "cn": subject.common_name if subject else None,
             "serial": subject.serial if subject else None,
             "operator_cn": op.cn if op else None,
             "operator_role": op.role.value if op else None,
             "operator_status": op.status.value if op else None,
+            # Phase 3b cycle 3 — middleware stashes the operator's
+            # tenant set + per-tenant roles + super-admin bit so list
+            # filters and mutation gates can consult them without a
+            # second DB round-trip per request.
+            "tenant_ids": (
+                list(tenant_ids) if tenant_ids is not None else None
+            ),
+            "tenant_roles": (
+                {str(k): v.value for k, v in tenant_roles.items()}
+                if tenant_roles is not None
+                else None
+            ),
+            "is_super_admin": is_super_admin,
         }
 
     @application.get("/protected")
@@ -1008,3 +1024,216 @@ class TestRevokedCertGate:
             resp = client.get("/open")
 
         assert resp.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Phase 3b cycle 3 — middleware resolves the operator's tenant set
+# ---------------------------------------------------------------------------
+
+
+def _attach_tenant(
+    session: Session,
+    operator: Operator,
+    tenant_id: int,
+    role: OperatorRole = OperatorRole.operator,
+) -> None:
+    """Insert an OperatorTenant join row directly.
+
+    Cycle 3 reads this row at middleware time to populate
+    ``request.state.tenant_ids`` / ``tenant_roles`` so list and
+    mutation gates can consult them without a second DB round-trip
+    per request. The helper sits in the test module so the
+    production code never depends on test scaffolding.
+    """
+    from wg_manager.models import OperatorTenant
+
+    row = OperatorTenant(
+        operator_id=int(operator.id or 0),
+        tenant_id=tenant_id,
+        role=role,
+    )
+    session.add(row)
+    session.commit()
+
+
+def _seed_tenant(session: Session, slug: str) -> int:
+    """Insert a Tenant row and return its id."""
+    from wg_manager.models import Tenant
+
+    row = Tenant(name=slug.title(), slug=slug)
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return int(row.id or 0)
+
+
+class TestTenantSetResolution:
+    """Phase 3b cycle 3 — :class:`MTLSAuthMiddleware` reads the
+    operator's :class:`OperatorTenant` join rows on every admitted
+    request and stashes them on ``request.state``.
+
+    Three slots land:
+
+    * ``tenant_ids: tuple[int, ...]`` — every tenant id the operator
+      is joined to, in id order. Empty tuple is a legitimate state
+      (a non-super-admin operator who hasn't been attached to any
+      tenant yet); list endpoints turn that into "no rows visible".
+    * ``tenant_roles: dict[int, OperatorRole]`` — per-tenant role map
+      keyed by tenant id. Mutation gates consult this to decide
+      whether the operator is allowed to mutate a row in a given
+      tenant.
+    * ``is_super_admin: bool`` — ``True`` iff
+      :attr:`Operator.role` is :attr:`OperatorRole.admin`. The
+      ROADMAP design decision: the global role keeps "system scope"
+      semantics — a super-admin sees every tenant + can mutate any
+      row regardless of per-tenant role. Per-tenant role on the join
+      gates non-super-admin access.
+
+    The middleware does not change the auth decision (admit / reject)
+    based on the tenant set — every reject reason that landed in
+    CP3.2 / CP5.3 still applies the same way. Tenant resolution is
+    pure side-data for downstream filtering, so a rollback of cycle
+    3's filter helpers leaves the admit path identical to cycle 2.
+    """
+
+    def test_operator_with_no_joins_gets_empty_tenant_set(
+        self, ca: LocalDevPKI, session: Session
+    ) -> None:
+        """A registered operator with zero ``OperatorTenant`` rows is
+        admitted; ``tenant_ids`` is the empty tuple and
+        ``tenant_roles`` is the empty dict."""
+        _add_operator(session, "lonely@wg.local", role=OperatorRole.operator)
+        cert = ca.issue_client_cert(
+            common_name="lonely@wg.local",
+            sans=["lonely@wg.local"],
+            ttl_seconds=300,
+        )
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        resp = client.get("/open")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["tenant_ids"] == []
+        assert body["tenant_roles"] == {}
+        assert body["is_super_admin"] is False
+
+    def test_operator_joined_to_one_tenant_surfaces_id_and_role(
+        self, ca: LocalDevPKI, session: Session
+    ) -> None:
+        """A non-super-admin operator joined to one tenant with role
+        ``operator`` shows up with that tenant id + role."""
+        op = _add_operator(
+            session, "alice@wg.local", role=OperatorRole.operator
+        )
+        tenant_id = _seed_tenant(session, "acme")
+        _attach_tenant(session, op, tenant_id, OperatorRole.operator)
+
+        cert = ca.issue_client_cert(
+            common_name="alice@wg.local",
+            sans=["alice@wg.local"],
+            ttl_seconds=300,
+        )
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        resp = client.get("/open")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["tenant_ids"] == [tenant_id]
+        assert body["tenant_roles"] == {str(tenant_id): "operator"}
+        assert body["is_super_admin"] is False
+
+    def test_operator_joined_to_multiple_tenants_surfaces_each_role(
+        self, ca: LocalDevPKI, session: Session
+    ) -> None:
+        """Multi-tenant operator — each join's role lands on the map."""
+        op = _add_operator(
+            session, "multi@wg.local", role=OperatorRole.operator
+        )
+        acme_id = _seed_tenant(session, "acme")
+        beta_id = _seed_tenant(session, "beta")
+        _attach_tenant(session, op, acme_id, OperatorRole.admin)
+        _attach_tenant(session, op, beta_id, OperatorRole.auditor)
+
+        cert = ca.issue_client_cert(
+            common_name="multi@wg.local",
+            sans=["multi@wg.local"],
+            ttl_seconds=300,
+        )
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        resp = client.get("/open")
+
+        body = resp.json()
+        assert set(body["tenant_ids"]) == {acme_id, beta_id}
+        assert body["tenant_roles"][str(acme_id)] == "admin"
+        assert body["tenant_roles"][str(beta_id)] == "auditor"
+        assert body["is_super_admin"] is False
+
+    def test_global_admin_operator_is_super_admin(
+        self, ca: LocalDevPKI, session: Session
+    ) -> None:
+        """``Operator.role = admin`` → ``is_super_admin = True``. The
+        ROADMAP locks this design decision: global role = system
+        scope, per-tenant role on join = per-tenant scope.
+
+        Tenant set is still surfaced (the cycle 2 backfill gives
+        existing admins a default-tenant row) — list filters skip
+        when ``is_super_admin`` is True regardless of what's in
+        ``tenant_ids``.
+        """
+        op = _add_operator(
+            session, "root@wg.local", role=OperatorRole.admin
+        )
+        tenant_id = _seed_tenant(session, "default-like")
+        _attach_tenant(session, op, tenant_id, OperatorRole.admin)
+
+        cert = ca.issue_client_cert(
+            common_name="root@wg.local",
+            sans=["root@wg.local"],
+            ttl_seconds=300,
+        )
+        client = TestClient(
+            _build_app(tls_required=True, inject_chain=[cert.cert_pem])
+        )
+
+        resp = client.get("/open")
+
+        body = resp.json()
+        assert body["is_super_admin"] is True
+        assert body["tenant_ids"] == [tenant_id]
+
+    def test_tls_not_required_leaves_tenant_slots_none(self) -> None:
+        """Dev / test passthrough: every state slot is ``None`` so a
+        handler can distinguish "auth disabled" from "auth admitted
+        empty set"."""
+        client = TestClient(_build_app(tls_required=False))
+
+        resp = client.get("/open")
+
+        body = resp.json()
+        assert body["tenant_ids"] is None
+        assert body["tenant_roles"] is None
+        assert body["is_super_admin"] is None
+
+    def test_options_preflight_leaves_tenant_slots_none(self) -> None:
+        """CORS preflight short-circuit also skips tenant resolution.
+
+        The middleware's OPTIONS branch already bypasses the operator
+        lookup; the tenant-resolution slot must follow the same rule
+        so the dashboard's CORS negotiation continues to work without
+        a 401 from a downstream gate.
+        """
+        client = TestClient(_build_app(tls_required=True))
+        resp = client.options("/open")
+        # OPTIONS doesn't carry the /open handler's response body in
+        # most clients — assert non-401 instead, mirroring the CP3.2
+        # preflight test.
+        assert resp.status_code != 401

@@ -101,6 +101,10 @@ class SSHKeyRead(BaseModel):
     schema. ``mode`` is kept (always ``ca`` in the post-CP4.4 schema)
     so the dashboard's per-row badge keeps rendering and so a future
     backend variant has a place to land.
+
+    Phase 3b cycle 3 surfaces ``tenant_id`` so the dashboard can
+    render the tenant column (nullable: existing rows backfilled
+    by Alembic 0014 carry ``tenant_id=1``).
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -109,6 +113,7 @@ class SSHKeyRead(BaseModel):
     name: str
     created_at: datetime
     mode: SSHKeyMode = SSHKeyMode.ca
+    tenant_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +194,10 @@ class ServerRead(BaseModel):
     public_key: str
     status: NodeStatus
     created_at: datetime
+    # Phase 3b cycle 3 — surface the tenant FK so the dashboard can
+    # render the tenant column (nullable: existing rows backfilled
+    # by Alembic 0014 carry ``tenant_id=1``).
+    tenant_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +283,8 @@ class ClientRead(BaseModel):
     is_manual: bool
     status: NodeStatus
     created_at: datetime
+    # Phase 3b cycle 3 — see ServerRead.tenant_id.
+    tenant_id: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +536,8 @@ class CertificateRead(BaseModel):
     revoked: bool
     revoked_at: datetime | None
     created_at: datetime
+    # Phase 3b cycle 3 — see ServerRead.tenant_id.
+    tenant_id: int | None = None
     # Phase 2d CP4.3 — populated when the row was minted via
     # ``wg-manager certs issue --out-cert ...``. ``NULL`` for rows
     # minted via ``POST /certs`` (the API never writes to disk) and

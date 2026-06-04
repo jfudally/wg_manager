@@ -558,6 +558,7 @@ def revoke_cert(
             before=before,
             after=row.model_dump(mode="json"),
             payload={"serial": row.serial, "common_name": row.common_name},
+            tenant_id=row.tenant_id,
         )
         session.commit()
         session.refresh(row)
