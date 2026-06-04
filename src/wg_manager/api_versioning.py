@@ -43,6 +43,9 @@ _EXEMPT_PREFIXES: tuple[str, ...] = (
     "/docs",
     "/redoc",
     "/metrics",
+    # Phase 3d cycle 1 — load-balancer probes are infra, not API.
+    "/healthz",
+    "/readyz",
 )
 
 

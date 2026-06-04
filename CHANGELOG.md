@@ -10,6 +10,47 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Phase 3d cycle 1 — statelessness audit + `/healthz` + `/readyz`
+  + HA startup guards.** Foundational slice of Phase 3d (HA control
+  plane). Verifies the API is safe to run as two+ replicas behind a
+  load balancer and adds the probes the LB uses to route traffic.
+
+  - **Statelessness audit.** Walked every module on the request
+    path and classified module-level state. Verdict: the API is
+    mostly stateless. Two genuine cross-replica hazards surfaced
+    — the `LocalDevPKI` and `LocalDevSSHCA` per-process root-cert
+    caches in dev backends would mint divergent roots across
+    replicas if unpinned. Production (Vault for both) eliminates
+    the hazard.
+  - **Probe surface.** New `wg_manager.routers.health` ships
+    `/healthz` (liveness — unconditional 200; does not touch the
+    DB) and `/readyz` (readiness — 200 when MySQL is reachable,
+    503 with per-dep status otherwise). Dual-mounted at `/v1` per
+    Phase 3c. Both bypass mTLS via the new
+    `MTLSAuthMiddleware.is_health_path` exemption (load balancers
+    don't carry operator certs) and are exempt from the
+    deprecation envelope (operational, not API surface).
+  - **HA startup guards.** New
+    `wg_manager.main._enforce_ha_startup_guards` hard-fails at
+    `create_app()` time when `TLS_REQUIRED=true` AND
+    `PKI_BACKEND=local` (or `SSH_CA_BACKEND=local`) without the
+    corresponding `*_LOCAL_DEV_*` PEMs pinned. Error names the env
+    vars to set so an operator fixes the misconfiguration without
+    reading source. Dev posture (`TLS_REQUIRED=false`) is
+    permitted to run the local backends unpinned.
+  - **Deployment doc.** New `docs/deploy/ha-control-plane.md`
+    captures the topology (passthrough LB, no session stickiness,
+    mTLS termination at the replica), the probe contract (why two
+    probes, not one), a Statelessness checklist for future
+    maintainers, and an nginx LB example.
+  - **Tests:** 9 health-probe cases (`tests/test_health.py`) + 5
+    startup-guard cases (`tests/test_ha_startup_guards.py`). Two
+    existing `test_main_tls_wiring.py` cases updated to pin
+    `PKI_BACKEND=vault` + `SSH_CA_BACKEND=vault` since they
+    exercise production posture and would otherwise trip the new
+    guard. Backend pytest 928/928 in `local` mode (was 914 on
+    Phase 3c's merge).
+
 - **Phase 3c — public API versioning (`/v1` namespace + deprecation
   policy).** Every router that shipped under an unprefixed path is
   now **dual-mounted** at the same path under `/v1`. Existing

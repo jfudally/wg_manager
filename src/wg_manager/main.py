@@ -21,6 +21,7 @@ from wg_manager.routers import (
     certs,
     clients,
     crypto,
+    health,
     servers,
     ssh_keys,
     tasks,
@@ -58,6 +59,43 @@ def _parse_cors_origins(raw: str) -> list[str]:
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
+def _enforce_ha_startup_guards(s: Settings) -> None:
+    """Phase 3d cycle 1 — hard-fail when a dev-only backend would
+    be cross-replica unsafe.
+
+    The ``LocalDevPKI`` / ``LocalDevSSHCA`` backends generate a
+    fresh in-process root when no ``*_LOCAL_DEV_*`` PEMs are
+    pinned. That's fine for a single-process dev / test deployment
+    but catastrophic with two API replicas: each replica mints its
+    own root, so a cert issued by replica A is unverifiable by
+    replica B. The guard fires in production posture
+    (``TLS_REQUIRED=true``) only — dev / test (``TLS_REQUIRED=false``)
+    is permitted to run the dev backends unpinned.
+
+    Raises ``RuntimeError`` naming the env vars to set so an
+    operator can fix the misconfiguration without reading source.
+    """
+    if not s.tls_required:
+        return
+    if s.pki_backend == "local" and not s.pki_local_dev_root_pem:
+        raise RuntimeError(
+            "PKI_BACKEND=local in production posture (TLS_REQUIRED=true) "
+            "requires PKI_LOCAL_DEV_ROOT_PEM, PKI_LOCAL_DEV_ROOT_KEY_PEM, "
+            "PKI_LOCAL_DEV_INT_PEM, PKI_LOCAL_DEV_INT_KEY_PEM to be set "
+            "(otherwise each replica generates its own divergent root). "
+            "Use PKI_BACKEND=vault for production, or pin the four PEMs "
+            "across every replica."
+        )
+    if s.ssh_ca_backend == "local" and not s.ssh_ca_local_dev_pem:
+        raise RuntimeError(
+            "SSH_CA_BACKEND=local in production posture (TLS_REQUIRED=true) "
+            "requires SSH_CA_LOCAL_DEV_PEM to be set (otherwise each "
+            "replica generates its own divergent CA). Use "
+            "SSH_CA_BACKEND=vault for production, or pin the PEM across "
+            "every replica."
+        )
+
+
 def create_app() -> FastAPI:
     """Build and return the FastAPI application.
 
@@ -71,6 +109,7 @@ def create_app() -> FastAPI:
     """
     application = FastAPI(title="wg-manager", version="0.1.0")
     app_settings = Settings()
+    _enforce_ha_startup_guards(app_settings)
 
     # CORS is added *first* so it ends up *outermost* in the stack
     # (Starlette runs middleware in reverse-added order). That way the
@@ -122,6 +161,11 @@ def create_app() -> FastAPI:
         certs.router,
         audit.router,
         tenants.router,
+        # Phase 3d cycle 1 — load-balancer probes. Dual-mounted at
+        # both / and /v1 so an operator hitting the legacy or v1
+        # surface sees the same probe answers. The auth middleware
+        # bypasses these paths regardless of TLS_REQUIRED.
+        health.router,
     )
     for r in _ROUTERS:
         application.include_router(r)

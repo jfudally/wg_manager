@@ -301,6 +301,24 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self._settings = settings or Settings()
 
+    @staticmethod
+    def is_health_path(path: str) -> bool:
+        """Return ``True`` iff ``path`` is a Phase 3d health probe.
+
+        Load balancers don't carry operator certs. The probes
+        registered by :mod:`wg_manager.routers.health` must answer
+        even when ``TLS_REQUIRED=true`` so the LB can take an
+        unhealthy replica out of rotation. The set is small and
+        explicit (no prefix-match) — extending it requires a
+        deliberate code change rather than a silently-shaped path.
+        """
+        # Local import keeps the auth module's dep graph tight —
+        # importing the router here would pull FastAPI into the
+        # auth-decision hot path.
+        from wg_manager.routers.health import HEALTH_PATHS
+
+        return path in HEALTH_PATHS
+
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         """Run the decision chain before forwarding to the app.
 
@@ -310,6 +328,18 @@ class MTLSAuthMiddleware(BaseHTTPMiddleware):
         carry no auth signal — emitting on them would just drown the
         audit stream in noise for the CORS-OPTIONS workload.
         """
+        # Phase 3d cycle 1 — load-balancer health probes bypass auth.
+        # Treated like the OPTIONS preflight: state slots set to None
+        # so handlers reading ``request.state.cert_subject`` don't
+        # trip an AttributeError, and audit stays quiet so probe
+        # traffic doesn't drown the audit stream.
+        if self.is_health_path(request.url.path):
+            request.state.cert_subject = None
+            request.state.operator = None
+            request.state.tenant_ids = None
+            request.state.tenant_roles = None
+            request.state.is_super_admin = None
+            return await call_next(request)
         if not self._settings.tls_required:
             request.state.cert_subject = None
             request.state.operator = None
