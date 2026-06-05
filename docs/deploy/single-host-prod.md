@@ -97,6 +97,109 @@ The dashboard is reachable at `http://${WG_MANAGER_WEB_BIND_ADDR}:3000`
 `api:8000` using the same operator cert, so the browser sees plain
 HTTP.
 
+## Onboarding a target host (SSH CA install)
+
+Before wg-manager can SSH into a freshly-provisioned VPN hub box,
+the box needs to trust the Vault SSH CA — that means
+`/etc/ssh/wg-manager-user-ca.pub`, a signed host cert, and an
+`sshd_config.d` drop-in pointing at them. The full design + cert
+profiles live in `docs/operator-guide.md` §3; this section is the
+recipe for running the install from inside the prod stack.
+
+The `wg-manager bootstrap-host` CLI does the install in one shot
+— opens **one** TOFU-permitted SSH session with your existing key
+(the only legitimate TOFU site in the codebase, by design), mints
+a host cert against Vault, drops the three files, reloads sshd,
+exits. Idempotent — re-running rotates the host cert in place
+before TTL expiry.
+
+### Prerequisites on the target host
+
+| Requirement | Default on stock Linux | How to fix if missing |
+|---|---|---|
+| ed25519 host key at `/etc/ssh/ssh_host_ed25519_key.pub` | Generated at sshd install on every modern distro | `sudo ssh-keygen -A` on the target |
+| Sudo for your SSH user (writes to `/etc/ssh/`) | yes for `root`, `ubuntu`, etc. | passwordless sudo (or a NOPASSWD line for the specific commands) |
+| Your SSH user is in `SSH_CA_VAULT_ALLOWED_USERS` | `root,ubuntu,ec2-user,azureuser,debian,admin` | extend `SSH_CA_VAULT_ALLOWED_USERS` in `.env.prod`, `make prod-down -v` + `make prod-up` (re-runs `ssh-ca-bootstrap`) |
+
+### The install — run from the prod-stack host
+
+The CLI is baked into the api/worker image, so the cleanest
+invocation is a one-shot container that joins the compose network
+where Vault lives and mounts your operator SSH key read-only:
+
+```bash
+docker compose --env-file .env.prod \
+    -f docker-compose.yml -f docker-compose.prod.yml \
+    run --rm \
+    -v ~/.ssh:/keys:ro \
+    --entrypoint wg-manager \
+    api \
+    bootstrap-host \
+      --hostname <target-fqdn-or-ip> \
+      --ssh-user <user> \
+      --ssh-key /keys/<your-key-filename>
+```
+
+Notes:
+
+- `--rm` so the container disappears after the install.
+- `run` inherits the api service's env (`VAULT_ADDR=http://vault:8200`,
+  `VAULT_TOKEN=…`, the four backend pins) so the CLI hits Vault on
+  the docker network without any extra wiring.
+- Optional flags: `--principal <name>` (when the cert's host
+  principal differs from the SSH dial-name — typically internal
+  DNS vs public IP), `--ssh-key-passphrase <pass>` (or set
+  `WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE`), `--ssh-port 22`,
+  `--ttl-seconds 86400`, `--connect-timeout 15`.
+
+Expected output:
+
+```
+[OK] bootstrapped <hostname>: cert serial=<n> valid_until=<ts>
+```
+
+`bootstrap-host` deliberately does **not** write to the wg-manager
+DB. Two operator actions on purpose so you can verify the install
+landed before committing a `server` row.
+
+### Register the server (DB-side)
+
+Dashboard: **Servers → + Register hub server**, fill in hostname,
+SSH port (22), SSH username (the account on the box that will
+accept the CA-minted cert — `root` for self-managed boxes,
+`ubuntu` for Ubuntu AMIs, etc.), pick the SSH role from step 2 of
+`docs/operator-guide.md`.
+
+CLI equivalent:
+
+```bash
+docker compose --env-file .env.prod \
+    -f docker-compose.yml -f docker-compose.prod.yml \
+    run --rm \
+    --entrypoint wg-manager \
+    api \
+    servers register \
+      -H <target-fqdn-or-ip> \
+      -u <user> \
+      -e <target-fqdn-or-ip> \
+      -k <role-id>
+```
+
+From here every wg-manager SSH session into that host uses a fresh
+5-minute CA-minted user cert with `permit-pty` — no stored private
+key on the wg-manager side, no `authorized_keys` entry on the
+target side.
+
+### Re-running against an already-bootstrapped host
+
+Safe to re-run any time — `bootstrap-host` rotates the host cert
+in place before TTL expiry. The 24h default host-cert TTL
+(`SSH_HOST_CERT_TTL_SECONDS`) pairs cleanly with a cron / systemd
+timer firing the same command nightly. The wg-manager API also
+re-installs a fresh host cert during `POST
+/servers/{id}/rotate-host-cert` (Phase 2c CP3) once the row is
+registered.
+
 ## What the self-bootstrap actually does
 
 Two run-to-completion containers do the work. They use the same
