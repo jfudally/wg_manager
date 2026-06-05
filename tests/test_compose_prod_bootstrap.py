@@ -158,6 +158,39 @@ class TestBootstrapRestartPolicy:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Bootstrap user — must be root for cross-platform tls/ writability
+# ---------------------------------------------------------------------------
+
+
+class TestBootstrapUser:
+    """Bootstrap containers must run as root (``user: "0:0"``).
+
+    The wg-manager image's runtime user is ``wgmanager`` (UID 1001 per
+    the Phase 2f Dockerfile). On a Linux host the bind-mounted
+    ``./tls`` directory is owned by the operator's UID (typically
+    1000) — UID 1001 can't write into it. Docker Desktop on Mac papers
+    over the mismatch transparently; pure Linux hosts don't. Running
+    the bootstrap container as root is the portable fix; both
+    bootstrap scripts chown their outputs back to 1001:1001 at the
+    end so the runtime tier can read them.
+    """
+
+    @pytest.mark.parametrize(
+        "name", ["bootstrap-substrate", "bootstrap-app"]
+    )
+    def test_bootstrap_runs_as_root(
+        self, services: dict, name: str
+    ) -> None:
+        user = services[name].get("user")
+        assert str(user) in ("0:0", "0", "root"), (
+            f"{name} must declare `user: \"0:0\"` so it can write to "
+            "the bind-mounted ./tls on Linux hosts (UID 1001 from the "
+            "Dockerfile can't write into a directory owned by the "
+            f"operator's UID). Got user={user!r}."
+        )
+
+
 class TestBootstrapTlsMount:
     """Both bootstrap containers must mount ``./tls`` WRITABLE — they
     mint cert files there. The api/worker/web mounts are read-only;

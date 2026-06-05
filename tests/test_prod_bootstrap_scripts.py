@@ -244,3 +244,60 @@ class TestReRunSafety:
             "Phase 2 script must guard cert mints behind file-existence "
             "tests so re-running `make prod-up` is idempotent."
         )
+
+
+# ---------------------------------------------------------------------------
+# UID handoff to the runtime tier
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeUidHandoff:
+    """Both scripts run as root (so the bind-mounted ./tls is writable
+    on Linux). They must end by chowning the cert tree to the
+    Dockerfile's runtime user (UID 1001 — `wgmanager`) so api / worker
+    / web can read the certs.
+    """
+
+    @pytest.mark.parametrize(
+        "body_fixture", ["substrate_body", "app_body"]
+    )
+    def test_chowns_tls_to_runtime_user(
+        self, request: pytest.FixtureRequest, body_fixture: str
+    ) -> None:
+        body = request.getfixturevalue(body_fixture)
+        # Either `chown -R 1001:1001` or `chown -R wgmanager:wgmanager`
+        # is acceptable. Using the numeric UID/GID is more portable
+        # since the wg-manager image's group name might not exist on
+        # the host filesystem.
+        has_numeric = "chown -R 1001:1001" in body or "chown -R 1001" in body
+        has_named = "chown -R wgmanager" in body
+        assert has_numeric or has_named, (
+            f"{body_fixture} must end by chowning the tls/ tree to the "
+            "runtime user (UID 1001 from the Phase 2f Dockerfile) so "
+            "api/worker/web can read the certs after Phase 1/2 (root) "
+            "writes them. Without this, the runtime tier 403s on cert "
+            "load on Linux hosts."
+        )
+
+    @pytest.mark.parametrize(
+        "body_fixture", ["substrate_body", "app_body"]
+    )
+    def test_chmods_keys_world_readable(
+        self, request: pytest.FixtureRequest, body_fixture: str
+    ) -> None:
+        # Private keys default to mode 0o600 from `wg-manager certs
+        # issue`. mysql:8 inside its container runs as UID 999 — it
+        # can't read a 0o600 file owned by 1001. The bootstrap script
+        # explicitly relaxes key files to 0o644 so any container UID
+        # (1001 for wg-manager, 999 for mysql, etc.) can read them.
+        # The ./tls directory permissions are the security boundary
+        # on the host side.
+        body = request.getfixturevalue(body_fixture)
+        has_chmod_keys = "*.key" in body and "0644" in body
+        has_explicit_chmod = "chmod 0644" in body
+        assert has_chmod_keys or has_explicit_chmod, (
+            f"{body_fixture} must chmod *.key files to 0644 at the "
+            "end so non-1001 container UIDs (mysql:999) can read "
+            "them. Without this, mysqld fails at start with `SSL "
+            "error: Unable to get private key`."
+        )

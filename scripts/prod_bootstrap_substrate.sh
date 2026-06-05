@@ -100,4 +100,32 @@ else
     test -f "${TLS_DIR}/mysql/client-ca.crt"  || { echo "ERROR: MySQL client CA chain was not written"; exit 1; }
 fi
 
+# ----- 5. Hand outputs off to the runtime tier -----
+#
+# This is the trickiest part of the cross-host story. The bootstrap
+# container runs as root (so the bind-mounted ./tls is writable on
+# Linux hosts where the operator's UID != 1001). But the downstream
+# consumers run as DIFFERENT non-root UIDs in different containers:
+#
+#   * wg-manager (api / worker / web) → UID 1001 (`wgmanager` in the
+#     Phase 2f Dockerfile)
+#   * mysql:8                          → UID 999 (`mysql` in the
+#     mysql:8 image)
+#
+# Both need to read tls/mysql/server.{crt,key} + tls/mysql/ca.crt
+# (mysql reads the server side; the apps re-use the chain). And
+# both need to read the cert pairs in their own paths. The cleanest
+# portable fix that doesn't bake a `mysql:999` magic number into
+# this script: chown to 1001:1001 for ergonomic ownership and chmod
+# **keys** to 0644 so any container UID can read them.
+#
+# Security: 0644 on private keys is acceptable here because the
+# enclosing ./tls directory itself is what gates host-side access —
+# operators on a shared host should `chmod 700 ./tls` to keep
+# non-operator users out. The runbook calls this out explicitly.
+echo "==> Chowning ${TLS_DIR} to wgmanager (1001:1001) for the runtime tier..."
+chown -R 1001:1001 "${TLS_DIR}"
+echo "==> Setting key file modes to 0644 so non-1001 container UIDs (mysql=999) can read..."
+find "${TLS_DIR}" -type f -name "*.key" -exec chmod 0644 {} \;
+
 echo "==> Phase 1 (substrate bootstrap) complete"
