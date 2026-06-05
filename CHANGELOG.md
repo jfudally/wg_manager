@@ -8,6 +8,106 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+## [v0.3.0] - 2026-06-05
+
+**Release theme**: Vault production posture. Closes the largest
+"Known limitations" entry in `single-host-prod.md` — Vault now
+runs with a real **file storage backend** instead of `-dev` mode,
+and an automated init+unseal layer keeps the operator UX identical
+to v0.2.x (edit `.env.prod`, `make prod-up`, done). State persists
+across container restarts, so the `bootstrap-host`-installed CA
+pubkey on a target host stays valid through a Vault container
+restart — the exact bug class that motivated this work.
+
+### Added
+
+- **Production-mode Vault with auto-init + auto-unseal (PR #54).**
+  The prod overlay swaps `vault server -dev` (in-memory, fixed
+  root token) for `vault server -config=/vault/config/vault.hcl`
+  with file storage at `/vault/file` on the
+  `wg_manager_vault_data` named volume.
+
+  - **`docker/vault/vault.hcl`** — file storage, HTTP listener on
+    `0.0.0.0:8200`, ui on, `disable_mlock = true` for portability.
+    No listener TLS — Vault is the PKI source for every other
+    cert in the stack, so the listener can't depend on a Vault-
+    minted cert at boot. A dedicated listener-TLS cycle is the
+    honest next step.
+  - **`scripts/vault_init_unseal.sh`** — idempotent state machine
+    that runs from `prod_bootstrap_substrate.sh` BEFORE the engine
+    bootstraps. Probes `/v1/sys/init` + `/v1/sys/seal-status`. On
+    uninit: calls `vault operator init` via the HTTP API with 5
+    shares / 3 threshold, captures the JSON output to
+    `${VAULT_INIT_FILE}` (default `/app/vault-init.json`) at mode
+    0600 owned by UID 1001 (the wg-manager runtime UID), then
+    unseals. On sealed: reads the same file and unseals. On
+    unsealed: no-op.
+  - **`docker/entrypoint-wg-manager.sh`** — tiny shim baked into
+    the wg-manager image. Reads `vault-init.json` when present +
+    non-empty, exports the `root_token` field as `VAULT_TOKEN`
+    before `exec`-ing the CMD. First-boot tolerant (empty file
+    → no-op).
+  - **`docker-compose.prod.yml` vault service** drops `VAULT_DEV_*`
+    + `VAULT_TOKEN` env (blanked to `""` so Compose's environment-
+    map merge doesn't ride the dev compose's values through).
+    `entrypoint: ["vault"]` bypasses the official image's
+    `docker-entrypoint.sh` which would otherwise APPEND
+    `-dev-listen-address` and race vault.hcl's listener.
+    Healthcheck override accepts 501 (uninit) / 503 (sealed) as
+    healthy via `?standbyok=true&sealedcode=204&uninitcode=204`
+    so bootstrap-substrate's `depends_on:
+    { vault: service_healthy }` trips on the listener being up
+    rather than the substrate being bootstrapped.
+  - **api / worker / bootstrap-app** lose their `VAULT_TOKEN`
+    env — the entrypoint shim sources it from `vault-init.json`
+    instead. All four containers bind-mount `vault-init.json`
+    (substrate writable, the rest read-only).
+  - **`.env.prod.example`** drops `VAULT_ROOT_TOKEN` (auto-
+    generated now), adds optional `VAULT_KEY_SHARES` /
+    `VAULT_KEY_THRESHOLD` (defaults 5 / 3), documents the backup
+    story (back up `vault-init.json` alongside `.env.prod`).
+  - **`single-host-prod.md` Known Limitations table** flips the
+    "Vault in dev mode" row to "Vault unseal keys live on disk
+    in `vault-init.json`" — the honest residual gap. Real
+    cloud-KMS auto-unseal (transit / awskms / gcpckms) is the
+    next step but out of scope without cloud creds. The "Where
+    state lives" table grows the three-file backup story
+    (`.env.prod` + `vault-init.json` + `tls/`).
+  - **End-to-end verified on rv.vpn**: clean `make prod-up` from
+    zero state brings all 7 services healthy. Smoke on
+    `/healthz`, `/readyz`, `/tenants` (default-tenant
+    `subnet_pool` reflects the operator's `DEFAULT_SUBNET`),
+    `/crypto/status` (Vault Transit backend) all 200. **Critical
+    restart test**: `docker restart wg_manager_vault` → sealed →
+    re-run `bootstrap-substrate` → auto-unseals from existing
+    `vault-init.json` → all engine bootstraps log "already
+    present" → Phase 1 complete. Final status:
+    `storage_type: file, initialized: true, sealed: false`.
+
+  Five bugs surfaced + fixed during verification (the full diary
+  is in PR #54's body): vault image's `docker-entrypoint.sh`
+  mangling the `server` command, missing `urllib.error` import,
+  unquoted heredoc backtick command-substitution,
+  `vault-init.json` UID mismatch from the Makefile `touch`, and a
+  duplicate stale wait loop in `prod_bootstrap_substrate.sh`.
+
+  **Tests**: 47 new cases across three new files plus extensions
+  to four existing files. Backend pytest **1027/1027** in local
+  mode (was 989 on v0.2.x's merge).
+
+- **`docs/deploy/single-host-prod.md` gained an "Onboarding a
+  target host (SSH CA install)" section (PR #53).** Recipe for
+  running `wg-manager bootstrap-host` from inside the prod stack
+  via `docker compose run --rm`, mounting `~/.ssh` read-only so
+  the operator's pre-existing key reaches the container without
+  exposing the rest of `$HOME`. The full design + cert profiles
+  still live in `docs/operator-guide.md` §3; this is a
+  deployment-side recipe rather than a duplicate. Closes the gap
+  a real operator hit on rv.vpn: after `make prod-up` returned
+  and they curl'd the API successfully, the next step ("how do I
+  get wg-manager onto my first hub box?") wasn't covered in the
+  deploy doc.
+
 ## [v0.2.1] - 2026-06-05
 
 **Patch release**: closes a single bug class the v0.2.0 verification on
