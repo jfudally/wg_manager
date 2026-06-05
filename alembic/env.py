@@ -16,6 +16,7 @@ from sqlmodel import SQLModel
 # Ensure all model classes are registered on SQLModel.metadata.
 import wg_manager.models  # noqa: F401
 from wg_manager.config import settings
+from wg_manager.db import _resolve_mysql_ssl
 
 config = context.config
 
@@ -50,11 +51,25 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations against a live DB connection."""
+    """Run migrations against a live DB connection.
+
+    Mirrors :func:`wg_manager.db._build_engine`'s MySQL TLS wiring so a
+    ``make migrate`` against a TLS-required MySQL (Phase 2d CP4 prod
+    posture) inherits the same ``ssl={ca, cert, key, check_hostname}``
+    ``connect_args`` the app + worker use. Without this, the
+    migrations engine bypasses TLS and MySQL rejects the connection
+    with ``Connections using insecure transport are prohibited``.
+    """
+    # ``_resolve_mysql_ssl`` returns ``{}`` for SQLite + cleartext-
+    # MySQL (the pre-CP4 path), so the call is a no-op in dev / test
+    # configurations — only the prod-shaped TLS posture grows the
+    # ``connect_args`` dict.
+    connect_args = _resolve_mysql_ssl(settings.database_url, settings)
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
     with connectable.connect() as connection:
         context.configure(

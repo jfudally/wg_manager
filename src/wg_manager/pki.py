@@ -204,6 +204,39 @@ def _cert_pem(cert: x509.Certificate) -> str:
     return cert.public_bytes(serialization.Encoding.PEM).decode("ascii")
 
 
+def _join_pems(*pems: str) -> str:
+    """Concatenate multiple PEM blobs into one strict-parser-safe chain.
+
+    PEM-strict consumers (OpenSSL ``X509_load_*``, Python's
+    :func:`ssl.SSLContext.load_verify_locations`, pymysql's
+    ``ssl={"ca": path}``) require every ``-----BEGIN ...-----`` line
+    to start at column 0 — i.e. be preceded by a newline. The Vault
+    PKI API has been observed to return ``ca_chain`` entries without
+    trailing newlines, so a naive ``"".join(...)`` produces
+    ``-----END CERTIFICATE----------BEGIN CERTIFICATE-----`` on a
+    single line, which strict parsers reject with "bad end line".
+
+    This helper:
+
+    - Skips empty / blank entries (some Vault versions surface ``""``
+      placeholders in ``ca_chain``).
+    - Ensures every block ends with ``\\n`` before the next block
+      begins, so each ``-----BEGIN`` lands at column 0.
+    - Ensures the final result ends with ``\\n`` so file consumers
+      that append more blobs don't introduce the same bug.
+
+    :param pems: Zero or more PEM blob strings.
+    :return: The well-formed concatenation. Empty input returns ``""``.
+    """
+    parts: list[str] = []
+    for pem in pems:
+        if not pem or not pem.strip():
+            continue
+        stripped = pem.rstrip("\n")
+        parts.append(stripped + "\n")
+    return "".join(parts)
+
+
 def _name(common_name: str) -> x509.Name:
     """Build a one-attribute :class:`x509.Name` from a CN string."""
     return x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, common_name)])
@@ -455,7 +488,7 @@ class LocalDevPKI:
         return Cert(
             cert_pem=_cert_pem(leaf),
             private_pem=_key_pem(leaf_key),
-            chain_pem=self.intermediate_pem + self.root_pem,
+            chain_pem=_join_pems(self.intermediate_pem, self.root_pem),
             serial=serial,
             common_name=common_name,
             sans=tuple(sans),
@@ -893,16 +926,18 @@ class VaultPKI:
         serial = _hex_colon_to_int(data["serial_number"])
 
         # Vault returns the issuing chain as a list (modern) or single
-        # PEM string (older). Normalise to one PEM blob.
+        # PEM string (older). Normalise to one strict-parser-safe blob —
+        # see :func:`_join_pems` for the bug shape (missing newlines
+        # between concatenated blocks) it guards against.
         ca_chain = data.get("ca_chain") or []
         if isinstance(ca_chain, str):
-            chain_pem = ca_chain
+            chain_pem = _join_pems(ca_chain)
         else:
-            chain_pem = "".join(ca_chain)
+            chain_pem = _join_pems(*ca_chain)
         if not chain_pem:
             # Some Vault versions still surface only ``issuing_ca`` when
             # there's a single intermediate above the leaf.
-            chain_pem = data.get("issuing_ca", "")
+            chain_pem = _join_pems(data.get("issuing_ca", ""))
 
         parsed = x509.load_pem_x509_certificate(cert_pem.encode())
         return Cert(

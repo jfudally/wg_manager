@@ -45,6 +45,102 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
     tests pin the source-of-truth shape so a refactor that drops a
     service or breaks the passthrough contract trips before merge.
 
+- **End-to-end verification of the prod overlay surfaced four bugs;
+  all four fixed.** Walking the runbook on a clean Docker host
+  exercised every shipped code path the overlay touches and turned
+  up code-level shape mismatches between what the docs promised and
+  what the code delivered. Each is fixed with a regression test.
+
+  - **Compose `ports:` list merge** — the overlay's
+    `127.0.0.1:3306:3306` mappings were being concatenated with the
+    dev file's `0.0.0.0:3307:3306` instead of replacing it, so the
+    second host-port bind failed silently. Fixed with Compose v2.20's
+    `!override` tag on `mysql` / `valkey` / `vault` ports. Test
+    fixtures grew a custom `ComposeLoader` so PyYAML tolerates the
+    `!override` / `!reset` Compose-specific tags.
+  - **PEM chain newline missing.** `VaultPKI._issue_leaf` joined the
+    Vault `ca_chain` list with `"".join(...)` and `LocalDevPKI`
+    used `intermediate_pem + root_pem`. When the upstream PEM
+    lacked a trailing newline (Vault's modern API output), the
+    result was `-----END CERTIFICATE----------BEGIN CERTIFICATE-----`
+    on one line — rejected by strict consumers (`openssl x509`,
+    Python `ssl.SSLContext.load_verify_locations`, pymysql's
+    `ssl={ca: ...}`). New `wg_manager.pki._join_pems(*pems)` helper
+    normalises to strict-parser-safe output and is used at both
+    sites. 10 regression cases in `tests/test_pki_chain_join.py`.
+  - **Alembic `env.py` ignored MySQL TLS args.**
+    `engine_from_config(config_section, prefix="sqlalchemy.")` built
+    its engine without the `connect_args = {"ssl": {...}}` dict
+    `wg_manager.db._resolve_mysql_ssl` produces — so `make migrate`
+    against a `require_secure_transport=ON` MySQL failed with
+    `(3159) Connections using insecure transport are prohibited`.
+    Fixed by importing `_resolve_mysql_ssl` and passing
+    `connect_args=...` into `engine_from_config`. 3 regression
+    cases in `tests/test_alembic_env_tls.py`.
+  - **API healthcheck assumed `/healthz` bypasses mTLS at the TLS
+    layer; uvicorn's `ssl.CERT_REQUIRED` says otherwise.** The
+    Phase 3d cycle 1 doc claim is at the app layer
+    (`MTLSAuthMiddleware` skips auth for `/healthz`), but uvicorn
+    drops the TLS handshake first when no client cert is present.
+    The overlay's healthcheck now presents the operator client
+    cert (the `./tls` bind-mount already makes it available); the
+    inline comment + the runbook's "Known limitations" table both
+    flag the underlying doc-vs-implementation gap as planned
+    follow-on work.
+
+- **Production-shaped docker-compose overlay
+  (`docker-compose.prod.yml`).** Adds an operator path from
+  "dev stack on my laptop" to "single-host non-HA stack on a real
+  box". Layers on top of the existing `docker-compose.yml` (which
+  stays the dev file) via `docker compose -f docker-compose.yml
+  -f docker-compose.prod.yml up` — or the new `make prod-up`
+  wrapper.
+
+  - **Three new services.** `api` (mTLS-enforcing FastAPI on public
+    443), `worker` (Celery), `web` (Next.js dashboard on public
+    3000). Both API + worker build the Phase 2f `Dockerfile`; web
+    builds `web/Dockerfile`. All three pin `restart: always` so the
+    box rebooting brings the stack with it.
+  - **Production posture on the API + worker.** `TLS_REQUIRED=true`,
+    `DATABASE_TLS_REQUIRED=true`, all three substrate backends
+    (`CRYPTO_BACKEND` / `SSH_CA_BACKEND` / `PKI_BACKEND`) pinned to
+    `vault`. The HA startup guard (Phase 3d cycle 1) rejects
+    `local` + `TLS_REQUIRED=true` without pinned PEMs anyway —
+    pinning to `vault` is the only honest production posture.
+  - **Hardened data tier.** Overrides on `mysql` / `valkey` /
+    `vault` source every secret from `${VAR}` interpolation
+    (`.env.prod`) using Compose's `${VAR:?msg}` fail-loud syntax
+    so a missing value blocks `compose up` instead of silently
+    defaulting to a vulnerable string. The dev compose's well-
+    known `dev-only-root` Vault token, `rootpw` MySQL root
+    password, and unauthenticated Valkey are all replaced; data
+    tier host port mappings drop to `127.0.0.1` only.
+  - **`.env.prod.example`** documents every interpolation the
+    overlay reads, with inline comments on how to generate strong
+    values for each. Gitignore extended to keep the populated
+    `.env.prod` out of the repo.
+  - **`make prod-up` / `prod-down` / `prod-logs` / `prod-config`**
+    wrappers around `docker compose --env-file .env.prod
+    -f docker-compose.yml -f docker-compose.prod.yml ...`. The
+    `prod-up` target guard refuses to start without `.env.prod`
+    on disk.
+  - **Operator runbook** at `docs/deploy/single-host-prod.md`
+    covers the one-time bootstrap sequence (mint MySQL TLS bundle
+    → bring up data tier → bootstrap Vault substrate → mint API
+    + operator certs → apply migrations → restart api/worker/web),
+    the day-2 reference (volume → state mapping, restart behaviour,
+    backup commands), the documented limitations vs. fully
+    production-ready (Vault still in dev mode, no reverse proxy,
+    no in-stack Prometheus, single MySQL, single worker), and the
+    upgrade-to-HA path.
+  - **Tests:** 33 overlay-shape cases
+    (`tests/test_compose_prod_overlay.py`) + 3 env-template cases
+    (`tests/test_env_prod_example.py`) = 36 new. Pure parse-and-assert,
+    matches the Phase 2f `test_dockerfile.py` and cycle 4a
+    `test_compose_ha_profile.py` pattern. Pins: service presence
+    (api/worker/web), restart-always, mTLS + DB-TLS + Vault
+    backends, no hardcoded dev secrets, every `${VAR}` documented.
+
 - **Phase 3d cycle 3 — per-row advisory locks on mutating Celery
   tasks.** Closes the multi-worker concurrency gap cycle 2
   flagged (BENIGN_OVERWRITE on contention). The 4 mutating tasks
