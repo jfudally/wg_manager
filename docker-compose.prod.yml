@@ -45,6 +45,14 @@ services:
   # -------------------------------------------------------------------------
   mysql:
     restart: always
+    # `bootstrap-substrate` mints the server cert into ./tls/mysql/
+    # BEFORE mysqld can start (the conf.d enforces
+    # require_secure_transport=ON, which fails if the cert files are
+    # missing). `service_completed_successfully` blocks startup until
+    # Phase 1 exits 0.
+    depends_on:
+      bootstrap-substrate:
+        condition: service_completed_successfully
     environment:
       # Operator-provided. Strong, unique per deployment. Generate with
       # `openssl rand -base64 24` or your password manager.
@@ -71,6 +79,12 @@ services:
   # -------------------------------------------------------------------------
   valkey:
     restart: always
+    # Order valkey after Phase 1 so the prod-up boot sequence is
+    # deterministic (mysql + valkey come up together once Phase 1's
+    # cert mints have landed).
+    depends_on:
+      bootstrap-substrate:
+        condition: service_completed_successfully
     # AUTH password is mandatory in prod. The dev compose runs without
     # auth because the docker network is on a developer's loopback;
     # production opens the broker to whatever's on the docker network.
@@ -125,6 +139,115 @@ services:
       - wg_manager_vault_data:/vault/file
 
   # -------------------------------------------------------------------------
+  # Self-bootstrap Phase 1: substrate (Vault PKI / SSH CA / audit + MySQL certs).
+  #
+  # Runs `scripts/prod_bootstrap_substrate.sh` (committed in-tree, baked
+  # into the wg-manager image). Exits 0 once the Vault substrate is
+  # bootstrapped and the MySQL server + client certs are on disk in
+  # tls/mysql/. MySQL + Valkey wait for this via
+  # `service_completed_successfully` before they start.
+  #
+  # Audit-row writes for the MySQL certs fail here because MySQL isn't
+  # up yet — Phase 2d CP4.3 writes the PEM files BEFORE the audit row,
+  # so the files are usable even though the row write fails. The
+  # script tolerates the failure explicitly and verifies the file
+  # outputs exist before exiting.
+  # -------------------------------------------------------------------------
+  bootstrap-substrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${WG_MANAGER_IMAGE:-wg-manager:prod}
+    container_name: wg_manager_bootstrap_substrate
+    restart: "no"
+    depends_on:
+      vault:
+        condition: service_healthy
+    environment:
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      CRYPTO_BACKEND: vault
+      SSH_CA_BACKEND: vault
+      PKI_BACKEND: vault
+      # The cert-mint CLI tries to write an audit row to MySQL. It
+      # isn't up yet; we tolerate the failure and verify file outputs
+      # are present. Setting database_tls_required=false at the env
+      # level keeps the CLI from spending TLS-handshake time it's
+      # going to fail anyway.
+      DATABASE_TLS_REQUIRED: "false"
+      # Where the script reads/writes the wg-manager bootstrap
+      # helpers and writes cert files. /app/tls is the host's ./tls
+      # via the volume mount below.
+      SCRIPT_DIR: /app/scripts
+      TLS_DIR: /app/tls
+    volumes:
+      # WRITABLE — Phase 1 mints cert files here. api/worker/web all
+      # mount this same directory read-only.
+      - ./tls:/app/tls
+      # The bootstrap helper Python scripts (pki_bootstrap.py etc.)
+      # live in the repo's scripts/ directory; the Dockerfile only
+      # copies src/ + the .venv. Bind-mount scripts/ so the bootstrap
+      # container has access to the helpers AND to the two
+      # prod_bootstrap_*.sh entrypoints themselves.
+      - ./scripts:/app/scripts:ro
+    command: ["/app/scripts/prod_bootstrap_substrate.sh"]
+
+  # -------------------------------------------------------------------------
+  # Self-bootstrap Phase 2: app (migrate + register operator + mint api/cli certs).
+  #
+  # Runs `scripts/prod_bootstrap_app.sh`. Exits 0 once Alembic is at
+  # head, the bootstrap operator is registered, and the API server +
+  # operator CLI client certs are on disk in tls/. api / worker / web
+  # wait for this via `service_completed_successfully`.
+  # -------------------------------------------------------------------------
+  bootstrap-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ${WG_MANAGER_IMAGE:-wg-manager:prod}
+    container_name: wg_manager_bootstrap_app
+    restart: "no"
+    depends_on:
+      bootstrap-substrate:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_APP_USER:-wg}:${MYSQL_APP_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-wg_manager}
+      DATABASE_TLS_REQUIRED: "true"
+      DATABASE_TLS_CA_PEM: /app/tls/mysql/client-ca.crt
+      DATABASE_TLS_CERT_PEM: /app/tls/mysql/client.crt
+      DATABASE_TLS_KEY_PEM: /app/tls/mysql/client.key
+      VAULT_ADDR: http://vault:8200
+      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      CRYPTO_BACKEND: vault
+      SSH_CA_BACKEND: vault
+      PKI_BACKEND: vault
+      # Operator identity. CN matches the operator's eventual mTLS
+      # client cert; role is `admin` by default.
+      BOOTSTRAP_OPERATOR_CN: ${BOOTSTRAP_OPERATOR_CN:?BOOTSTRAP_OPERATOR_CN must be set in .env.prod}
+      BOOTSTRAP_OPERATOR_ROLE: ${BOOTSTRAP_OPERATOR_ROLE:-admin}
+      # API server cert subject. Defaults cover the local-host
+      # demo; production override picks the public DNS name.
+      API_SERVER_CN: ${API_SERVER_CN:-localhost}
+      API_SERVER_SANS: ${API_SERVER_SANS:-localhost,127.0.0.1,api}
+      TLS_DIR: /app/tls
+    volumes:
+      - ./tls:/app/tls
+      - ./scripts:/app/scripts:ro
+      # Alembic needs the alembic.ini + versions/ directory at runtime
+      # to locate migrations. The Phase 2f Dockerfile bakes src/ +
+      # .venv but not the alembic tree (which lives at the repo root);
+      # bind-mount it read-only so `alembic upgrade head` finds the
+      # versions/ files. Read-only because Phase 2 doesn't write to
+      # alembic state.
+      - ./alembic:/app/alembic:ro
+      - ./alembic.ini:/app/alembic.ini:ro
+    command: ["/app/scripts/prod_bootstrap_app.sh"]
+
+  # -------------------------------------------------------------------------
   # NEW: wg-manager API.
   #
   # mTLS-enforcing FastAPI server. Builds the Phase 2f Dockerfile.
@@ -138,7 +261,13 @@ services:
     image: ${WG_MANAGER_IMAGE:-wg-manager:prod}
     container_name: wg_manager_api
     restart: always
+    # Phase 2 (`bootstrap-app`) is what mints the API server cert
+    # uvicorn loads at bind time + applies migrations the API needs to
+    # serve traffic. Waiting on `service_completed_successfully` means
+    # `make prod-up` blocks until bootstrap is genuinely done.
     depends_on:
+      bootstrap-app:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       vault:
@@ -236,6 +365,8 @@ services:
     container_name: wg_manager_worker
     restart: always
     depends_on:
+      bootstrap-app:
+        condition: service_completed_successfully
       mysql:
         condition: service_healthy
       vault:
@@ -280,6 +411,8 @@ services:
     container_name: wg_manager_web
     restart: always
     depends_on:
+      bootstrap-app:
+        condition: service_completed_successfully
       api:
         condition: service_healthy
     environment:

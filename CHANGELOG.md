@@ -10,6 +10,71 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Self-bootstrapping `docker-compose.prod.yml`.** Edit `.env.prod`,
+  run `make prod-up`, get a fully usable production-shaped stack on
+  the first invocation — no manual cert minting, no shell exports,
+  no separate `make migrate` step. The previous 9-step runbook
+  collapses to "fill in 5 values, run one command".
+
+  - **Two run-to-completion bootstrap containers** break the
+    cert/MySQL chicken-and-egg cleanly via Compose's
+    `service_completed_successfully` primitive:
+    - `bootstrap-substrate` — waits for Vault healthy, runs the
+      Vault PKI / SSH CA / audit bootstraps (each idempotent), mints
+      the MySQL server + client cert pair (`--type mysql` +
+      `--type mysql-client` for the correct EKU split), exits.
+      mysql + valkey depend on it completing successfully.
+    - `bootstrap-app` — waits for MySQL + valkey healthy, runs
+      `alembic upgrade head`, registers the bootstrap operator,
+      mints the API server cert + operator CLI client cert, exits.
+      api + worker + web depend on it completing.
+  - **`scripts/prod_bootstrap_substrate.sh`** +
+    **`scripts/prod_bootstrap_app.sh`** are the two scripts the
+    bootstrap containers exec. Both `set -euo pipefail` and guard
+    every mutating step with a file-existence test, so re-running
+    `make prod-up` against persistent state is a no-op (cert files
+    present → skip mint; operator registered → skip; alembic at
+    head → no-op).
+  - **`alembic` moved from `dev` to runtime deps** so the wg-manager
+    image bakes `/app/.venv/bin/alembic` — the bootstrap container
+    needs it, and operators pulling
+    `ghcr.io/jfudally/wg-manager:vX.Y.Z` shouldn't have to install
+    dev deps to apply migrations.
+  - **`make prod-up` gains `--wait`** so the command blocks until
+    every service is healthy or exited 0. When the make target
+    returns, the stack is fully usable end-to-end.
+  - **`.env.prod.example`** now documents the operator identity
+    (`BOOTSTRAP_OPERATOR_CN` required, `BOOTSTRAP_OPERATOR_ROLE`
+    optional with default `admin`) and the API server cert subject
+    (`API_SERVER_CN` + `API_SERVER_SANS`, both optional with
+    localhost-friendly defaults). The old comment block that left
+    `BOOTSTRAP_OPERATOR_CN` commented-out is gone — the prod stack
+    requires it.
+  - **Runbook rewrite** at `docs/deploy/single-host-prod.md`: the
+    "Bootstrap (one command)" section is the canonical flow; the
+    old 9-step manual flow is preserved as an "Advanced: manual
+    bootstrap (for debugging)" section operators can fall back to
+    when self-bootstrap fails partway and they want shell-level
+    introspection.
+  - **End-to-end verification** on a clean Docker host:
+    `make prod-down -v` → strip `tls/` → `make prod-up`. Sequence:
+    bootstrap-substrate exited → mysql + valkey healthy →
+    bootstrap-app exited → api + worker + web healthy. Curl on
+    `/v1/healthz` + `/v1/readyz` returns 200, `/v1/servers`
+    authenticates via the operator cert and returns `[]`, dashboard
+    returns 200. Re-running `make prod-up` is a clean no-op (all
+    bootstrap steps log "already exists, skipping").
+  - **Tests:** 16 compose-shape cases
+    (`tests/test_compose_prod_bootstrap.py`) + 18 script-shape
+    cases (`tests/test_prod_bootstrap_scripts.py`) = 34 new. The compose
+    suite pins the dependency graph (the bootstrap ordering is
+    encoded entirely in `depends_on` conditions, so a future edit
+    that breaks the graph trips at test time). The scripts suite
+    pins shebangs, `set -euo pipefail`, the substrate script's
+    invocation of all three Vault bootstrap helpers, the app
+    script's `alembic upgrade head` + `operators add` + the two
+    cert mints, and the file-existence-guard pattern.
+
 - **Phase 3d cycle 4a — docker-compose `ha` profile + nginx
   passthrough LB.** Materialises the two-replica + LB topology from
   `docs/deploy/ha-control-plane.md` on a single host so an operator
