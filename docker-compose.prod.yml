@@ -246,6 +246,15 @@ services:
       # demo; production override picks the public DNS name.
       API_SERVER_CN: ${API_SERVER_CN:-localhost}
       API_SERVER_SANS: ${API_SERVER_SANS:-localhost,127.0.0.1,api}
+      # WireGuard defaults — bootstrap-app runs `alembic upgrade head`,
+      # and migration 0016 reads `Settings.default_subnet` AT
+      # MIGRATION TIME to backfill the default tenant's
+      # `subnet_pool`. Without this passthrough, the default tenant
+      # gets the code default (10.9.0.0/24) on a fresh-volume boot
+      # regardless of what's in .env.prod — the exact symptom rv.vpn
+      # reported after PR #50.
+      DEFAULT_SUBNET: ${DEFAULT_SUBNET:-10.9.0.0/24}
+      DEFAULT_WG_PORT: ${DEFAULT_WG_PORT:-51820}
       TLS_DIR: /app/tls
     volumes:
       - ./tls:/app/tls
