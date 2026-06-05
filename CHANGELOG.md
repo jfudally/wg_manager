@@ -8,7 +8,60 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+## [v0.2.0] - 2026-06-05
+
+**Release theme**: production deployability. The dev compose became
+an actual production compose (overlay + self-bootstrap), the HA
+control plane went from doc to demo profile, and the observability
++ multi-tenancy + API-versioning work that landed since v0.1.0 came
+along for the ride. Every shipped path picked up a regression test
+the end-to-end verification work surfaced.
+
+`make prod-up` is the single command from a fresh checkout to a
+fully usable production stack: edit five values in `.env.prod`,
+wait ~90 seconds, get an mTLS API + Celery worker + Next.js
+dashboard + hardened MySQL + Vault + Valkey on the box.
+
 ### Added
+
+- **Vault Transit engine + master key auto-bootstrap.** Closes the
+  last gap in `make prod-up`: `scripts/transit_bootstrap.py` is
+  invoked by `scripts/prod_bootstrap_substrate.sh` so a fresh
+  Vault gets the Transit mount + the `wg-manager` master key
+  (`derived=True`) provisioned automatically. Before this, the
+  dashboard's Crypto page 500'd with
+  `no handler for route transit/keys/wg-manager` on first load
+  because `VaultTransitBackend` is deliberately dumb and the
+  cookbook documented Transit setup as a manual step. Also exposed
+  as `make transit-bootstrap` for operators driving Vault by hand.
+
+- **Linux portability fixes for the self-bootstrap (PR #47).** PR
+  #46's self-bootstrap worked on Docker Desktop on Mac but failed
+  on every step against a real Linux host. Four distinct fixes:
+
+  - **Bootstrap containers declare `user: "0:0"`** so they can
+    write to the bind-mounted `./tls` on Linux hosts where the
+    operator's UID (typically 1000) doesn't match the wg-manager
+    image's `wgmanager` UID (1001). Docker Desktop on Mac papers
+    over the mismatch transparently — pure Linux doesn't. End-of-
+    script `chown -R 1001:1001` puts the cert files back into the
+    runtime UID so api/worker/web can read them.
+  - **Bootstrap scripts chmod *.key files to `0644`** so `mysql:8`
+    inside its container (UID 999) can read the server.key even
+    though the file is owned by UID 1001. Without this, mysqld
+    fails to load TLS and the app gets
+    `SSL is required but the server doesn't support it` on every
+    connection attempt.
+  - **`WG_MANAGER_API_BIND_PORT` + `WG_MANAGER_WEB_BIND_PORT`**
+    env overrides for operators running multiple stacks on one
+    host (or fronting the API behind a reverse proxy that owns
+    443).
+  - **`.env.prod.example` now recommends `openssl rand -hex 32`**
+    for `VALKEY_PASSWORD` + `MYSQL_APP_PASSWORD` — these values
+    get interpolated into `redis://:${pw}@valkey:...` and
+    `mysql+pymysql://wg:${pw}@mysql:...` URLs, and the previous
+    `openssl rand -base64` recommendation produced strings with
+    `/+=` characters that broke URL parsing at startup.
 
 - **Self-bootstrapping `docker-compose.prod.yml`.** Edit `.env.prod`,
   run `make prod-up`, get a fully usable production-shaped stack on
