@@ -35,6 +35,13 @@ dependencies = [
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-exporter-otlp-proto-http>=1.27.0",
     "opentelemetry-instrumentation-celery>=0.48b0",
+    # Alembic is a runtime dependency, not dev: the prod stack's
+    # `bootstrap-app` container applies migrations via `alembic upgrade
+    # head` at boot, and operators can also `make migrate` from the
+    # host. Migrations belong in the production image so an operator
+    # who pulled `ghcr.io/jfudally/wg-manager:vX.Y.Z` can apply schema
+    # changes without re-installing dev deps.
+    "alembic>=1.13.0",
 ]
 
 [project.scripts]
@@ -44,7 +51,6 @@ wg-manager = "wg_manager.cli:app"
 dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=1.4.0",
-    "alembic>=1.13.0",
     # Phase 2d CP4.2: ``tests/test_mysql_tls_config.py`` parses
     # ``docker-compose.yml`` to pin the MySQL service's TLS-cert + my.cnf
     # mounts. PyYAML is the de-facto stdlib YAML parser for Python; it

@@ -137,7 +137,11 @@ prod-up:
 		echo "       See docs/deploy/single-host-prod.md for the bootstrap order."; \
 		exit 2; \
 	fi
-	$(PROD_COMPOSE) up -d --build
+	# `--wait` blocks until every service reaches its target state
+	# (`healthy` for long-runners, `exited 0` for the two bootstrap
+	# containers). With the self-bootstrap services, that means the
+	# command returns only once the stack is fully usable.
+	$(PROD_COMPOSE) up -d --build --wait
 
 prod-down:
 	$(PROD_COMPOSE) down

@@ -28,174 +28,54 @@ stack running on a fresh box, plus the day-2 operational reference
 3. **DNS or a static IP** that resolves to the box's public interface,
    for the API and the dashboard listeners.
 
-## Bootstrap sequence (one-time)
-
-The order matters: the API needs certs minted from the Vault PKI,
-which means Vault has to be up and bootstrapped first.
-
-### 1. Populate `.env.prod`
+## Bootstrap (one command)
 
 ```bash
 cp .env.prod.example .env.prod
-$EDITOR .env.prod
+$EDITOR .env.prod      # fill in the four CHANGEME values + BOOTSTRAP_OPERATOR_CN
+make prod-up           # done
 ```
 
-Every `${VAR:?...}`-shaped reference in the overlay must be filled
-in or `compose up` fails loud at startup. The template's inline
-comments document how to generate strong values for each one.
+That's the whole flow. `make prod-up` boots Vault, runs the two
+self-bootstrap containers (Vault PKI / SSH CA / audit + MySQL cert
+mint, then migrate + register operator + mint API & CLI certs),
+then brings up MySQL + Valkey + api + worker + web in the right
+order. `--wait` blocks the command until every service is healthy
+or the bootstrap containers have exited 0, so when the make target
+returns the stack is fully usable.
+
+Re-running `make prod-up` on existing state is a no-op (cert files
+present → skip mint; operator registered → skip; alembic at head →
+no-op). Safe to run any time.
+
+### What you fill in
+
+Required values in `.env.prod`:
+
+| Var | What | How to generate |
+|---|---|---|
+| `VAULT_ROOT_TOKEN` | Vault dev-mode root token | `openssl rand -hex 32` |
+| `MYSQL_ROOT_PASSWORD` | MySQL root password (used only at first boot) | `openssl rand -base64 24` |
+| `MYSQL_APP_PASSWORD` | App-tier MySQL password (api + worker use this) | `openssl rand -base64 24` |
+| `VALKEY_PASSWORD` | Valkey AUTH password | `openssl rand -base64 32` |
+| `BOOTSTRAP_OPERATOR_CN` | CN baked into the operator's CLI client cert | DNS-style: `ops@yourbox.example` |
+
+Optional values worth setting for a real DNS-fronted deployment:
+
+| Var | What |
+|---|---|
+| `API_SERVER_CN` | API server cert CN. Default `localhost`. Set to your public DNS name. |
+| `API_SERVER_SANS` | Comma-separated SANs on the API cert. Default `localhost,127.0.0.1,api`. Add your DNS. |
+| `WG_MANAGER_API_BIND_ADDR` | Public ingress interface for the API. Default `0.0.0.0`. |
+| `WG_MANAGER_WEB_BIND_ADDR` | Public ingress interface for the dashboard. Default `0.0.0.0`. |
 
 **Treat `.env.prod` like the master password file it is** — every
 secret in it can decrypt every secret the substrate protects. Back
 it up encrypted; restrict to the operator group; never commit.
 
-### 2. Start Vault first (data tier needs Vault-minted certs before it can boot)
+### Smoke after `make prod-up` returns
 
 ```bash
-docker compose --env-file .env.prod \
-    -f docker-compose.yml -f docker-compose.prod.yml \
-    up -d vault
-```
-
-This brings up **only the Vault container**, with the
-operator-provided `${VAULT_ROOT_TOKEN}` from `.env.prod`. MySQL can't
-start yet (its TLS server cert hasn't been minted), and we don't want
-api/worker/web cycling failed healthchecks while we bootstrap.
-
-### 3. Export the host-side env every cert-minting command needs
-
-Every `wg-manager certs issue` / `make pki-bootstrap` invocation from
-the host reads `wg_manager.config.Settings` — which loads from `.env`
-(the **dev** env file). For prod minting we override the relevant
-keys at the shell level:
-
-```bash
-export VAULT_ADDR=http://127.0.0.1:8200
-export VAULT_TOKEN="$(grep ^VAULT_ROOT_TOKEN .env.prod | cut -d= -f2)"
-export PKI_BACKEND=vault
-export CRYPTO_BACKEND=vault
-export SSH_CA_BACKEND=vault
-```
-
-Without `PKI_BACKEND=vault`, the cert mints fall back to the in-
-process `LocalDevPKI` (whose hierarchy lives only in that one
-process) and the issuing chain won't match the CA bundle MySQL
-trusts — connections fail with `certificate signature failure`.
-
-### 4. Bootstrap the Vault substrate
-
-```bash
-make pki-bootstrap            # Phase 2d — PKI mount + roles
-make ssh-ca-bootstrap         # Phase 2c — SSH CA mount + roles
-make vault-audit-bootstrap    # Phase 2e — file audit device
-```
-
-Each is idempotent — re-runs against an already-bootstrapped Vault
-are a no-op so you can safely re-execute after a `compose down && up`
-of the Vault container.
-
-### 5. Mint MySQL's server + client certs
-
-```bash
-# Server cert — what mysqld presents. CN=localhost matches the
-# SAN list (localhost + 127.0.0.1 + mysql + wg_manager_mysql) that
-# `make mysql-tls-issue` already encodes.
-make mysql-tls-issue
-
-# Client cert — what the api + worker present to mysqld. The
-# distinct `mysql-client` type is required — `--type mysql` mints
-# with the `serverAuth` EKU, which mysqld rejects on a client-side
-# handshake with `sslv3 alert unsupported certificate`.
-wg-manager certs issue --type mysql-client --cn wg-manager-app \
-    --out-cert tls/mysql/client.crt \
-    --out-key tls/mysql/client.key \
-    --out-chain tls/mysql/client-ca.crt
-```
-
-**Expected**: each command emits `wrote leaf to ...` lines and
-**also** logs a `Can't connect to MySQL` error at the end. The error
-is from the audit-row write — MySQL isn't up yet, so the row can't
-land. The PEMs are written before the audit step, so the files are
-fully usable; the missing audit rows can be backfilled by re-issuing
-the cert later if the audit trail matters.
-
-### 6. Bring up MySQL + Valkey with the new certs
-
-```bash
-docker compose --env-file .env.prod \
-    -f docker-compose.yml -f docker-compose.prod.yml \
-    up -d mysql valkey
-```
-
-Wait for both to report `healthy` (~10–30s):
-
-```bash
-docker compose --env-file .env.prod \
-    -f docker-compose.yml -f docker-compose.prod.yml \
-    ps mysql valkey
-```
-
-### 7. Apply Alembic migrations
-
-```bash
-# Reuse the env from step 3 + add the MySQL connection bits.
-set -a; source .env.prod; set +a
-export DATABASE_URL="mysql+pymysql://${MYSQL_APP_USER:-wg}:${MYSQL_APP_PASSWORD}@127.0.0.1:3306/${MYSQL_DATABASE:-wg_manager}"
-export DATABASE_TLS_REQUIRED=true
-export DATABASE_TLS_CA_PEM=$(pwd)/tls/mysql/client-ca.crt
-export DATABASE_TLS_CERT_PEM=$(pwd)/tls/mysql/client.crt
-export DATABASE_TLS_KEY_PEM=$(pwd)/tls/mysql/client.key
-make migrate
-```
-
-Output is a sequence of `Running upgrade X -> Y` lines — one per
-revision in `alembic/versions/`. If the connection fails with
-`Connections using insecure transport are prohibited`, the alembic
-env.py TLS fix isn't applied; if it fails with `certificate
-signature failure`, you forgot `export PKI_BACKEND=vault` before
-the cert mints in step 5.
-
-### 8. Register the operator + mint the API server + operator client cert
-
-```bash
-wg-manager operators add --cn ops@yourbox.example --role admin
-
-# API server cert: --cn should match the public DNS name operators
-# will use, or the static IP if there's no DNS yet. SAN list covers
-# `localhost` and `127.0.0.1` for the in-container healthcheck loop.
-wg-manager certs issue --type api \
-    --cn yourbox.example \
-    --san localhost --san 127.0.0.1 --san api \
-    --out-cert tls/server.crt \
-    --out-key tls/server.key \
-    --out-chain tls/ca-bundle.crt
-
-# Operator client cert: what an operator (or the dashboard's BFF
-# proxy) presents to the API.
-wg-manager certs issue --type cli --cn ops@yourbox.example \
-    --out-cert tls/client.crt \
-    --out-key tls/client.key \
-    --out-chain tls/client.chain.crt
-```
-
-If the operator CN you mint matches `BOOTSTRAP_OPERATOR_CN` in
-`.env.prod`, you can skip the explicit `operators add` —
-`MTLSAuthMiddleware` self-registers the first matching cert it sees.
-
-### 9. Bring up api + worker + web
-
-```bash
-docker compose --env-file .env.prod \
-    -f docker-compose.yml -f docker-compose.prod.yml \
-    up -d --build api worker web
-```
-
-The healthchecks should flip to `healthy` within ~30–60s (the api
-healthcheck has a 60s `start_period`). Smoke from the operator host:
-
-```bash
-# /healthz + /readyz both bypass mTLS at the app layer, BUT uvicorn's
-# `ssl.CERT_REQUIRED` requires a client cert at the TLS handshake —
-# pass --cert/--key on every probe. (Tracked: the doc-vs-impl gap.)
 curl --cacert tls/ca-bundle.crt \
      --cert tls/client.crt --key tls/client.key \
      https://yourbox.example/v1/healthz
@@ -207,11 +87,51 @@ curl --cacert tls/ca-bundle.crt \
 # {"status":"ok","checks":{"db":"ok"}}
 ```
 
-The dashboard is reachable on the host port set by
-`${WG_MANAGER_WEB_BIND_ADDR}:3000` — the BFF proxy inside the
-container handles the mTLS handshake to `api:8000`, so the browser
-sees plain HTTP at that port (operators usually front this with an
-external reverse proxy doing TLS termination + DNS routing).
+Note on the curl flags: `/healthz` + `/readyz` bypass mTLS at the
+**app layer**, but uvicorn is configured with `ssl.CERT_REQUIRED` —
+the TLS handshake still demands a client cert, so the probe carries
+`--cert/--key`. (Open issue: the doc-vs-implementation gap.)
+
+The dashboard is reachable at `http://${WG_MANAGER_WEB_BIND_ADDR}:3000`
+— the BFF proxy inside the container handles the mTLS handshake to
+`api:8000` using the same operator cert, so the browser sees plain
+HTTP.
+
+## What the self-bootstrap actually does
+
+Two run-to-completion containers do the work. They use the same
+wg-manager image as api + worker; the bootstrap scripts are
+[`scripts/prod_bootstrap_substrate.sh`](../../scripts/prod_bootstrap_substrate.sh)
+and [`scripts/prod_bootstrap_app.sh`](../../scripts/prod_bootstrap_app.sh).
+
+| Container | Waits for | Does | Then |
+|---|---|---|---|
+| `bootstrap-substrate` | Vault healthy | Vault PKI / SSH CA / audit bootstrap, MySQL server + client cert mint into `tls/mysql/`. | Exits 0 → MySQL + Valkey start. |
+| `bootstrap-app` | MySQL + Valkey healthy | Alembic `upgrade head`, `operators add` for `BOOTSTRAP_OPERATOR_CN`, API server cert + operator CLI cert mint into `tls/`. | Exits 0 → api + worker + web start. |
+
+The dependency graph is the standard Compose primitive
+(`depends_on: { service_completed_successfully }`), so `make prod-down`
+followed by `make prod-up` re-walks the same sequence — but each
+step short-circuits if its output already exists, which makes the
+re-run nearly instant.
+
+## Advanced: manual bootstrap (for debugging)
+
+If self-bootstrap fails partway and you want to drive it by hand
+(e.g. to inspect Vault state between mints), the eight-step manual
+flow below is exactly what the two bootstrap scripts do — just in
+your shell instead of a container. Use it when you need to step
+through the cert mints with the wg-manager CLI's TUI prompts
+visible.
+
+1. `docker compose ... up -d vault`
+2. `export VAULT_ADDR=... VAULT_TOKEN=... PKI_BACKEND=vault CRYPTO_BACKEND=vault SSH_CA_BACKEND=vault`
+3. `make pki-bootstrap ssh-ca-bootstrap vault-audit-bootstrap`
+4. `make mysql-tls-issue` + `wg-manager certs issue --type mysql-client ...`
+5. `docker compose ... up -d mysql valkey`
+6. Export `DATABASE_*` env + `make migrate`
+7. `wg-manager operators add` + `wg-manager certs issue --type api` + `--type cli`
+8. `docker compose ... up -d api worker web`
 
 ## Day-2 reference
 

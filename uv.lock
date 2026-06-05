@@ -1404,6 +1404,7 @@ name = "wg-manager"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "alembic" },
     { name = "celery" },
     { name = "celery-types" },
     { name = "cryptography" },
@@ -1427,7 +1428,6 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "alembic" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "pyyaml" },
@@ -1435,7 +1435,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "alembic", marker = "extra == 'dev'", specifier = ">=1.13.0" },
+    { name = "alembic", specifier = ">=1.13.0" },
     { name = "celery", specifier = ">=5.4.0" },
     { name = "celery-types", specifier = ">=0.26.0" },
     { name = "cryptography", specifier = ">=43.0.0" },
