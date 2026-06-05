@@ -160,6 +160,15 @@ services:
     image: ${WG_MANAGER_IMAGE:-wg-manager:prod}
     container_name: wg_manager_bootstrap_substrate
     restart: "no"
+    # Must run as root: on Linux hosts the bind-mounted ./tls is
+    # owned by the operator's UID (typically 1000), but the wg-manager
+    # image's non-root `wgmanager` user is UID 1001 and can't write
+    # into a directory it doesn't own. (Docker Desktop on Mac papers
+    # over the UID mismatch transparently — pure Linux hosts don't.)
+    # The script chowns its outputs to 1001:1001 at the end so the
+    # api/worker containers (running as `wgmanager`) can read them
+    # read-only via their own bind-mount.
+    user: "0:0"
     depends_on:
       vault:
         condition: service_healthy
@@ -207,6 +216,10 @@ services:
     image: ${WG_MANAGER_IMAGE:-wg-manager:prod}
     container_name: wg_manager_bootstrap_app
     restart: "no"
+    # See bootstrap-substrate: must run as root on Linux hosts so the
+    # bind-mounted ./tls is writable. End-of-script chown puts the
+    # outputs back into wgmanager (1001:1001) ownership.
+    user: "0:0"
     depends_on:
       bootstrap-substrate:
         condition: service_completed_successfully
@@ -324,10 +337,13 @@ services:
       # bootstrap runbook for the full sequence.
       - ./tls:/app/tls:ro
     ports:
-      # Public ingress for the operator API. WG_MANAGER_API_BIND_ADDR
+      # Public ingress for the operator API. `WG_MANAGER_API_BIND_ADDR`
       # defaults to 0.0.0.0 (all interfaces); operators on a multi-
       # homed box can lock to a specific NIC by setting it.
-      - "${WG_MANAGER_API_BIND_ADDR:-0.0.0.0}:443:8000"
+      # `WG_MANAGER_API_BIND_PORT` defaults to 443; operators running
+      # multiple stacks on one host (or behind a fronting reverse
+      # proxy that owns 443) can override.
+      - "${WG_MANAGER_API_BIND_ADDR:-0.0.0.0}:${WG_MANAGER_API_BIND_PORT:-443}:8000"
     healthcheck:
       # NOTE: Phase 3d cycle 1's doc contract says ``/healthz`` bypasses
       # mTLS, but the implementation's bypass is at the app layer only.
@@ -433,7 +449,9 @@ services:
       # web/Dockerfile binds 3100 internally; the host port is
       # operator-configurable. Default 3000 is the canonical Next.js
       # convention even though the container's internal port differs.
-      - "${WG_MANAGER_WEB_BIND_ADDR:-0.0.0.0}:3000:3100"
+      # `WG_MANAGER_WEB_BIND_PORT` lets operators running multiple
+      # stacks on one host pick a different host port.
+      - "${WG_MANAGER_WEB_BIND_ADDR:-0.0.0.0}:${WG_MANAGER_WEB_BIND_PORT:-3000}:3100"
 
 # ===========================================================================
 # Volume declarations — the overlay adds one new volume reserved for

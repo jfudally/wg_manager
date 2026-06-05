@@ -105,4 +105,14 @@ else
     test -f "${TLS_DIR}/client.chain.crt"   || { echo "ERROR: client CA chain was not written"; exit 1; }
 fi
 
+# ----- 5. Hand outputs off to the runtime tier -----
+# Same reasoning as Phase 1: container runs as root for portable
+# write access; runtime tier reads as `wgmanager` (UID 1001).
+# Keys → 0644 so non-1001 container UIDs (the mysql image's 999)
+# can read them when they walk the bind-mounted tree.
+echo "==> Chowning ${TLS_DIR} to wgmanager (1001:1001) for the runtime tier..."
+chown -R 1001:1001 "${TLS_DIR}"
+echo "==> Setting key file modes to 0644 so non-1001 container UIDs can read..."
+find "${TLS_DIR}" -type f -name "*.key" -exec chmod 0644 {} \;
+
 echo "==> Phase 2 (app bootstrap) complete"
