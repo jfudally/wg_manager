@@ -251,6 +251,32 @@ class TestApiServiceShape:
             "TLS_REQUIRED=true without pinned PEMs anyway."
         )
 
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "DEFAULT_SUBNET",
+            "DEFAULT_WG_PORT",
+        ],
+    )
+    def test_api_passes_through_wg_defaults(
+        self, services: dict, key: str
+    ) -> None:
+        # ``Settings.default_subnet`` / ``default_wg_port`` are read
+        # by the api at request time when a POST /servers payload
+        # omits the field. The overlay must passthrough the operator's
+        # ``.env.prod`` values; without this, the api container falls
+        # back to the code defaults regardless of what's in
+        # ``.env.prod`` (the most common cause of "I changed
+        # DEFAULT_SUBNET and nothing happened").
+        env = _env(services["api"])
+        val = env.get(key, "")
+        assert "${" in val or "$" in val, (
+            f"api must ${{{key}}}-interpolate {key} from .env.prod. "
+            f"Without the passthrough, Settings.{key.lower()} falls "
+            "back to the code default — operators set the env in "
+            ".env.prod and watch nothing change."
+        )
+
     def test_api_uses_no_hardcoded_vault_root_token(
         self, services: dict
     ) -> None:
