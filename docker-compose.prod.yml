@@ -105,38 +105,100 @@ services:
       retries: 5
 
   # -------------------------------------------------------------------------
-  # Vault — prod-shaped overrides.
+  # Vault — production posture.
   #
-  # Vault STILL runs in ``server -dev``: data is in-memory, so a
-  # ``docker compose restart vault`` (or a host reboot) wipes state.
-  # This is a documented limitation; the Phase 2e production-Vault
-  # cycle is the cycle that ships file storage + manual unseal. The
-  # operator-provided ${VAULT_ROOT_TOKEN} is the one prod-shaped
-  # change here — at least the token isn't `dev-only-root` anymore.
+  # Boots from docker/vault/vault.hcl (file storage backend; listener on
+  # 0.0.0.0:8200; ui on; disable_mlock) instead of the dev compose's
+  # `server -dev`. State persists across container restarts — the
+  # rv.vpn dev-mode bug class (CA keypair regenerated on every
+  # restart, breaking every host that had bootstrap-host install the
+  # old CA pubkey) is gone.
+  #
+  # Init + unseal are automated. On first prod-up,
+  # bootstrap-substrate calls `scripts/vault_init_unseal.sh` which
+  # runs `vault operator init -key-shares=5 -key-threshold=3`,
+  # captures the JSON output in /app/vault-init.json (mode 0600 on
+  # the host — gitignored), then unseals. On every subsequent
+  # prod-up the script reads the same file and re-unseals. The
+  # operator backs up vault-init.json next to .env.prod; losing
+  # both means losing every secret Vault holds.
+  #
+  # Residual gap: the unseal keys live on the operator's host
+  # alongside the root token. Real production-Vault deployments
+  # use cloud-KMS auto-unseal (transit/awskms/gcpckms) to keep
+  # keys off-host; that requires cloud creds this work doesn't
+  # assume operators have. Phase 2e Vault production cycle.
   # -------------------------------------------------------------------------
   vault:
     restart: always
+    # `command` replaces the dev compose's `server -dev` form. The
+    # `-config=` flag loads docker/vault/vault.hcl (bind-mounted
+    # below) which sets storage + listener + ui + disable_mlock.
+    #
+    # `entrypoint` override is load-bearing: the official vault
+    # image's docker-entrypoint.sh script mangles any command
+    # starting with `server` by APPENDING
+    # `-dev-listen-address="${VAULT_DEV_LISTEN_ADDRESS:-"0.0.0.0:8200"}"`
+    # and `-config="$VAULT_CONFIG_DIR"` (default /vault/config).
+    # In `server -dev` mode that's the whole point — Vault runs
+    # in dev with the dev listener. In `server -config=...` mode
+    # it makes Vault start a SECOND listener on 0.0.0.0:8200 that
+    # races vault.hcl's listener and fails with "address already
+    # in use", AND it passes two -config flags. Even setting
+    # VAULT_DEV_LISTEN_ADDRESS="" doesn't fix it because the
+    # shell `${VAR:-default}` falls back to the default on empty
+    # strings.
+    # Bypassing the entrypoint script and running vault directly
+    # avoids the munging entirely.
+    entrypoint: ["vault"]
+    command: ["server", "-config=/vault/config/vault.hcl"]
+    # Explicitly clear the dev-mode env keys the base compose
+    # carries. Without this:
+    #   * VAULT_DEV_LISTEN_ADDRESS makes Vault try to bind a SECOND
+    #     listener at 0.0.0.0:8200, racing the one vault.hcl declares
+    #     → "address already in use" + restart loop.
+    #   * VAULT_DEV_ROOT_TOKEN_ID + VAULT_TOKEN are logged as
+    #     "ignored outside dev mode" — harmless but noisy.
+    # Empty string values blank-out the inherited env without removing
+    # the keys (Compose has no per-key remove for env maps).
     environment:
-      # Override the dev compose's hardcoded `dev-only-root`. The
-      # operator picks this in .env.prod — strong, treat it like the
-      # root password for the whole substrate.
-      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_ROOT_TOKEN:?VAULT_ROOT_TOKEN must be set in .env.prod}
-      VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
-      VAULT_ADDR: http://127.0.0.1:8200
-      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
-    # `!override` replaces the dev compose's 0.0.0.0:8200 mapping — see
-    # the mysql block for the rationale.
+      VAULT_DEV_LISTEN_ADDRESS: ""
+      VAULT_DEV_ROOT_TOKEN_ID: ""
+      VAULT_TOKEN: ""
+      VAULT_ADDR: ""
+    # `!override` replaces the dev compose's 0.0.0.0:8200 mapping —
+    # see the mysql block for the rationale.
     ports: !override
       - "127.0.0.1:8200:8200"
     volumes:
-      # Audit log volume — keeps the Phase 2e cycle 1 vector-sidecar
-      # flow working.
-      - wg_manager_vault_audit_logs:/vault/logs
-      # Reserved for the Phase 2e production-Vault cycle. Today the
-      # mount exists but ``server -dev`` ignores it (dev mode is
-      # in-memory); we mount it now so the future file-storage flip
-      # doesn't have to coordinate a volume change.
+      # The production HCL config — read-only so a compromised
+      # Vault can't rewrite its own storage path or listener addr.
+      - ./docker/vault/vault.hcl:/vault/config/vault.hcl:ro
+      # File storage backend writes here. `wg_manager_vault_data`
+      # is what carries Vault state across container restarts —
+      # losing this volume means losing every secret Vault holds
+      # (recoverable via `vault operator raft snapshot` if the
+      # operator set up periodic snapshots; see
+      # docs/runbooks/backup-restore.md).
       - wg_manager_vault_data:/vault/file
+      # Audit log volume — keeps the Phase 2e cycle 1 vector-
+      # sidecar flow working.
+      - wg_manager_vault_audit_logs:/vault/logs
+    # Override the dev compose's healthcheck. The dev version hits
+    # `/v1/sys/health` which returns 501 (uninit) or 503 (sealed) —
+    # both make `wget` exit non-zero, so the container reports
+    # unhealthy and bootstrap-substrate's `depends_on:
+    # { vault: service_healthy }` never trips. The query params
+    # below make Vault return 204 for uninit / sealed instead of
+    # 501 / 503, so we report healthy as soon as the listener is up.
+    # The actual init + unseal happens inside bootstrap-substrate
+    # (scripts/vault_init_unseal.sh) AFTER this healthcheck passes.
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8200/v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
 
   # -------------------------------------------------------------------------
   # Self-bootstrap Phase 1: substrate (Vault PKI / SSH CA / audit + MySQL certs).
@@ -174,7 +236,12 @@ services:
         condition: service_healthy
     environment:
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      # VAULT_TOKEN intentionally NOT set here. On first prod-up
+      # the token doesn't exist yet — the script runs `vault
+      # operator init` to generate it. On subsequent prod-ups the
+      # entrypoint shim baked into the image sources the token from
+      # /app/vault-init.json before exec'ing the script.
+      VAULT_INIT_FILE: /app/vault-init.json
       CRYPTO_BACKEND: vault
       SSH_CA_BACKEND: vault
       PKI_BACKEND: vault
@@ -199,6 +266,12 @@ services:
       # container has access to the helpers AND to the two
       # prod_bootstrap_*.sh entrypoints themselves.
       - ./scripts:/app/scripts:ro
+      # WRITABLE — first-run `vault operator init` writes the unseal
+      # keys + root token JSON here (mode 0600). Subsequent prod-ups
+      # read it back to unseal Vault. Path is operator-side; back
+      # up alongside .env.prod (losing both = losing every secret
+      # Vault holds). Gitignored.
+      - ./vault-init.json:/app/vault-init.json
     command: ["/app/scripts/prod_bootstrap_substrate.sh"]
 
   # -------------------------------------------------------------------------
@@ -234,7 +307,11 @@ services:
       DATABASE_TLS_CERT_PEM: /app/tls/mysql/client.crt
       DATABASE_TLS_KEY_PEM: /app/tls/mysql/client.key
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      # VAULT_TOKEN is sourced by the wg-manager image's entrypoint
+      # shim (docker/entrypoint-wg-manager.sh) from
+      # /app/vault-init.json before exec'ing the CMD. The file is
+      # bind-mounted read-only via the volumes block.
+      VAULT_INIT_FILE: /app/vault-init.json
       CRYPTO_BACKEND: vault
       SSH_CA_BACKEND: vault
       PKI_BACKEND: vault
@@ -267,6 +344,9 @@ services:
       # alembic state.
       - ./alembic:/app/alembic:ro
       - ./alembic.ini:/app/alembic.ini:ro
+      # Read-only — the entrypoint shim sources VAULT_TOKEN from this
+      # file. bootstrap-substrate is the only writer.
+      - ./vault-init.json:/app/vault-init.json:ro
     command: ["/app/scripts/prod_bootstrap_app.sh"]
 
   # -------------------------------------------------------------------------
@@ -302,7 +382,11 @@ services:
       CELERY_BROKER_URL: redis://:${VALKEY_PASSWORD}@valkey:6379/0
       CELERY_RESULT_BACKEND: redis://:${VALKEY_PASSWORD}@valkey:6379/0
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      # VAULT_TOKEN is sourced by the wg-manager image's entrypoint
+      # shim (docker/entrypoint-wg-manager.sh) from
+      # /app/vault-init.json before exec'ing the CMD. The file is
+      # bind-mounted read-only via the volumes block.
+      VAULT_INIT_FILE: /app/vault-init.json
 
       # ----- All four substrate backends pinned to Vault -----
       # Phase 3d cycle 1's HA startup guard rejects ``local`` +
@@ -357,6 +441,9 @@ services:
       # Mint with `wg-manager certs issue` (Phase 2d CP3.3) — see the
       # bootstrap runbook for the full sequence.
       - ./tls:/app/tls:ro
+      # Read-only — the entrypoint shim sources VAULT_TOKEN from this
+      # file. bootstrap-substrate is the only writer.
+      - ./vault-init.json:/app/vault-init.json:ro
     ports:
       # Public ingress for the operator API. `WG_MANAGER_API_BIND_ADDR`
       # defaults to 0.0.0.0 (all interfaces); operators on a multi-
@@ -416,7 +503,11 @@ services:
       CELERY_BROKER_URL: redis://:${VALKEY_PASSWORD}@valkey:6379/0
       CELERY_RESULT_BACKEND: redis://:${VALKEY_PASSWORD}@valkey:6379/0
       VAULT_ADDR: http://vault:8200
-      VAULT_TOKEN: ${VAULT_ROOT_TOKEN}
+      # VAULT_TOKEN is sourced by the wg-manager image's entrypoint
+      # shim (docker/entrypoint-wg-manager.sh) from
+      # /app/vault-init.json before exec'ing the CMD. The file is
+      # bind-mounted read-only via the volumes block.
+      VAULT_INIT_FILE: /app/vault-init.json
       CRYPTO_BACKEND: vault
       SSH_CA_BACKEND: vault
       PKI_BACKEND: vault
@@ -433,6 +524,9 @@ services:
       DEFAULT_WG_PORT: ${DEFAULT_WG_PORT:-51820}
     volumes:
       - ./tls:/app/tls:ro
+      # Read-only — the entrypoint shim sources VAULT_TOKEN from this
+      # file. bootstrap-substrate is the only writer.
+      - ./vault-init.json:/app/vault-init.json:ro
 
   # -------------------------------------------------------------------------
   # NEW: Next.js dashboard.

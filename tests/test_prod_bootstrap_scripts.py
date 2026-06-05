@@ -107,6 +107,28 @@ class TestScriptShebangs:
 class TestSubstrateScript:
     """Phase 1 — Vault bootstraps + MySQL cert mints."""
 
+    def test_invokes_vault_init_unseal_first(
+        self, substrate_body: str
+    ) -> None:
+        # The init/unseal step must run BEFORE any of the engine
+        # bootstraps — they all need an authenticated, unsealed
+        # client. Pin the ordering by index, not just presence.
+        body = substrate_body
+        assert "vault_init_unseal" in body, (
+            "Phase 1 script must invoke scripts/vault_init_unseal.sh "
+            "(or .py) as its first Vault operation so the engine "
+            "bootstraps that follow get an authenticated, unsealed "
+            "client."
+        )
+        init_idx = body.find("vault_init_unseal")
+        for after in ("pki_bootstrap", "ssh_ca_bootstrap", "transit_bootstrap"):
+            after_idx = body.find(after)
+            assert after_idx > init_idx, (
+                f"vault_init_unseal must come BEFORE {after} in the "
+                "Phase 1 script — the engine bootstraps need an "
+                "unsealed Vault to talk to."
+            )
+
     @pytest.mark.parametrize(
         "marker",
         [

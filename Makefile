@@ -139,6 +139,14 @@ prod-up:
 		echo "       See docs/deploy/single-host-prod.md for the bootstrap order."; \
 		exit 2; \
 	fi
+	# Ensure vault-init.json exists as a FILE (not a directory) before
+	# compose bind-mounts it. On first prod-up the file is empty;
+	# bootstrap-substrate writes the generated unseal keys + root
+	# token into it via `vault operator init`. Without this touch,
+	# Docker silently creates a directory at the mount target — which
+	# the script then can't write to.
+	@touch vault-init.json
+	@chmod 0600 vault-init.json
 	# `--wait` blocks until every service reaches its target state
 	# (`healthy` for long-runners, `exited 0` for the two bootstrap
 	# containers). With the self-bootstrap services, that means the

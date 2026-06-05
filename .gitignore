@@ -66,3 +66,4 @@ backups/
 # `wg-manager evidence pack`. Each pack carries the cert + operator
 # inventory, audit events, and a Vault audit log slice — never commit.
 evidence/
+vault-init.json
