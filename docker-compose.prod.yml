@@ -331,6 +331,18 @@ services:
       # ----- Listener -----
       BIND_HOST: 0.0.0.0
       BIND_PORT: "8000"
+
+      # ----- WireGuard defaults -----
+      # CIDR a `POST /servers` payload inherits when `subnet` is
+      # omitted. Picked by the dashboard's "New server" form as the
+      # pre-filled value. Defaults to the code default 10.9.0.0/24;
+      # override in .env.prod.
+      DEFAULT_SUBNET: ${DEFAULT_SUBNET:-10.9.0.0/24}
+      # UDP port a `POST /servers` payload inherits when
+      # `wg_port` is omitted. Operators running multiple wg-manager
+      # stacks on overlapping VPN address space will want distinct
+      # ports per stack.
+      DEFAULT_WG_PORT: ${DEFAULT_WG_PORT:-51820}
     volumes:
       # tls/ is operator-managed on the host; the container only reads.
       # Mint with `wg-manager certs issue` (Phase 2d CP3.3) — see the
@@ -406,6 +418,10 @@ services:
       OTEL_EXPORTER: ${OTEL_EXPORTER:-none}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://localhost:4318}
       OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-wg-manager}
+      # WireGuard defaults — same passthrough as the api service so
+      # provisioning tasks see the operator's overrides.
+      DEFAULT_SUBNET: ${DEFAULT_SUBNET:-10.9.0.0/24}
+      DEFAULT_WG_PORT: ${DEFAULT_WG_PORT:-51820}
     volumes:
       - ./tls:/app/tls:ro
 
