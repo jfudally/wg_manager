@@ -58,6 +58,8 @@ echo "==> Bootstrapping Vault SSH CA..."
 ${PYTHON} "${SCRIPT_DIR}/ssh_ca_bootstrap.py"
 echo "==> Bootstrapping Vault audit device..."
 ${PYTHON} "${SCRIPT_DIR}/vault_audit_bootstrap.py"
+echo "==> Bootstrapping Vault Transit engine + master key..."
+${PYTHON} "${SCRIPT_DIR}/transit_bootstrap.py"
 
 # ----- 3. Mint MySQL server cert (skip if already present) -----
 if [[ -f "${TLS_DIR}/mysql/server.crt" && -f "${TLS_DIR}/mysql/server.key" ]]; then

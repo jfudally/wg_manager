@@ -113,6 +113,7 @@ class TestSubstrateScript:
             "pki_bootstrap",       # python script the Vault PKI bootstrap calls
             "ssh_ca_bootstrap",    # SSH CA bootstrap
             "vault_audit_bootstrap",  # audit device bootstrap
+            "transit_bootstrap",   # Transit engine + master key
         ],
     )
     def test_invokes_vault_bootstrap_script(

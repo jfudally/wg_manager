@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -51,6 +51,8 @@ help:
 	@echo "  backup-vault   Save a Vault raft snapshot to backups/vault/ (Phase 2e — production Vault only; see docs/runbooks/backup-restore.md)"
 	@echo "  ssh-ca-bootstrap  Idempotently configure the Vault SSH CA (Phase 2c)"
 	@echo "  pki-bootstrap  Idempotently configure the Vault PKI (Phase 2d)"
+	@echo "  transit-bootstrap"
+	@echo "                 Idempotently enable the Vault Transit engine + master key (Phase 2b)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
@@ -259,6 +261,14 @@ ssh-ca-bootstrap:
 pki-bootstrap:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
 		$(PYTHON) scripts/pki_bootstrap.py
+
+# Phase 2b — enable Vault Transit engine + create the `wg-manager`
+# master key with derived=True (required for the per-row context
+# binding wg_manager.crypto enforces). Idempotent. The prod stack's
+# self-bootstrap (`make prod-up`) runs this automatically.
+transit-bootstrap:
+	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
+		$(PYTHON) scripts/transit_bootstrap.py
 
 # ---------------------------------------------------------------------------
 # MySQL TLS (Phase 2d CP4.2) — mint the server cert into the bind-mount
