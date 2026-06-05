@@ -8,6 +8,61 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+## [v0.2.1] - 2026-06-05
+
+**Patch release**: closes a single bug class the v0.2.0 verification on
+rv.vpn surfaced — `DEFAULT_SUBNET` (and `DEFAULT_WG_PORT`) set in
+`.env.prod` were silently ignored by the production stack. The v0.2.0
+prod overlay never propagated those `${VAR}`s into the containers
+that needed them; operators set the override, watched nothing
+change, and saw the default tenant come up with the code-default
+`10.9.0.0/24` regardless.
+
+### Fixed
+
+- **`DEFAULT_SUBNET` + `DEFAULT_WG_PORT` now flow from `.env.prod`
+  through the prod overlay (PR #50 + PR #51).** The two PRs together
+  cover the full data path: request-time + migration-time.
+
+  - **PR #50** — pass the two env vars through to `api` + `worker`.
+    Without this, `Settings.default_subnet` on the running api falls
+    back to the code default (`config.py:60` = `10.9.0.0/24`) on
+    every `POST /servers` payload that omits the `subnet` field. The
+    dashboard's "New server" form pre-fills from this value too, so
+    an operator who set the override in `.env.prod` would see the
+    pre-fill ignore them.
+  - **PR #51** — same passthrough for `bootstrap-app`. Alembic
+    migration `0016_add_tenant_subnet_pool.py:68` reads
+    `live_settings.default_subnet` AT MIGRATION TIME to backfill the
+    default tenant's `subnet_pool`. The migration runs inside
+    `bootstrap-app` (the container that does `alembic upgrade head`),
+    NOT inside api/worker. So even after PR #50 fixed the request-
+    time path, the default tenant's `subnet_pool` still came up at
+    `10.9.0.0/24` on every fresh-volume boot because `bootstrap-app`
+    was missing the env. PR #51 closes the loop.
+
+  Verified end-to-end on rv.vpn after both PRs landed: with
+  `DEFAULT_SUBNET=10.8.0.0/24` in `.env.prod`, `make prod-down -v` +
+  `make prod-up` brings the default tenant up with
+  `subnet_pool='10.8.0.0/24'` (confirmed via both
+  `SELECT * FROM tenant` directly against MySQL and
+  `GET /v1/tenants` through the mTLS API).
+
+  Operator remediation on a stack already bootstrapped with the
+  buggy v0.2.0 default:
+  - **A.** `make prod-down -v` + `make prod-up` on v0.2.1 — re-runs
+    migration 0016 against the env-corrected `bootstrap-app`. Wipes
+    state.
+  - **B.** Manual SQL — `UPDATE tenant SET subnet_pool='<your-cidr>'
+    WHERE id=1`. Preserves state.
+
+  `.env.prod.example` grew a documented `DEFAULT_SUBNET` +
+  `DEFAULT_WG_PORT` block explaining when an operator overrides
+  (overlapping VPN address space with another stack, conflicting
+  host routes). Tests grew two parametrised cases pinning the
+  passthrough on api + bootstrap-app so the bug class can't
+  re-emerge silently.
+
 ## [v0.2.0] - 2026-06-05
 
 **Release theme**: production deployability. The dev compose became
