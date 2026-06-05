@@ -277,23 +277,26 @@ class TestApiServiceShape:
             ".env.prod and watch nothing change."
         )
 
-    def test_api_uses_no_hardcoded_vault_root_token(
+    def test_api_does_not_set_vault_token_in_env(
         self, services: dict
     ) -> None:
+        # Production-Vault posture: the root token is generated at
+        # first-run `vault operator init` (not operator-provided),
+        # captured in vault-init.json, and exported into the container
+        # env by the entrypoint shim — NOT by Compose. If a future
+        # edit puts VAULT_TOKEN back in the api's `environment:`
+        # block, the operator's `.env.prod` value (which doesn't
+        # exist anymore) would have to be present at Compose-eval
+        # time or `compose up` would fail. The right answer is the
+        # entrypoint shim that runs AFTER vault-init.json exists.
         env = _env(services["api"])
-        # The dev compose hardcodes ``dev-only-root``. The prod overlay
-        # must source the token from .env.prod via interpolation so
-        # operators set a non-shareable value.
-        token = env.get("VAULT_TOKEN", "")
-        assert "dev-only-root" not in token, (
-            "api VAULT_TOKEN must NOT be the dev-compose's hardcoded "
-            "`dev-only-root` value in the prod overlay; reference an "
-            "env var (e.g. ${VAULT_ROOT_TOKEN}) so each deploy picks "
-            "its own."
-        )
-        assert "${" in token or "$" in token, (
-            "api VAULT_TOKEN must be ${VAR}-interpolated in the prod "
-            "overlay so operators can rotate without editing YAML."
+        assert "VAULT_TOKEN" not in env, (
+            "api must NOT declare VAULT_TOKEN in its compose env — "
+            "with production-mode Vault the token is generated at "
+            "first init and sourced by the entrypoint shim from "
+            "vault-init.json. A Compose-env reference would force "
+            "the value to exist at `compose up` parse time, before "
+            "the bootstrap container has had a chance to create it."
         )
 
 
@@ -449,22 +452,79 @@ class TestDataTierOverrides:
             f"network; got command={cmd!r}."
         )
 
-    def test_vault_root_token_from_env(self, services: dict) -> None:
+    def test_vault_runs_in_production_mode(self, services: dict) -> None:
+        # The prod overlay's vault service must NOT run `server -dev`
+        # (in-memory, auto-unsealed, fixed token). It must run
+        # `server -config=...` with the file-storage HCL config.
+        # Without this, every Vault restart wipes state — the bug
+        # class that the rv.vpn bootstrap-host-CA-mismatch closed.
+        cmd = services["vault"].get("command", []) or []
+        cmd_str = " ".join(str(c) for c in cmd) if isinstance(cmd, list) else str(cmd)
+        assert "-config=" in cmd_str or "-config " in cmd_str, (
+            "vault service must run `vault server -config=...` in "
+            "prod — the file-storage backend in vault.hcl is what "
+            f"makes state persist across restarts. Got: {cmd_str!r}."
+        )
+        assert "-dev" not in cmd_str, (
+            "vault service must NOT run `-dev` in the prod overlay. "
+            "Dev mode is in-memory + auto-unsealed + fixed root "
+            "token — none of those are production-shaped. "
+            f"Got: {cmd_str!r}."
+        )
+
+    def test_vault_mounts_hcl_config(self, services: dict) -> None:
+        # `docker/vault/vault.hcl` must be bind-mounted into the
+        # container at the path the `-config=` flag points at.
+        volumes = services["vault"].get("volumes", []) or []
+        joined = " ".join(str(v) for v in volumes)
+        assert "docker/vault/vault.hcl" in joined, (
+            "vault service must bind-mount docker/vault/vault.hcl "
+            "into the container as its config. Without this the "
+            "`-config=` flag has nothing to read."
+        )
+        # The HCL must be :ro — a compromised Vault should not be
+        # able to rewrite its own storage path.
+        for entry in volumes:
+            s = str(entry)
+            if "docker/vault/vault.hcl" in s:
+                assert ":ro" in s, (
+                    "vault.hcl bind-mount must be :ro — defence in "
+                    f"depth against a compromised Vault. Got: {s!r}."
+                )
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "VAULT_DEV_ROOT_TOKEN_ID",
+            "VAULT_DEV_LISTEN_ADDRESS",
+            "VAULT_TOKEN",
+        ],
+    )
+    def test_vault_dev_env_keys_blanked(
+        self, services: dict, key: str
+    ) -> None:
+        # The base compose's dev-mode env keys MUST be cleared in
+        # the prod overlay. Compose merges environment MAPS at the
+        # key level (no `!reset` for maps the way ports lists have),
+        # so the only way to "remove" an inherited key is to set
+        # it to an empty string in the override.
+        #
+        # The bug-shape this catches: a real value here (especially
+        # VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200) makes Vault try to
+        # bind a SECOND listener that races vault.hcl's listener —
+        # "address already in use" + restart loop. VAULT_TOKEN with
+        # a real value defeats the entrypoint-shim sourcing
+        # contract.
         env = _env(services["vault"])
-        # `VAULT_DEV_ROOT_TOKEN_ID` is the dev-mode boot token.
-        # `VAULT_TOKEN` is the CLI's auth env.
-        for key in ("VAULT_DEV_ROOT_TOKEN_ID", "VAULT_TOKEN"):
-            val = env.get(key, "")
-            if not val:
-                # The overlay may rely on the base service's env for one
-                # of these; the assertion that matters is "no dev-only-
-                # root anywhere in the merged file" — and the api
-                # service-level test pins that side. Skip if absent.
-                continue
-            assert "dev-only-root" not in val, (
-                f"vault {key} must NOT be the dev-compose's hardcoded "
-                "`dev-only-root` value in the prod overlay."
-            )
+        val = env.get(key, "")
+        assert val == "" or val == '""', (
+            f"vault service must blank-out {key} (set to \"\") in "
+            "the prod overlay so the inherited dev-compose env "
+            "doesn't activate. The dev-compose env keys ride into "
+            "the prod overlay via Compose's environment-map merge "
+            "unless explicitly cleared. Got "
+            f"{key}={val!r}."
+        )
 
     def test_vault_keeps_audit_log_mount(self, services: dict) -> None:
         # The Phase 2e audit cycle 1 volume mount (the vector sidecar

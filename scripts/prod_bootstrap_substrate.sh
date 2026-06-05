@@ -37,19 +37,23 @@ WG_MANAGER="${WG_MANAGER:-wg-manager}"
 
 mkdir -p "${TLS_DIR}/mysql"
 
-# ----- 1. Wait for Vault (compose dep should make this trivial) -----
-echo "==> Waiting for Vault at ${VAULT_ADDR}..."
-until ${PYTHON} -c "
-import urllib.request, sys
-try:
-    r = urllib.request.urlopen('${VAULT_ADDR}/v1/sys/health', timeout=3)
-    sys.exit(0 if r.status in (200, 429, 472, 473) else 1)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; do
-    sleep 1
-done
-echo "    Vault reachable"
+# ----- 1. Wait for Vault + init + unseal -----
+# `vault_init_unseal.sh` handles the full state machine: waits for
+# the listener to be reachable, runs `vault operator init` on a
+# fresh Vault (writes vault-init.json), unseals using the saved
+# keys. The OLD duplicate wait loop that lived here was a bug —
+# it used a stale 200-only health check that hung forever when
+# Vault was in the uninitialized state (501) or sealed (503), which
+# is exactly the state a fresh prod-up starts in with file storage.
+# Must run BEFORE any of the engine bootstraps — they all need an
+# authenticated, unsealed client. The script handles three states:
+# uninitialized → init + unseal; initialized+sealed → unseal;
+# initialized+unsealed → no-op. After running, VAULT_TOKEN is
+# exported into this shell from /app/vault-init.json so the
+# subsequent pki/ssh_ca/transit/audit bootstraps authenticate.
+echo "==> Init + unseal Vault..."
+# shellcheck source=./vault_init_unseal.sh
+source "${SCRIPT_DIR}/vault_init_unseal.sh"
 
 # ----- 2. Bootstrap Vault substrate (idempotent) -----
 echo "==> Bootstrapping Vault PKI..."

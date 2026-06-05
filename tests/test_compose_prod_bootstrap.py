@@ -302,6 +302,59 @@ class TestBootstrapOperatorWiring:
     """bootstrap-app must receive the operator CN env so it can
     register + mint the operator's client cert."""
 
+    def test_substrate_bootstrap_mounts_vault_init_writable(
+        self, services: dict
+    ) -> None:
+        # Substrate bootstrap WRITES vault-init.json on first run
+        # (vault_init_unseal.sh runs `vault operator init` and
+        # captures the unseal keys + root token). The bind-mount
+        # must therefore be writable — :ro would make first-run
+        # init fail.
+        volumes = services["bootstrap-substrate"].get("volumes", []) or []
+        joined = " ".join(str(v) for v in volumes)
+        assert "vault-init.json" in joined, (
+            "bootstrap-substrate must bind-mount vault-init.json — "
+            "the first-run `vault operator init` writes the unseal "
+            "keys + root token here, and every subsequent prod-up "
+            "reads it back to auto-unseal."
+        )
+        # Find the vault-init.json mount and confirm it lacks :ro
+        for entry in volumes:
+            s = str(entry)
+            if "vault-init.json" in s:
+                assert ":ro" not in s, (
+                    "bootstrap-substrate's vault-init.json mount must "
+                    "NOT be :ro — first-run init writes the file here. "
+                    f"Got: {s!r}."
+                )
+
+    @pytest.mark.parametrize(
+        "name", ["api", "worker", "bootstrap-app"]
+    )
+    def test_runtime_containers_mount_vault_init_read_only(
+        self, services: dict, name: str
+    ) -> None:
+        # api / worker / bootstrap-app only READ vault-init.json
+        # (their entrypoint shim sources the root token). The
+        # mount must be :ro so a compromised runtime container
+        # can't rewrite the unseal keys.
+        volumes = services[name].get("volumes", []) or []
+        joined = " ".join(str(v) for v in volumes)
+        assert "vault-init.json" in joined, (
+            f"{name} must bind-mount vault-init.json — the "
+            "entrypoint shim sources VAULT_TOKEN from it before "
+            "exec'ing the real CMD."
+        )
+        for entry in volumes:
+            s = str(entry)
+            if "vault-init.json" in s:
+                assert ":ro" in s, (
+                    f"{name}'s vault-init.json mount must be :ro — "
+                    "the runtime tier only reads the token; only "
+                    "bootstrap-substrate writes. "
+                    f"Got: {s!r}."
+                )
+
     @pytest.mark.parametrize(
         "key", ["DEFAULT_SUBNET", "DEFAULT_WG_PORT"]
     )
