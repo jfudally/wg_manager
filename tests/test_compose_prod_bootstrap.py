@@ -302,6 +302,34 @@ class TestBootstrapOperatorWiring:
     """bootstrap-app must receive the operator CN env so it can
     register + mint the operator's client cert."""
 
+    @pytest.mark.parametrize(
+        "key", ["DEFAULT_SUBNET", "DEFAULT_WG_PORT"]
+    )
+    def test_bootstrap_app_passes_through_wg_defaults(
+        self, services: dict, key: str
+    ) -> None:
+        # Alembic migration 0016 reads ``Settings.default_subnet``
+        # AT MIGRATION TIME to backfill the default tenant's
+        # ``subnet_pool``. ``bootstrap-app`` is what runs
+        # ``alembic upgrade head``, so it must see the same
+        # operator-provided overrides as the runtime tier. Missing
+        # the passthrough here makes the default tenant inherit the
+        # code default (10.9.0.0/24) on a fresh-volume boot
+        # regardless of what's in ``.env.prod`` — even when the
+        # api/worker passthrough is correct.
+        env = services["bootstrap-app"].get("environment") or {}
+        if isinstance(env, list):
+            env = dict(e.split("=", 1) for e in env if "=" in e)
+        val = str(env.get(key, ""))
+        assert "${" in val or "$" in val, (
+            f"bootstrap-app must ${{{key}}}-interpolate {key} from "
+            ".env.prod so Alembic migrations that read "
+            f"Settings.{key.lower()} at apply-time pick up the "
+            "operator override. Without this, the default tenant's "
+            "subnet_pool is set from the code default on every fresh-"
+            "volume boot."
+        )
+
     def test_bootstrap_app_receives_operator_cn(
         self, services: dict
     ) -> None:
