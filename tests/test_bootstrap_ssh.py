@@ -185,6 +185,82 @@ class TestBootstrapRunnerWiring:
         )
 
 
+class TestBootstrapRunnerKeyPemSource:
+    """Phase 4 — the runner accepts the PEM body in-memory, not only via path.
+
+    The API/UI bootstrap path (this cycle) receives the operator's
+    long-lived SSH key from an HTTPS request body. Writing it to a temp
+    file inside the Celery worker just so the runner can re-read it is
+    a needless secret-on-disk step — and an audit-trail liability if
+    the worker crashes mid-bootstrap. These tests pin the contract:
+
+    * Passing ``key_pem`` (a string) is supported as a peer of
+      ``key_path`` so the new task layer can hand the PEM straight in.
+    * Exactly one of ``key_pem`` / ``key_path`` must be supplied;
+      passing both, or neither, is a configuration error caught at
+      construction time so the worker fails fast instead of silently
+      ignoring one of the two.
+    """
+
+    def test_bootstrap_runner_accepts_key_pem_string(
+        self, ed25519_key_file: Path
+    ) -> None:
+        """The runner opens a session when only ``key_pem`` is supplied.
+
+        Reads the same PEM the file-path test uses so the asserted
+        wire-shape is identical: AutoAddPolicy installed, paramiko PKey
+        attached, ``connect`` called with the right coordinates. The
+        only difference is the construction call — no file path on the
+        instance, the bytes came straight from memory.
+        """
+        pem = ed25519_key_file.read_text()
+        runner = BootstrapSSHRunner(
+            host="fresh-host.example.com",
+            port=22,
+            username="ubuntu",
+            key_pem=pem,
+        )
+
+        with mock.patch(
+            "wg_manager.bootstrap_ssh.paramiko.SSHClient"
+        ) as fake_client_cls:
+            fake_client = fake_client_cls.return_value
+            with runner:
+                pass
+
+        connect_kwargs = fake_client.connect.call_args.kwargs
+        assert connect_kwargs["hostname"] == "fresh-host.example.com"
+        assert connect_kwargs["username"] == "ubuntu"
+        pkey = connect_kwargs["pkey"]
+        assert isinstance(pkey, paramiko.PKey), (
+            f"expected a paramiko.PKey on the connect call, "
+            f"got {type(pkey).__name__}"
+        )
+
+    def test_bootstrap_runner_rejects_both_key_path_and_key_pem(
+        self, ed25519_key_file: Path
+    ) -> None:
+        """Both sources at once is ambiguous — fail fast at construction."""
+        pem = ed25519_key_file.read_text()
+        with pytest.raises(ValueError, match="key_path.*key_pem|key_pem.*key_path"):
+            BootstrapSSHRunner(
+                host="fresh-host.example.com",
+                port=22,
+                username="ubuntu",
+                key_path=ed25519_key_file,
+                key_pem=pem,
+            )
+
+    def test_bootstrap_runner_rejects_no_key_source(self) -> None:
+        """No key at all is a configuration error, not a silent no-auth."""
+        with pytest.raises(ValueError, match="key_path.*key_pem|key_pem.*key_path"):
+            BootstrapSSHRunner(
+                host="fresh-host.example.com",
+                port=22,
+                username="ubuntu",
+            )
+
+
 class _FakeRunner:
     """Minimal stand-in for BootstrapSSHRunner used by the orchestrator tests.
 

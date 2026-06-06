@@ -25,8 +25,10 @@ from typing import Any
 from celery.utils.log import get_task_logger
 from sqlmodel import Session, select
 
+from wg_manager.bootstrap_ssh import BootstrapSSHRunner, bootstrap_host
 from wg_manager.celery_app import celery_app
 from wg_manager.config import Settings
+from wg_manager.crypto import make_backend as make_crypto_backend
 from wg_manager.host_ssh import HostCertInstallError, install_host_cert
 from wg_manager.locks import task_row_lock
 from wg_manager.models import (
@@ -747,4 +749,131 @@ def discover_all_peers_task(self) -> dict[str, Any]:
         "servers_failed": failed,
         "peers_total": peers_total,
         "results": results,
+    }
+
+
+@celery_app.task(name="wg_manager.tasks.bootstrap_host", bind=True)
+def bootstrap_host_task(
+    self,
+    *,
+    hostname: str,
+    ssh_port: int,
+    ssh_user: str,
+    principal: str,
+    ttl_seconds: int,
+    connect_timeout: float,
+    pem_ciphertext: str,
+    pem_context: str,
+    passphrase_ciphertext: str | None = None,
+    passphrase_context: str | None = None,
+) -> dict[str, Any]:
+    """Install the SSH CA trust + a host cert on a fresh target host.
+
+    Workflow mirrors the ``wg-manager bootstrap-host`` CLI, but lives
+    behind the operator dashboard so a one-off install no longer
+    requires shelling into the prod stack and crafting a docker
+    compose ``run`` invocation. The operator's long-lived SSH key is
+    handed over as ciphertext (the router encrypts via
+    :mod:`wg_manager.crypto` before queueing) so the broker never sees
+    plaintext key material.
+
+    Steps:
+
+    1. Decrypt ``pem_ciphertext`` (and ``passphrase_ciphertext`` if
+       supplied) using the configured crypto backend. Plaintext lives
+       only inside this task's stack frame; it never lands on disk
+       and never enters the database.
+    2. Open a :class:`BootstrapSSHRunner` against the target — exactly
+       one TOFU-permitted SSH session, by design (see
+       :mod:`wg_manager.bootstrap_ssh` module docstring).
+    3. Invoke :func:`wg_manager.bootstrap_ssh.bootstrap_host` to lay
+       down ``/etc/ssh/wg-manager-user-ca.pub``, a CA-signed host
+       cert, and the sshd drop-in.
+    4. Return the cert metadata (serial, principals, validity window)
+       to the caller so the dashboard can render a confirmation card.
+
+    Failure modes (TOFU-stage auth, missing host pubkey, CA refusal)
+    are caught and re-raised as plain ``RuntimeError`` so the polling
+    endpoint surfaces a single-line message rather than a 30-frame
+    paramiko traceback. The traceback is logged via
+    :func:`logger.error` for forensic inspection.
+
+    :param hostname: SSH dial-name or IP of the target. Defaults the
+        cert principal when ``principal`` is omitted.
+    :param ssh_port: SSH port on the target. Almost always 22.
+    :param ssh_user: Remote user account that already has the
+        operator's long-lived key in its ``authorized_keys``.
+    :param principal: Hostname / DNS name baked into the new host
+        cert. The CLI's ``--principal`` analogue.
+    :param ttl_seconds: TTL the host-cert request asks the CA for.
+        Vault caps this at the host-role's ``max_ttl``.
+    :param connect_timeout: Seconds to wait for the TCP handshake +
+        SSH banner + auth before failing fast.
+    :param pem_ciphertext: Output of
+        :meth:`wg_manager.crypto.CryptoBackend.encrypt` against the
+        operator's PEM body.
+    :param pem_context: The crypto context the ciphertext was bound
+        to at encrypt time (Vault Transit refuses to decrypt under a
+        mismatched context). The router and task share a fixed
+        string for this; see :mod:`wg_manager.routers.bootstrap`.
+    :param passphrase_ciphertext: Ciphertext of the optional
+        passphrase protecting the PEM. ``None`` when the key is
+        unencrypted (the common case for an operator's loopback key).
+    :param passphrase_context: Context for the passphrase ciphertext.
+        Pairs with ``passphrase_ciphertext``.
+    :return: ``{"status": "ok", "cert_serial", "principals",
+        "valid_after", "valid_before", "hostname"}``.
+    :raises RuntimeError: Wrapping an SSH-level failure with a tidy
+        one-line message.
+    """
+    crypto = make_crypto_backend()
+    pem = crypto.decrypt(pem_ciphertext, context=pem_context).decode("utf-8")
+    passphrase: str | None = None
+    if passphrase_ciphertext is not None:
+        if passphrase_context is None:
+            raise ValueError(
+                "passphrase_context is required when passphrase_ciphertext "
+                "is supplied"
+            )
+        passphrase = crypto.decrypt(
+            passphrase_ciphertext, context=passphrase_context
+        ).decode("utf-8")
+
+    settings = Settings()
+    ca = make_ssh_ca_backend(settings)
+
+    runner = BootstrapSSHRunner(
+        host=hostname,
+        port=ssh_port,
+        username=ssh_user,
+        key_pem=pem,
+        passphrase=passphrase,
+        connect_timeout=connect_timeout,
+    )
+
+    try:
+        with runner as session:
+            cert = bootstrap_host(
+                runner=session,
+                hostname=hostname,
+                principal=principal,
+                ca=ca,
+                ttl_seconds=ttl_seconds,
+                cn=ssh_user,
+            )
+    except _SSH_EXPECTED_ERRORS as exc:
+        logger.error(
+            "bootstrap of %s failed: %s", hostname, exc
+        )
+        raise _fail_clean(
+            f"bootstrap of {hostname} failed: {exc}"
+        ) from None
+
+    return {
+        "status": "ok",
+        "hostname": hostname,
+        "cert_serial": int(cert.serial),
+        "principals": list(cert.principals),
+        "valid_after": cert.valid_after.isoformat(),
+        "valid_before": cert.valid_before.isoformat(),
     }

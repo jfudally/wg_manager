@@ -128,7 +128,29 @@ before TTL expiry.
 | Sudo for your SSH user (writes to `/etc/ssh/`) | yes for `root`, `ubuntu`, etc. | passwordless sudo (or a NOPASSWD line for the specific commands) |
 | Your SSH user is in `SSH_CA_VAULT_ALLOWED_USERS` | `root,ubuntu,ec2-user,azureuser,debian,admin` | extend `SSH_CA_VAULT_ALLOWED_USERS` in `.env.prod`, `make prod-down -v` + `make prod-up` (re-runs `ssh-ca-bootstrap`) |
 
-### The install — run from the prod-stack host
+### The install — pick a path
+
+There are two equivalent ways to run the install. Both end with the
+same three files on the target (`/etc/ssh/wg-manager-user-ca.pub`,
+the signed host cert, the sshd drop-in) and the same audit-log line
+on the API side.
+
+#### Path A — Dashboard (the easy button)
+
+Open the dashboard → **Servers → Bootstrap host**. Paste the target
+hostname, the SSH user (and port if non-22), and the *contents* of
+your operator's bootstrap private key (e.g. `~/.ssh/id_ed25519`)
+into the PEM textarea. Submit. The dashboard polls the dispatched
+task and shows the cert serial + validity when the install lands.
+
+The key body is encrypted server-side via the configured crypto
+backend (Vault Transit in prod) before it touches the broker, and
+nothing about it is persisted to the DB. Close the browser tab
+after the install if you want the bytes out of the page's memory
+too. See [`docs/operator-guide.md`](../operator-guide.md) §3 for
+the trust model.
+
+#### Path B — CLI (for scripted / CI use)
 
 The CLI is baked into the api/worker image, so the cleanest
 invocation is a one-shot container that joins the compose network

@@ -63,29 +63,32 @@ from wg_manager.ssh import (
 from wg_manager.ssh_ca import HostCert, SSHCABackend
 
 
-def _load_pkey_from_path(
-    key_path: Path | str, passphrase: str | None
+def _load_pkey_from_pem(
+    pem: str, passphrase: str | None, *, source_label: str
 ) -> paramiko.PKey:
-    """Read ``key_path`` and parse it as an SSH private key.
+    """Parse a PEM body as an SSH private key, auto-detecting the algorithm.
 
-    Mirrors the auto-detect loop in :func:`wg_manager.ssh._load_pkey`
-    but reads the PEM body off disk rather than taking it as a string
-    — the bootstrap runner accepts a path because operators typically
-    keep their long-lived OOB key in a file (``~/.ssh/id_ed25519``)
-    rather than as an env var.
+    Mirrors the auto-detect loop in :func:`wg_manager.ssh._load_pkey`.
+    Two call sites use this: the file-path entry point
+    (:func:`_load_pkey_from_path`) which reads the bytes off disk, and
+    the in-memory entry point used by the API/UI bootstrap task layer
+    which receives the PEM body in the HTTPS request body.
 
-    :param key_path: Path to the PEM-encoded private key on disk.
-    :type key_path: Path | str
+    :param pem: The PEM body itself.
+    :type pem: str
     :param passphrase: Optional passphrase protecting the key. ``None``
         when the key is unencrypted (the common case for an operator's
         loopback key).
     :type passphrase: str | None
+    :param source_label: Where the PEM came from (path or "<in-memory>").
+        Surfaced in the error message so the operator can tell a bad
+        file from a bad upload.
+    :type source_label: str
     :return: A :class:`paramiko.PKey` ready for ``client.connect``.
     :rtype: paramiko.PKey
-    :raises ValueError: If the file can't be parsed by any of the
+    :raises ValueError: If the body can't be parsed by any of the
         supported loaders (Ed25519, RSA).
     """
-    pem = Path(key_path).read_text()
     loaders: list[type[paramiko.PKey]] = [
         paramiko.Ed25519Key,
         paramiko.RSAKey,
@@ -99,7 +102,30 @@ def _load_pkey_from_path(
         except paramiko.SSHException as exc:
             last_error = exc
     raise ValueError(
-        f"could not parse SSH private key at {key_path!r}: {last_error}"
+        f"could not parse SSH private key from {source_label}: {last_error}"
+    )
+
+
+def _load_pkey_from_path(
+    key_path: Path | str, passphrase: str | None
+) -> paramiko.PKey:
+    """Read ``key_path`` and parse it as an SSH private key.
+
+    Thin wrapper around :func:`_load_pkey_from_pem` kept for the CLI
+    code path, which still receives a filesystem path on the command
+    line.
+
+    :param key_path: Path to the PEM-encoded private key on disk.
+    :type key_path: Path | str
+    :param passphrase: Optional passphrase protecting the key.
+    :type passphrase: str | None
+    :return: A :class:`paramiko.PKey` ready for ``client.connect``.
+    :rtype: paramiko.PKey
+    :raises ValueError: If the file can't be parsed.
+    """
+    pem = Path(key_path).read_text()
+    return _load_pkey_from_pem(
+        pem, passphrase, source_label=repr(str(key_path))
     )
 
 
@@ -127,11 +153,18 @@ class BootstrapSSHRunner:
         host: str,
         port: int,
         username: str,
-        key_path: Path | str,
+        key_path: Path | str | None = None,
         passphrase: str | None = None,
         connect_timeout: float = 15.0,
+        *,
+        key_pem: str | None = None,
     ) -> None:
-        """Capture the connection coordinates and key path.
+        """Capture the connection coordinates and the key source.
+
+        Exactly one of ``key_path`` and ``key_pem`` must be supplied.
+        The CLI passes a path (operator's ``~/.ssh/id_ed25519``); the
+        API/UI bootstrap task passes the PEM string straight from the
+        HTTPS request body so the key never lands on disk.
 
         :param host: Hostname or IP of the target host.
         :type host: str
@@ -146,7 +179,8 @@ class BootstrapSSHRunner:
         :param key_path: Path to the operator's private key PEM.
             Loaded inside :meth:`__enter__` so the key bytes aren't
             held on the instance any longer than the session itself.
-        :type key_path: Path | str
+            Mutually exclusive with ``key_pem``.
+        :type key_path: Path | str | None
         :param passphrase: Optional passphrase protecting the key.
             Defaults to ``None`` (unencrypted key, the common case
             for an operator's loopback key).
@@ -156,11 +190,27 @@ class BootstrapSSHRunner:
             production runner's default so a dead host fails fast
             either way.
         :type connect_timeout: float
+        :param key_pem: Raw PEM body of the operator's private key.
+            Used by the API/UI bootstrap path so the key bytes never
+            touch the worker's filesystem. Mutually exclusive with
+            ``key_path``.
+        :type key_pem: str | None
+        :raises ValueError: If neither, or both, of ``key_path`` and
+            ``key_pem`` are supplied — silently picking one of them
+            could let a callsite ignore the operator's actual key.
         """
+        if (key_path is None) == (key_pem is None):
+            raise ValueError(
+                "BootstrapSSHRunner requires exactly one of key_path or "
+                "key_pem; got both" if key_path is not None else
+                "BootstrapSSHRunner requires exactly one of key_path or "
+                "key_pem; got neither"
+            )
         self.host = host
         self.port = port
         self.username = username
-        self.key_path = Path(key_path)
+        self.key_path = Path(key_path) if key_path is not None else None
+        self.key_pem = key_pem
         self.passphrase = passphrase
         self.connect_timeout = connect_timeout
         self._client: paramiko.SSHClient | None = None
@@ -190,7 +240,15 @@ class BootstrapSSHRunner:
         # allows TOFU: we are seeding the host with the CA + host cert
         # that the production runner subsequently uses to refuse TOFU.
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())  # nosec B507 — intentional TOFU; CP4.5 design
-        pkey = _load_pkey_from_path(self.key_path, self.passphrase)
+        if self.key_path is not None:
+            pkey = _load_pkey_from_path(self.key_path, self.passphrase)
+        else:
+            # key_pem path — checked at __init__ to be non-None when
+            # key_path is None, so the type-narrowing is safe.
+            assert self.key_pem is not None
+            pkey = _load_pkey_from_pem(
+                self.key_pem, self.passphrase, source_label="<in-memory PEM>"
+            )
         try:
             client.connect(
                 hostname=self.host,
