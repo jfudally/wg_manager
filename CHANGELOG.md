@@ -8,6 +8,24 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`SSH_CA_VAULT_ALLOWED_USERS` / `SSH_CA_VAULT_ALLOWED_HOST_DOMAINS`
+  now actually take effect from `.env.prod`.** The prod overlay
+  hardcoded a small env block on `bootstrap-substrate` and didn't
+  forward the SSH-CA role allowlists, so an operator extending
+  `SSH_CA_VAULT_ALLOWED_USERS` to add a custom login account (e.g.
+  ``justinfudally``) saw their edit silently ignored — Compose's
+  `--env-file` only loads values for YAML interpolation, not for
+  container env. Vault then kept refusing to sign user certs with
+  the new principal at client provision time
+  (``<user> is not a valid value for valid_principals``).
+  Adds the passthrough in `docker-compose.prod.yml` (mirroring the
+  existing `DEFAULT_SUBNET` shape), the example entry in
+  `.env.prod.example`, and a regression test in
+  `tests/test_compose_prod_bootstrap.py` so a future env-block
+  cleanup can't quietly regress this.
+
 ### Added
 
 - **API + dashboard "Bootstrap host" flow.** Lifts the
