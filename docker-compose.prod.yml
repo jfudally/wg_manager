@@ -256,6 +256,30 @@ services:
       # via the volume mount below.
       SCRIPT_DIR: /app/scripts
       TLS_DIR: /app/tls
+      # Forward the SSH-CA role allowlists from .env.prod so an
+      # operator can extend ``allowed_users`` (e.g. adding a custom
+      # login account beyond the stock cloud-image users) without
+      # editing the YAML. Compose's ``--env-file`` only loads values
+      # for YAML interpolation; without these explicit passthroughs
+      # the container sees the code defaults from
+      # :class:`Settings.ssh_ca_vault_allowed_users` regardless of
+      # what the operator put in .env.prod.
+      #
+      # The ``${VAR:-<default>}`` fallback duplicates the code
+      # default (``Settings.ssh_ca_vault_allowed_users``) so an
+      # operator who hasn't overridden the var still gets the
+      # cloud-image account list. Same pattern as ``DEFAULT_SUBNET``
+      # above. pydantic-settings treats an env var set to ``""`` as
+      # "use the empty string", not "fall back to code default", so
+      # ``${VAR:-}`` would silently break a fresh bootstrap — hence
+      # the explicit duplication. Keep this in sync with the field
+      # default in ``src/wg_manager/config.py``.
+      SSH_CA_VAULT_ALLOWED_USERS: ${SSH_CA_VAULT_ALLOWED_USERS:-root,ubuntu,ec2-user,azureuser,debian,admin}
+      # Empty default for ``allowed_host_domains`` matches the code
+      # default and is interpreted by ``VaultSSHCA.bootstrap`` as
+      # "any principal" (see the ``allowed_host_domains`` kwarg
+      # discussion in ``wg_manager.ssh_ca``).
+      SSH_CA_VAULT_ALLOWED_HOST_DOMAINS: ${SSH_CA_VAULT_ALLOWED_HOST_DOMAINS:-}
     volumes:
       # WRITABLE — Phase 1 mints cert files here. api/worker/web all
       # mount this same directory read-only.

@@ -395,3 +395,42 @@ class TestBootstrapOperatorWiring:
             "`.env.prod` so it knows which CN to register the operator "
             f"with and bind the CLI cert to. Got env={env!r}."
         )
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "SSH_CA_VAULT_ALLOWED_USERS",
+            "SSH_CA_VAULT_ALLOWED_HOST_DOMAINS",
+        ],
+    )
+    def test_bootstrap_substrate_passes_through_ssh_ca_role_allowlists(
+        self, services: dict, key: str
+    ) -> None:
+        """The Vault SSH role allowlists are operator-tunable from .env.prod.
+
+        ``scripts/ssh_ca_bootstrap.py`` reads
+        ``Settings.ssh_ca_vault_allowed_users`` (and ``...allowed_host_domains``)
+        to build the ``wg-manager-provision`` / ``wg-manager-hosts`` role
+        bodies it upserts into Vault. The substrate container is where
+        that script runs, so without this passthrough an operator
+        extending ``allowed_users`` in ``.env.prod`` to add a custom
+        login account (e.g. ``justinfudally``) sees their edit silently
+        ignored — the role keeps the code defaults, Vault keeps
+        refusing to sign user certs with the new principal, and the
+        only symptom is the cryptic
+        ``<user> is not a valid value for valid_principals`` error
+        at client provision time.
+
+        Pinning the passthrough as a test keeps a future env-block
+        cleanup from quietly regressing it.
+        """
+        env = services["bootstrap-substrate"].get("environment") or {}
+        if isinstance(env, list):
+            env = dict(e.split("=", 1) for e in env if "=" in e)
+        val = str(env.get(key, ""))
+        assert "${" in val or "$" in val, (
+            f"bootstrap-substrate must ${{{key}}}-interpolate {key} "
+            "from .env.prod so scripts/ssh_ca_bootstrap.py "
+            f"sees the operator override at role-upsert time. Got "
+            f"env={env!r}."
+        )
