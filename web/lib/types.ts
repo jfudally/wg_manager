@@ -113,6 +113,39 @@ export interface HostCertRotateResponse {
   server: Server;
 }
 
+/**
+ * Body for `POST /bootstrap-host`. Mirrors the CLI's
+ * `wg-manager bootstrap-host` flags exactly so the dashboard form maps
+ * 1:1 onto the documented CLI semantics: the operator's long-lived
+ * bootstrap SSH key (and optional passphrase) goes in
+ * `ssh_key_pem` / `ssh_key_passphrase`, the API encrypts it via the
+ * crypto backend before queueing, and the Celery task does the
+ * install. `principal` defaults to `hostname` server-side, `ssh_port`
+ * defaults to 22, `ttl_seconds` falls back to the server's
+ * `Settings.ssh_host_cert_ttl_seconds` (24 h).
+ */
+export interface BootstrapHostRequest {
+  hostname: string;
+  ssh_user: string;
+  ssh_key_pem: string;
+  ssh_key_passphrase?: string | null;
+  ssh_port?: number;
+  principal?: string | null;
+  ttl_seconds?: number | null;
+  connect_timeout?: number;
+}
+
+/**
+ * 202 response for `POST /bootstrap-host`. The cert metadata
+ * (serial / principals / validity) appears on the dispatched task's
+ * result body, not here — poll `taskStatus(task_id)` and read
+ * `result.cert_serial` / `result.valid_before`.
+ */
+export interface BootstrapHostResponse {
+  task_id: string;
+  hostname: string;
+}
+
 export interface ServerCreate {
   hostname: string;
   ssh_port?: number;

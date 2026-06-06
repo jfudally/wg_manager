@@ -363,6 +363,40 @@ describe("endpoint paths", () => {
     );
   });
 
+  it("bootstrapHost POSTs to /bootstrap-host with the PEM body", async () => {
+    // The dashboard's "Bootstrap host" form lifts the documented
+    // docker-compose run wg-manager bootstrap-host one-liner onto an
+    // HTTPS surface. The API encrypts the PEM before queueing, so the
+    // browser-side test only cares that the body is forwarded
+    // verbatim — same posture as the CLI today.
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
+      makeResponse(202, {
+        task_id: "bootstrap-task-xyz",
+        hostname: "fresh-hub.example.com",
+      }),
+    );
+
+    const result = await api.bootstrapHost({
+      hostname: "fresh-hub.example.com",
+      ssh_user: "ubuntu",
+      ssh_key_pem: "-----BEGIN OPENSSH PRIVATE KEY-----\nA\n-----END OPENSSH PRIVATE KEY-----\n",
+    });
+
+    expect(result.task_id).toBe("bootstrap-task-xyz");
+    expect(result.hostname).toBe("fresh-hub.example.com");
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "http://test.local/bootstrap-host",
+      expect.objectContaining({ method: "POST" }),
+    );
+    // Pin that the PEM lands on the wire body (the API expects it
+    // there). The PEM lives in the body string — JSON serialisation
+    // doesn't include the literal field names in any other form so a
+    // substring match is unambiguous.
+    const bodyArg = (fetchSpy.mock.calls[0]?.[1] as RequestInit)?.body;
+    expect(typeof bodyArg).toBe("string");
+    expect(bodyArg as string).toContain("BEGIN OPENSSH PRIVATE KEY");
+  });
+
   it("rotateHostCert surfaces a 409 from the API as ApiError", async () => {
     // The backend returns 409 when SSH_AUTH_MODE != "ca". The
     // dashboard catches this through the standard ApiError path and

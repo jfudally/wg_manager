@@ -8,6 +8,47 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+### Added
+
+- **API + dashboard "Bootstrap host" flow.** Lifts the
+  `wg-manager bootstrap-host` CLI onto an HTTPS surface so a fresh
+  target box can be onboarded without shelling into the prod stack
+  and crafting a `docker compose run` invocation.
+
+  - **`POST /bootstrap-host`** (`src/wg_manager/routers/bootstrap.py`):
+    accepts hostname / SSH user / SSH port / optional principal /
+    optional TTL / the operator's bootstrap PEM body / optional
+    passphrase. The PEM (and passphrase) are encrypted server-side
+    via the configured crypto backend (Vault Transit in prod)
+    before queueing, dispatched to the new Celery task, and
+    dropped at the end of the request. The PEM is never persisted
+    and never echoed in the response — operators get a `task_id`
+    + `hostname` and poll `GET /tasks/{task_id}` for the cert
+    serial / validity. Same two-step "verify install, then
+    register" contract as the CLI; bootstrap does not create a
+    `server` row.
+  - **`bootstrap_host_task`** (`src/wg_manager/tasks.py`):
+    decrypts the ciphertext in worker memory, opens one
+    `BootstrapSSHRunner` session, drives the same
+    `bootstrap_host()` helper the CLI uses, returns
+    `{cert_serial, principals, valid_after, valid_before}`.
+    Refactored `BootstrapSSHRunner` to accept `key_pem=` alongside
+    `key_path=` so the task never writes the key to disk.
+    Failure modes (TOFU-stage auth, missing host pubkey, CA
+    refusal) are caught and re-raised as one-line `RuntimeError`s
+    for the polling UI.
+  - **Dashboard "Bootstrap host" form** (`web/app/servers/page.tsx`):
+    new button on `/servers` next to "+ Register server" opens a
+    card with hostname / SSH user / port / principal / TTL / PEM
+    textarea / passphrase. Submits to the new endpoint, threads
+    the dispatched task ID through the existing `TaskPoller` so
+    the cert serial appears alongside the other server-side
+    actions. State is wiped on success; nothing autosaves to
+    `localStorage`.
+  - **Docs**: `docs/deploy/single-host-prod.md` splits the install
+    section into "Path A — Dashboard" and "Path B — CLI"; both
+    end with the same three files on the target.
+
 ## [v0.3.0] - 2026-06-05
 
 **Release theme**: Vault production posture. Closes the largest

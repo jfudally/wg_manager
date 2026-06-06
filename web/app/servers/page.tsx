@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/ui/badge";
 import {
   Table,
@@ -42,6 +43,10 @@ export default function ServersPage() {
     queryFn: api.listServers,
   });
   const [showForm, setShowForm] = useState(false);
+  // Toggle for the "Bootstrap host" form — separate from the register
+  // form so an operator can run the SSH-CA install on a fresh box
+  // without conflating it with creating the wg-manager row.
+  const [showBootstrap, setShowBootstrap] = useState(false);
   // When set, an inline edit form is rendered for this server above the
   // table. Stored as the full row so the form can pre-populate without
   // re-fetching.
@@ -88,7 +93,21 @@ export default function ServersPage() {
           >
             {discoverAllMutation.isPending ? "Dispatching…" : "Discover all"}
           </Button>
-          <Button onClick={() => setShowForm((v) => !v)}>
+          <Button
+            variant="outline"
+            onClick={() => {
+              setShowBootstrap((v) => !v);
+              if (showForm) setShowForm(false);
+            }}
+          >
+            {showBootstrap ? "Cancel" : "Bootstrap host"}
+          </Button>
+          <Button
+            onClick={() => {
+              setShowForm((v) => !v);
+              if (showBootstrap) setShowBootstrap(false);
+            }}
+          >
             {showForm ? "Cancel" : "+ Register server"}
           </Button>
         </div>
@@ -111,6 +130,22 @@ export default function ServersPage() {
                 key: `register-${taskId}`,
                 taskId,
                 label: "Register server",
+              },
+            ]);
+          }}
+        />
+      ) : null}
+
+      {showBootstrap ? (
+        <BootstrapHostForm
+          onDispatched={(taskId, hostname) => {
+            setShowBootstrap(false);
+            setActiveTasks((t) => [
+              ...t,
+              {
+                key: `bootstrap-${taskId}`,
+                taskId,
+                label: `Bootstrap ${hostname}`,
               },
             ]);
           }}
@@ -568,6 +603,213 @@ function RegisterServerForm({
           <CardFooter className="md:col-span-2 px-0 pb-0">
             <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending ? "Dispatching…" : "Register and provision"}
+            </Button>
+          </CardFooter>
+        </form>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Form for `POST /bootstrap-host`. Lifts the documented "one-shot
+ * docker compose run wg-manager bootstrap-host …" recipe onto the
+ * dashboard so a first-time host install no longer requires shell
+ * access to the prod stack.
+ *
+ * Posture (do not relax without re-reading
+ * src/wg_manager/routers/bootstrap.py):
+ *
+ * * The PEM is uploaded once and never persisted. The API encrypts
+ *   it server-side before queueing; the browser holds the bytes only
+ *   long enough to submit the form, and we drop them from state on
+ *   success so an accidental React re-render can't leak them into
+ *   devtools. Browsers still keep them in memory until the page
+ *   unloads — operators are expected to close the tab after the
+ *   install.
+ * * The form deliberately doesn't autosave anywhere. No localStorage,
+ *   no IndexedDB, no draft restore.
+ * * Successful dispatch flips to the task-poller flow; the cert
+ *   serial + validity appear on the polled task result.
+ */
+function BootstrapHostForm({
+  onDispatched,
+}: {
+  onDispatched: (taskId: string, hostname: string) => void;
+}) {
+  const [hostname, setHostname] = useState("");
+  const [sshUser, setSshUser] = useState("ubuntu");
+  const [sshPort, setSshPort] = useState(22);
+  const [principal, setPrincipal] = useState("");
+  const [ttlSeconds, setTtlSeconds] = useState<number | "">("");
+  const [pem, setPem] = useState("");
+  const [passphrase, setPassphrase] = useState("");
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      // Strip optional fields server-side defaults handle so the
+      // operator's blank-or-zero edge cases (e.g. accidentally
+      // entering 0 for TTL) don't hit the API and 422.
+      const trimmedPrincipal = principal.trim();
+      const trimmedPassphrase = passphrase; // do NOT trim: passphrases can legitimately end in whitespace
+      return api.bootstrapHost({
+        hostname: hostname.trim(),
+        ssh_user: sshUser.trim(),
+        ssh_port: sshPort,
+        ssh_key_pem: pem,
+        ...(trimmedPrincipal ? { principal: trimmedPrincipal } : {}),
+        ...(ttlSeconds !== "" && ttlSeconds > 0
+          ? { ttl_seconds: ttlSeconds }
+          : {}),
+        ...(trimmedPassphrase ? { ssh_key_passphrase: trimmedPassphrase } : {}),
+      });
+    },
+    onSuccess: (data) => {
+      // Drop the key material from React state immediately. The
+      // browser may still hold it in form-control internals, but
+      // there's no longer a reference in our tree.
+      setPem("");
+      setPassphrase("");
+      onDispatched(data.task_id, data.hostname);
+    },
+  });
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Bootstrap a fresh host</CardTitle>
+        <CardDescription>
+          Installs the wg-manager SSH CA trust + a CA-signed host cert on a
+          target box so subsequent provisioning runs without TOFU. The
+          operator's bootstrap SSH key is uploaded for this one task,
+          encrypted before queueing, and dropped after the task completes —
+          nothing is persisted. Re-running rotates the host cert in place.
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form
+          className="grid grid-cols-1 gap-4 md:grid-cols-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            mutation.mutate();
+          }}
+        >
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="bs-host">Target hostname / IP</Label>
+            <Input
+              id="bs-host"
+              value={hostname}
+              onChange={(e) => setHostname(e.target.value)}
+              placeholder="hub.example.com or 203.0.113.4"
+              required
+              autoComplete="off"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="bs-user">SSH user (must have sudo)</Label>
+            <Input
+              id="bs-user"
+              value={sshUser}
+              onChange={(e) => setSshUser(e.target.value)}
+              required
+              autoComplete="off"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="bs-port">SSH port</Label>
+            <Input
+              id="bs-port"
+              type="number"
+              min={1}
+              max={65535}
+              value={sshPort}
+              onChange={(e) => setSshPort(Number(e.target.value))}
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <Label htmlFor="bs-principal">
+              Cert principal{" "}
+              <span className="text-xs text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="bs-principal"
+              value={principal}
+              onChange={(e) => setPrincipal(e.target.value)}
+              placeholder="leave blank to reuse hostname"
+              autoComplete="off"
+            />
+          </div>
+          <div className="flex flex-col gap-1 md:col-span-2">
+            <Label htmlFor="bs-ttl">
+              Host cert TTL (seconds){" "}
+              <span className="text-xs text-muted-foreground">
+                (optional — defaults to API config, typically 24 h)
+              </span>
+            </Label>
+            <Input
+              id="bs-ttl"
+              type="number"
+              min={60}
+              value={ttlSeconds}
+              onChange={(e) =>
+                setTtlSeconds(
+                  e.target.value === "" ? "" : Number(e.target.value),
+                )
+              }
+              placeholder="86400"
+            />
+          </div>
+          <div className="flex flex-col gap-1 md:col-span-2">
+            <Label htmlFor="bs-pem">
+              Bootstrap SSH private key (PEM)
+            </Label>
+            <Textarea
+              id="bs-pem"
+              value={pem}
+              onChange={(e) => setPem(e.target.value)}
+              placeholder={
+                "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
+                "<contents of ~/.ssh/id_ed25519 or whichever key the target trusts>\n" +
+                "-----END OPENSSH PRIVATE KEY-----"
+              }
+              required
+              autoComplete="off"
+              spellCheck={false}
+              rows={8}
+            />
+            <p className="text-xs text-muted-foreground">
+              Uploaded for this task only. The API encrypts the body via the
+              configured crypto backend before queueing, and discards the
+              plaintext after the Celery task completes. Nothing lands in the
+              database. Close the browser tab after a successful install if
+              you want the bytes out of process memory too.
+            </p>
+          </div>
+          <div className="flex flex-col gap-1 md:col-span-2">
+            <Label htmlFor="bs-passphrase">
+              Key passphrase{" "}
+              <span className="text-xs text-muted-foreground">
+                (optional — leave blank for an unencrypted key)
+              </span>
+            </Label>
+            <Input
+              id="bs-passphrase"
+              type="password"
+              value={passphrase}
+              onChange={(e) => setPassphrase(e.target.value)}
+              autoComplete="off"
+            />
+          </div>
+          {mutation.isError ? (
+            <div className="md:col-span-2">
+              <Alert variant="error" title="Couldn't dispatch bootstrap">
+                {(mutation.error as ApiError | Error).message}
+              </Alert>
+            </div>
+          ) : null}
+          <CardFooter className="md:col-span-2 px-0 pb-0">
+            <Button type="submit" disabled={mutation.isPending}>
+              {mutation.isPending ? "Dispatching…" : "Run bootstrap"}
             </Button>
           </CardFooter>
         </form>
