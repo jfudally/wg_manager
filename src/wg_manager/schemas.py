@@ -6,7 +6,7 @@ from datetime import datetime
 from ipaddress import AddressValueError, IPv4Network, NetmaskValueError
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from wg_manager.models import (
     CertificateType,
@@ -134,6 +134,24 @@ class ServerCreate(BaseModel):
         existing callers see the legacy ``10.9.0.0/24`` default. Must be
         network-aligned (no host bits set) and have a prefix length of
         ``/30`` or larger so IPAM can hand out at least one client IP.
+    :ivar bootstrap_ssh_key_pem: Optional operator OOB private key
+        (PEM body). When present, the provisioning task opens one
+        :class:`BootstrapSSHRunner` session with this key + TOFU
+        BEFORE the CA-mode provision session and lays down the SSH
+        CA trust + a signed host cert. Lets a fresh box land in the
+        registry in one round-trip instead of two operator actions.
+        The router encrypts this with the crypto backend before
+        queueing so the broker never sees plaintext key material.
+        Omit when the host has already been bootstrapped (e.g. via
+        the ``wg-manager bootstrap-host`` CLI); the task falls
+        through to today's behaviour and will fail cleanly with
+        "host cert signed by an untrusted CA" if the box really
+        isn't ready yet.
+    :ivar bootstrap_ssh_key_passphrase: Optional passphrase
+        protecting ``bootstrap_ssh_key_pem``. Treated as a secret;
+        encrypted alongside the PEM. Has no meaning when
+        ``bootstrap_ssh_key_pem`` is omitted — supplying it without
+        the PEM is rejected at the schema layer.
     """
 
     hostname: str
@@ -147,6 +165,8 @@ class ServerCreate(BaseModel):
     # Phase 3b cycle 5 — explicit tenant resolution. See
     # :func:`wg_manager.tenant_scope.resolve_create_tenant`.
     tenant_id: int | None = None
+    bootstrap_ssh_key_pem: str | None = None
+    bootstrap_ssh_key_passphrase: str | None = None
 
     @field_validator("subnet")
     @classmethod
@@ -155,6 +175,26 @@ class ServerCreate(BaseModel):
         if value is None:
             return None
         return str(_parse_strict_subnet(value))
+
+    @field_validator("bootstrap_ssh_key_passphrase")
+    @classmethod
+    def _validate_passphrase_requires_pem(
+        cls, value: str | None, info: Any
+    ) -> str | None:
+        """Reject a passphrase supplied without a PEM.
+
+        A passphrase only makes sense when the runner has a PEM to
+        unlock. Accepting one without the PEM would silently drop the
+        passphrase at the task layer — the operator's intent is
+        ambiguous and worth surfacing early instead of letting the
+        task fail downstream.
+        """
+        if value is not None and not info.data.get("bootstrap_ssh_key_pem"):
+            raise ValueError(
+                "bootstrap_ssh_key_passphrase requires "
+                "bootstrap_ssh_key_pem"
+            )
+        return value
 
 
 class ServerUpdate(BaseModel):
@@ -372,75 +412,6 @@ class HostCertRotateResponse(BaseModel):
     server: ServerRead
 
 
-class BootstrapHostRequest(BaseModel):
-    """Body for ``POST /bootstrap-host``: install SSH CA trust on a fresh host.
-
-    The dashboard/API equivalent of ``wg-manager bootstrap-host``.
-    The operator's long-lived bootstrap key arrives in
-    ``ssh_key_pem`` (and optionally ``ssh_key_passphrase``); the
-    router encrypts both via :mod:`wg_manager.crypto` before queueing
-    so the broker only ever sees ciphertext. After 202 the dashboard
-    polls ``GET /tasks/{task_id}`` to surface the cert serial /
-    validity returned by :func:`wg_manager.tasks.bootstrap_host_task`.
-
-    Bootstrap deliberately does **not** touch the server registry.
-    The operator follows up with the normal ``POST /servers`` flow
-    once the install is confirmed — same two-step shape as the CLI
-    (see docs/operator-guide.md §3).
-
-    :ivar hostname: SSH dial-name or IP of the target host. Defaults
-        the cert principal when ``principal`` is omitted.
-    :ivar ssh_user: Remote user that already trusts the operator's
-        bootstrap key. Must have passwordless sudo for ``/etc/ssh/``.
-    :ivar ssh_key_pem: PEM-encoded operator private key. Never
-        persisted; encrypted before queueing and dropped after the
-        task completes.
-    :ivar ssh_key_passphrase: Optional passphrase protecting
-        ``ssh_key_pem``. Treated as a secret (encrypted alongside the
-        PEM); omit for an unencrypted key.
-    :ivar ssh_port: SSH port on the target. Defaults to 22.
-    :ivar principal: Hostname / DNS name baked into the host cert.
-        Defaults to ``hostname``. Override when the SSH dial-name and
-        the cert principal legitimately differ (public IP vs internal
-        DNS), exactly mirroring the CLI's ``--principal`` flag.
-    :ivar ttl_seconds: TTL the host-cert request asks the CA for.
-        ``None`` falls back to ``Settings.ssh_host_cert_ttl_seconds``
-        (24 h default; Vault caps it at the role's ``max_ttl``).
-    :ivar connect_timeout: Seconds the bootstrap SSH session waits
-        for the TCP / banner / auth round-trip before giving up.
-        Defaults to 15 s — matches the CLI default.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    hostname: str = Field(min_length=1)
-    ssh_user: str = Field(min_length=1)
-    ssh_key_pem: str = Field(min_length=1)
-    ssh_key_passphrase: str | None = None
-    ssh_port: int = Field(default=22, ge=1, le=65535)
-    principal: str | None = None
-    ttl_seconds: int | None = Field(default=None, ge=60)
-    connect_timeout: float = Field(default=15.0, gt=0)
-
-
-class BootstrapHostResponse(BaseModel):
-    """202 response for ``POST /bootstrap-host``: task to poll.
-
-    Carries only the dispatched task's ID — the cert metadata lives
-    on the task result (serial, principals, validity window). The PEM
-    that came in the request body is **never** echoed; the response
-    is the operator's confirmation that the bootstrap is in flight,
-    and ``GET /tasks/{task_id}`` is what surfaces the outcome.
-
-    :ivar task_id: Celery task ID of the dispatched
-        :func:`wg_manager.tasks.bootstrap_host_task`.
-    :ivar hostname: Echoed from the request so the dashboard can
-        title the "bootstrap in flight" card without round-tripping
-        the form state.
-    """
-
-    task_id: str
-    hostname: str
 
 
 class ClientRegisterResponse(BaseModel):

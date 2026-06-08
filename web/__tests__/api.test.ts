@@ -363,38 +363,53 @@ describe("endpoint paths", () => {
     );
   });
 
-  it("bootstrapHost POSTs to /bootstrap-host with the PEM body", async () => {
-    // The dashboard's "Bootstrap host" form lifts the documented
-    // docker-compose run wg-manager bootstrap-host one-liner onto an
-    // HTTPS surface. The API encrypts the PEM before queueing, so the
-    // browser-side test only cares that the body is forwarded
-    // verbatim — same posture as the CLI today.
+  it("registerServer forwards the optional bootstrap PEM body to POST /servers", async () => {
+    // The dashboard's Register-server form has a collapsible
+    // "Bootstrap this host first" section. When the operator pastes
+    // their OOB SSH private key, the request body carries it; the
+    // backend encrypts before queueing and the provision task runs
+    // bootstrap_host() before the CA-mode session. Pin that the
+    // typed client forwards the PEM verbatim so a future refactor of
+    // the request shape can't silently drop it.
     const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(
       makeResponse(202, {
-        task_id: "bootstrap-task-xyz",
-        hostname: "fresh-hub.example.com",
+        task_id: "register-with-bootstrap-task",
+        server: {
+          id: 42,
+          hostname: "fresh-hub.example.com",
+          ssh_port: 22,
+          ssh_username: "ubuntu",
+          ssh_key_id: 1,
+          endpoint_host: "fresh-hub.example.com",
+          endpoint_port: 51820,
+          interface: "wg0",
+          subnet: "10.9.0.0/24",
+          address: "10.9.0.1/24",
+          public_key: "",
+          status: "pending",
+          created_at: "2026-06-08T00:00:00Z",
+        },
       }),
     );
 
-    const result = await api.bootstrapHost({
+    const result = await api.registerServer({
       hostname: "fresh-hub.example.com",
-      ssh_user: "ubuntu",
-      ssh_key_pem: "-----BEGIN OPENSSH PRIVATE KEY-----\nA\n-----END OPENSSH PRIVATE KEY-----\n",
+      ssh_username: "ubuntu",
+      ssh_key_id: 1,
+      endpoint_host: "fresh-hub.example.com",
+      bootstrap_ssh_key_pem:
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nA\n-----END OPENSSH PRIVATE KEY-----\n",
     });
 
-    expect(result.task_id).toBe("bootstrap-task-xyz");
-    expect(result.hostname).toBe("fresh-hub.example.com");
+    expect(result.task_id).toBe("register-with-bootstrap-task");
     expect(fetchSpy).toHaveBeenCalledWith(
-      "http://test.local/bootstrap-host",
+      "http://test.local/servers",
       expect.objectContaining({ method: "POST" }),
     );
-    // Pin that the PEM lands on the wire body (the API expects it
-    // there). The PEM lives in the body string — JSON serialisation
-    // doesn't include the literal field names in any other form so a
-    // substring match is unambiguous.
     const bodyArg = (fetchSpy.mock.calls[0]?.[1] as RequestInit)?.body;
     expect(typeof bodyArg).toBe("string");
     expect(bodyArg as string).toContain("BEGIN OPENSSH PRIVATE KEY");
+    expect(bodyArg as string).toContain("bootstrap_ssh_key_pem");
   });
 
   it("rotateHostCert surfaces a 409 from the API as ApiError", async () => {

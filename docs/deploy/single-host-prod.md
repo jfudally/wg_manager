@@ -137,16 +137,25 @@ on the API side.
 
 #### Path A — Dashboard (the easy button)
 
-Open the dashboard → **Servers → Bootstrap host**. Paste the target
-hostname, the SSH user (and port if non-22), and the *contents* of
-your operator's bootstrap private key (e.g. `~/.ssh/id_ed25519`)
-into the PEM textarea. Submit. The dashboard polls the dispatched
-task and shows the cert serial + validity when the install lands.
+Open the dashboard → **Servers → + Register server**, fill in the
+usual fields, then expand the **Bootstrap this host first** section
+at the bottom of the form and paste the *contents* of your
+operator's bootstrap private key (e.g. `~/.ssh/id_ed25519`) into
+the PEM textarea. Submit. The single task does bootstrap first,
+then the regular CA-mode provision — one click, one row, one task
+to poll.
+
+When the section is left collapsed (or expanded but blank), the
+registration assumes the box was already bootstrapped (Path B
+below, baked AMI, prior run) and falls through to today's behaviour.
+A box that hasn't been bootstrapped fails cleanly with
+`host cert signed by an untrusted CA` at provision time — easy to
+spot, easy to recover from by reprovisioning with the PEM filled in.
 
 The key body is encrypted server-side via the configured crypto
 backend (Vault Transit in prod) before it touches the broker, and
 nothing about it is persisted to the DB. Close the browser tab
-after the install if you want the bytes out of the page's memory
+after registration if you want the bytes out of the page's memory
 too. See [`docs/operator-guide.md`](../operator-guide.md) §3 for
 the trust model.
 
@@ -188,16 +197,20 @@ Expected output:
 ```
 
 `bootstrap-host` deliberately does **not** write to the wg-manager
-DB. Two operator actions on purpose so you can verify the install
-landed before committing a `server` row.
+DB — that's the CLI flow's "verify before register" contract.
+Follow up with `servers register` to catalogue the box. Path A
+above collapses these into one action; choose Path B when you
+want to land the install separately (CI, an unattended cron, etc.).
 
 ### Register the server (DB-side)
 
-Dashboard: **Servers → + Register hub server**, fill in hostname,
+Dashboard: **Servers → + Register server**, fill in hostname,
 SSH port (22), SSH username (the account on the box that will
 accept the CA-minted cert — `root` for self-managed boxes,
 `ubuntu` for Ubuntu AMIs, etc.), pick the SSH role from step 2 of
-`docs/operator-guide.md`.
+`docs/operator-guide.md`. If the host hasn't been bootstrapped via
+Path B yet, expand **Bootstrap this host first** and paste the OOB
+key (see Path A above).
 
 CLI equivalent:
 

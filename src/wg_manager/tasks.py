@@ -204,13 +204,124 @@ def _ready_clients_for(session: Session, server_id: int) -> list[Client]:
     )
 
 
+def _run_bootstrap_if_supplied(
+    *,
+    server: Server,
+    bootstrap_pem_ciphertext: str | None,
+    bootstrap_pem_context: str | None,
+    bootstrap_passphrase_ciphertext: str | None,
+    bootstrap_passphrase_context: str | None,
+    bootstrap_connect_timeout: float,
+) -> None:
+    """Optionally do the operator-driven SSH-CA bootstrap on ``server``.
+
+    When ``bootstrap_pem_ciphertext`` is present, opens **one**
+    TOFU-permitted :class:`BootstrapSSHRunner` session against the
+    target with the decrypted operator key and lays down the CA
+    trust + signed host cert + sshd drop-in via
+    :func:`wg_manager.bootstrap_ssh.bootstrap_host`. After this
+    returns, the host trusts the CA so the production CA-mode
+    runner can handshake without TOFU.
+
+    No-op when ``bootstrap_pem_ciphertext`` is ``None`` — the
+    caller assumed the host was already bootstrapped (CLI flow,
+    earlier dashboard run, baked AMI).
+
+    The decrypted PEM and passphrase live only inside this function
+    frame: dropped at return, never written to disk, never persisted
+    to the DB. The runner is constructed with ``key_pem=`` so
+    nothing touches the filesystem.
+
+    :raises SSHConnectionError, SSHCommandError, HostCertInstallError,
+        SSHCAError: propagated unwrapped so the surrounding
+        ``except _SSH_EXPECTED_ERRORS`` in
+        :func:`provision_server_task` catches them with the rest of
+        the SSH error family.
+    """
+    if bootstrap_pem_ciphertext is None:
+        return
+    if bootstrap_pem_context is None:
+        raise ValueError(
+            "bootstrap_pem_context is required when "
+            "bootstrap_pem_ciphertext is supplied"
+        )
+
+    crypto = make_crypto_backend()
+    pem = crypto.decrypt(
+        bootstrap_pem_ciphertext, context=bootstrap_pem_context
+    ).decode("utf-8")
+    passphrase: str | None = None
+    if bootstrap_passphrase_ciphertext is not None:
+        if bootstrap_passphrase_context is None:
+            raise ValueError(
+                "bootstrap_passphrase_context is required when "
+                "bootstrap_passphrase_ciphertext is supplied"
+            )
+        passphrase = crypto.decrypt(
+            bootstrap_passphrase_ciphertext,
+            context=bootstrap_passphrase_context,
+        ).decode("utf-8")
+
+    settings = Settings()
+    ca = make_ssh_ca_backend(settings)
+    runner = BootstrapSSHRunner(
+        host=server.hostname,
+        port=server.ssh_port,
+        username=server.ssh_username,
+        key_pem=pem,
+        passphrase=passphrase,
+        connect_timeout=bootstrap_connect_timeout,
+    )
+    with runner as session:
+        bootstrap_host(
+            runner=session,
+            hostname=server.hostname,
+            # Phase 2c: the cert principal defaults to the SSH dial
+            # name. Operators who need a different principal use the
+            # CLI or the (deprecated) standalone bootstrap path —
+            # the merged registration flow is intentionally narrow
+            # so the form stays one page.
+            principal=server.hostname,
+            ca=ca,
+            ttl_seconds=settings.ssh_host_cert_ttl_seconds,
+            cn=server.ssh_username,
+        )
+
+
 @celery_app.task(name="wg_manager.tasks.provision_server", bind=True)
-def provision_server_task(self, server_id: int) -> dict[str, Any]:
+def provision_server_task(
+    self,
+    server_id: int,
+    *,
+    bootstrap_pem_ciphertext: str | None = None,
+    bootstrap_pem_context: str | None = None,
+    bootstrap_passphrase_ciphertext: str | None = None,
+    bootstrap_passphrase_context: str | None = None,
+    bootstrap_connect_timeout: float = 15.0,
+) -> dict[str, Any]:
     """Provision (or re-provision) a WireGuard hub identified by ``server_id``.
 
     The remote ``wg0.conf`` is rewritten from scratch and includes every
     currently-``ready`` client for this server, so repeated invocations are
     safe even when the node was left half-configured.
+
+    **Optional bootstrap step (this cycle).** When the operator
+    submits ``POST /servers`` with the bootstrap fields populated,
+    the router encrypts the PEM + passphrase and passes the
+    ciphertext through to this task as the ``bootstrap_*`` kwargs.
+    The task opens a one-shot :class:`BootstrapSSHRunner` session
+    (TOFU + operator's OOB key) and lays down the SSH CA trust +
+    signed host cert + sshd drop-in BEFORE opening the regular
+    CA-mode session. Bootstrap is idempotent — re-running rotates
+    the host cert in place — so this is safe to send even when the
+    box was already bootstrapped, but the dashboard form only
+    surfaces the section for fresh hosts to keep the common case
+    simple.
+
+    Skipped entirely when ``bootstrap_pem_ciphertext`` is ``None``;
+    the production CA-mode runner runs as it did before and fails
+    cleanly with ``host cert signed by an untrusted CA`` if the
+    box really isn't ready yet.
 
     Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK** (cycle 3
     upgraded from BENIGN_OVERWRITE). Acquires
@@ -225,6 +336,17 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
 
     :param server_id: Primary key of the :class:`Server` row to provision.
     :type server_id: int
+    :param bootstrap_pem_ciphertext: Crypto-backend ciphertext of the
+        operator's OOB SSH private key. Decrypted in-memory and used
+        for one bootstrap session. ``None`` disables the bootstrap step.
+    :param bootstrap_pem_context: Encryption context used at encrypt
+        time. Required when ``bootstrap_pem_ciphertext`` is supplied.
+    :param bootstrap_passphrase_ciphertext: Optional ciphertext of
+        the passphrase protecting the bootstrap PEM.
+    :param bootstrap_passphrase_context: Context for the passphrase
+        ciphertext. Pairs with ``bootstrap_passphrase_ciphertext``.
+    :param bootstrap_connect_timeout: Seconds the bootstrap SSH
+        session waits for TCP / banner / auth before giving up.
     :return: Summary of the final state.
     :rtype: dict[str, Any]
     :raises ValueError: If the server or its SSH key cannot be loaded.
@@ -254,6 +376,20 @@ def provision_server_task(self, server_id: int) -> dict[str, Any]:
             clients = _ready_clients_for(session, server_id)
 
             try:
+                # Optional first hop — only when the operator supplied
+                # bootstrap material at registration time. Lives inside
+                # the same try/except so a bootstrap failure marks the
+                # row error + surfaces a single tidy line, exactly like
+                # a provision-side SSH failure.
+                _run_bootstrap_if_supplied(
+                    server=server,
+                    bootstrap_pem_ciphertext=bootstrap_pem_ciphertext,
+                    bootstrap_pem_context=bootstrap_pem_context,
+                    bootstrap_passphrase_ciphertext=bootstrap_passphrase_ciphertext,
+                    bootstrap_passphrase_context=bootstrap_passphrase_context,
+                    bootstrap_connect_timeout=bootstrap_connect_timeout,
+                )
+
                 with _open_runner(
                     host=server.hostname,
                     port=server.ssh_port,
@@ -752,128 +888,3 @@ def discover_all_peers_task(self) -> dict[str, Any]:
     }
 
 
-@celery_app.task(name="wg_manager.tasks.bootstrap_host", bind=True)
-def bootstrap_host_task(
-    self,
-    *,
-    hostname: str,
-    ssh_port: int,
-    ssh_user: str,
-    principal: str,
-    ttl_seconds: int,
-    connect_timeout: float,
-    pem_ciphertext: str,
-    pem_context: str,
-    passphrase_ciphertext: str | None = None,
-    passphrase_context: str | None = None,
-) -> dict[str, Any]:
-    """Install the SSH CA trust + a host cert on a fresh target host.
-
-    Workflow mirrors the ``wg-manager bootstrap-host`` CLI, but lives
-    behind the operator dashboard so a one-off install no longer
-    requires shelling into the prod stack and crafting a docker
-    compose ``run`` invocation. The operator's long-lived SSH key is
-    handed over as ciphertext (the router encrypts via
-    :mod:`wg_manager.crypto` before queueing) so the broker never sees
-    plaintext key material.
-
-    Steps:
-
-    1. Decrypt ``pem_ciphertext`` (and ``passphrase_ciphertext`` if
-       supplied) using the configured crypto backend. Plaintext lives
-       only inside this task's stack frame; it never lands on disk
-       and never enters the database.
-    2. Open a :class:`BootstrapSSHRunner` against the target — exactly
-       one TOFU-permitted SSH session, by design (see
-       :mod:`wg_manager.bootstrap_ssh` module docstring).
-    3. Invoke :func:`wg_manager.bootstrap_ssh.bootstrap_host` to lay
-       down ``/etc/ssh/wg-manager-user-ca.pub``, a CA-signed host
-       cert, and the sshd drop-in.
-    4. Return the cert metadata (serial, principals, validity window)
-       to the caller so the dashboard can render a confirmation card.
-
-    Failure modes (TOFU-stage auth, missing host pubkey, CA refusal)
-    are caught and re-raised as plain ``RuntimeError`` so the polling
-    endpoint surfaces a single-line message rather than a 30-frame
-    paramiko traceback. The traceback is logged via
-    :func:`logger.error` for forensic inspection.
-
-    :param hostname: SSH dial-name or IP of the target. Defaults the
-        cert principal when ``principal`` is omitted.
-    :param ssh_port: SSH port on the target. Almost always 22.
-    :param ssh_user: Remote user account that already has the
-        operator's long-lived key in its ``authorized_keys``.
-    :param principal: Hostname / DNS name baked into the new host
-        cert. The CLI's ``--principal`` analogue.
-    :param ttl_seconds: TTL the host-cert request asks the CA for.
-        Vault caps this at the host-role's ``max_ttl``.
-    :param connect_timeout: Seconds to wait for the TCP handshake +
-        SSH banner + auth before failing fast.
-    :param pem_ciphertext: Output of
-        :meth:`wg_manager.crypto.CryptoBackend.encrypt` against the
-        operator's PEM body.
-    :param pem_context: The crypto context the ciphertext was bound
-        to at encrypt time (Vault Transit refuses to decrypt under a
-        mismatched context). The router and task share a fixed
-        string for this; see :mod:`wg_manager.routers.bootstrap`.
-    :param passphrase_ciphertext: Ciphertext of the optional
-        passphrase protecting the PEM. ``None`` when the key is
-        unencrypted (the common case for an operator's loopback key).
-    :param passphrase_context: Context for the passphrase ciphertext.
-        Pairs with ``passphrase_ciphertext``.
-    :return: ``{"status": "ok", "cert_serial", "principals",
-        "valid_after", "valid_before", "hostname"}``.
-    :raises RuntimeError: Wrapping an SSH-level failure with a tidy
-        one-line message.
-    """
-    crypto = make_crypto_backend()
-    pem = crypto.decrypt(pem_ciphertext, context=pem_context).decode("utf-8")
-    passphrase: str | None = None
-    if passphrase_ciphertext is not None:
-        if passphrase_context is None:
-            raise ValueError(
-                "passphrase_context is required when passphrase_ciphertext "
-                "is supplied"
-            )
-        passphrase = crypto.decrypt(
-            passphrase_ciphertext, context=passphrase_context
-        ).decode("utf-8")
-
-    settings = Settings()
-    ca = make_ssh_ca_backend(settings)
-
-    runner = BootstrapSSHRunner(
-        host=hostname,
-        port=ssh_port,
-        username=ssh_user,
-        key_pem=pem,
-        passphrase=passphrase,
-        connect_timeout=connect_timeout,
-    )
-
-    try:
-        with runner as session:
-            cert = bootstrap_host(
-                runner=session,
-                hostname=hostname,
-                principal=principal,
-                ca=ca,
-                ttl_seconds=ttl_seconds,
-                cn=ssh_user,
-            )
-    except _SSH_EXPECTED_ERRORS as exc:
-        logger.error(
-            "bootstrap of %s failed: %s", hostname, exc
-        )
-        raise _fail_clean(
-            f"bootstrap of {hostname} failed: {exc}"
-        ) from None
-
-    return {
-        "status": "ok",
-        "hostname": hostname,
-        "cert_serial": int(cert.serial),
-        "principals": list(cert.principals),
-        "valid_after": cert.valid_after.isoformat(),
-        "valid_before": cert.valid_before.isoformat(),
-    }
