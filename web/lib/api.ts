@@ -9,8 +9,6 @@
 import type {
   AuditEventList,
   AuditEventListParams,
-  BootstrapHostRequest,
-  BootstrapHostResponse,
   Certificate,
   CertificateIssueRequest,
   CertificateIssueResponse,
@@ -216,25 +214,6 @@ export const api = {
   rotateHostCert: (id: number) =>
     request<HostCertRotateResponse>(`/servers/${id}/rotate-host-cert`, {
       method: "POST",
-    }),
-  /**
-   * Install the SSH CA trust + a fresh host cert on a not-yet-managed
-   * box. The operator's long-lived bootstrap key + optional passphrase
-   * are uploaded in the body and never persisted — the API encrypts
-   * them with the configured crypto backend before queueing the Celery
-   * task and drops the plaintext at the end of the request.
-   *
-   * Returns 202 with `{task_id, hostname}`; poll `taskStatus(task_id)`
-   * to surface the cert serial / validity (the task result payload
-   * carries `cert_serial`, `principals`, `valid_after`, `valid_before`).
-   *
-   * Bootstrap deliberately does NOT create a `server` row — operators
-   * follow up with `registerServer(...)` once the install is verified.
-   */
-  bootstrapHost: (payload: BootstrapHostRequest) =>
-    request<BootstrapHostResponse>("/bootstrap-host", {
-      method: "POST",
-      body: payload,
     }),
   /**
    * Partial-update a server. Pass only the fields the operator changed —

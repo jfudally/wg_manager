@@ -18,7 +18,6 @@ from wg_manager.metrics import MetricsMiddleware, metrics_response
 from wg_manager.tracing import setup_tracing
 from wg_manager.routers import (
     audit,
-    bootstrap,
     certs,
     clients,
     crypto,
@@ -162,7 +161,6 @@ def create_app() -> FastAPI:
         certs.router,
         audit.router,
         tenants.router,
-        bootstrap.router,
         # Phase 3d cycle 1 — load-balancer probes. Dual-mounted at
         # both / and /v1 so an operator hitting the legacy or v1
         # surface sees the same probe answers. The auth middleware

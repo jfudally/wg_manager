@@ -26,46 +26,47 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   `tests/test_compose_prod_bootstrap.py` so a future env-block
   cleanup can't quietly regress this.
 
-### Added
+### Changed
 
-- **API + dashboard "Bootstrap host" flow.** Lifts the
-  `wg-manager bootstrap-host` CLI onto an HTTPS surface so a fresh
-  target box can be onboarded without shelling into the prod stack
-  and crafting a `docker compose run` invocation.
+- **Register-server flow can now bootstrap the host in the same
+  task.** Replaces the standalone "Bootstrap host" dashboard action
+  and `POST /bootstrap-host` endpoint that shipped in v0.3.x with
+  a collapsible "Bootstrap this host first" section inside the
+  Register-server form. When the operator pastes their OOB SSH
+  private key there, `provision_server_task` opens **one**
+  `BootstrapSSHRunner` session (TOFU + operator key) before the
+  regular CA-mode provision session, laying down the SSH CA trust
+  + signed host cert + sshd drop-in. One row, one task, one click
+  for fresh boxes; same behaviour as today when the box was
+  already bootstrapped (CLI path, baked AMI).
 
-  - **`POST /bootstrap-host`** (`src/wg_manager/routers/bootstrap.py`):
-    accepts hostname / SSH user / SSH port / optional principal /
-    optional TTL / the operator's bootstrap PEM body / optional
-    passphrase. The PEM (and passphrase) are encrypted server-side
-    via the configured crypto backend (Vault Transit in prod)
-    before queueing, dispatched to the new Celery task, and
-    dropped at the end of the request. The PEM is never persisted
-    and never echoed in the response — operators get a `task_id`
-    + `hostname` and poll `GET /tasks/{task_id}` for the cert
-    serial / validity. Same two-step "verify install, then
-    register" contract as the CLI; bootstrap does not create a
-    `server` row.
-  - **`bootstrap_host_task`** (`src/wg_manager/tasks.py`):
-    decrypts the ciphertext in worker memory, opens one
-    `BootstrapSSHRunner` session, drives the same
-    `bootstrap_host()` helper the CLI uses, returns
-    `{cert_serial, principals, valid_after, valid_before}`.
-    Refactored `BootstrapSSHRunner` to accept `key_pem=` alongside
-    `key_path=` so the task never writes the key to disk.
-    Failure modes (TOFU-stage auth, missing host pubkey, CA
-    refusal) are caught and re-raised as one-line `RuntimeError`s
-    for the polling UI.
-  - **Dashboard "Bootstrap host" form** (`web/app/servers/page.tsx`):
-    new button on `/servers` next to "+ Register server" opens a
-    card with hostname / SSH user / port / principal / TTL / PEM
-    textarea / passphrase. Submits to the new endpoint, threads
-    the dispatched task ID through the existing `TaskPoller` so
-    the cert serial appears alongside the other server-side
-    actions. State is wiped on success; nothing autosaves to
-    `localStorage`.
-  - **Docs**: `docs/deploy/single-host-prod.md` splits the install
-    section into "Path A — Dashboard" and "Path B — CLI"; both
-    end with the same three files on the target.
+  - **`ServerCreate`** schema (`src/wg_manager/schemas.py`) gains
+    optional `bootstrap_ssh_key_pem` + `bootstrap_ssh_key_passphrase`
+    fields. `POST /servers` encrypts both via the crypto backend
+    (Vault Transit in prod) before queueing and forwards the
+    ciphertext to the task. Passphrase without PEM is rejected at
+    the schema layer so the operator's intent isn't silently
+    dropped.
+  - **`provision_server_task`** (`src/wg_manager/tasks.py`) accepts
+    the new encrypted-bootstrap kwargs, decrypts in worker memory,
+    and runs `bootstrap_host()` before opening the CA-mode session.
+    The bootstrap step is skipped entirely when no PEM was supplied;
+    today's "you forgot to bootstrap" failure mode
+    (`host cert signed by an untrusted CA`) is preserved verbatim.
+  - **Dashboard `/servers`** (`web/app/servers/page.tsx`) drops the
+    standalone "Bootstrap host" button; the bootstrap section now
+    lives inside the Register form behind a `<details>` toggle,
+    defaulting collapsed so the common (already-bootstrapped) case
+    stays one click.
+  - **Removed**: `POST /bootstrap-host`, `bootstrap_host_task`,
+    `BootstrapHostRequest` / `BootstrapHostResponse` schemas,
+    `api.bootstrapHost()` client method, and the matching tests.
+    The CLI (`wg-manager bootstrap-host`) still exists for
+    scripted/CI use that wants the install separate from
+    registration.
+  - **Docs**: `docs/deploy/single-host-prod.md` updates "Path A —
+    Dashboard" to describe the combined Register-with-bootstrap
+    flow; Path B (CLI) is unchanged.
 
 ## [v0.3.0] - 2026-06-05
 
