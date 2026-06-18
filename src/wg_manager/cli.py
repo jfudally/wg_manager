@@ -463,12 +463,11 @@ def clients_ssh_config(
     """Print an ``~/.ssh/config`` block for every registered client.
 
     Each entry uses ``<client-name>.vpn`` as the alias, the wg-assigned
-    IP as ``HostName``, the client's ``ssh_username`` as ``User``, and
-    ``~/.ssh/<key-name>`` as ``IdentityFile`` — wg-manager assumes the
-    operator has placed the SSH key under their own ``$HOME/.ssh/``
-    directory. Append the result to ``~/.ssh/config`` (or drop it into
-    a file referenced by an ``Include`` directive there) to ``ssh
-    <client-name>.vpn`` once the VPN is up.
+    IP as ``HostName``, and the client's ``ssh_username`` as ``User``. No
+    ``IdentityFile`` line is emitted — key selection is left to the
+    operator's local SSH agent. Append the result to ``~/.ssh/config``
+    (or drop it into a file referenced by an ``Include`` directive there)
+    to ``ssh <client-name>.vpn`` once the VPN is up.
 
     With ``--output FILE`` the body is written to disk; otherwise it is
     printed to stdout.

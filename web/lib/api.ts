@@ -285,10 +285,11 @@ export const api = {
    * Render an ``~/.ssh/config`` block for every registered client.
    *
    * The body is plain text (one entry per client; ``Host <name>.vpn``,
-   * ``HostName <wg-ip>``, ``User <ssh_username>``, ``IdentityFile
-   * ~/.ssh/<key-name>``), intended to be displayed verbatim, copied to
-   * the clipboard, or downloaded as a file. Returns an empty string when
-   * no clients are registered.
+   * ``HostName <wg-ip>``, ``User <ssh_username>``), intended to be
+   * displayed verbatim, copied to the clipboard, or downloaded as a
+   * file. No ``IdentityFile`` line is emitted — key selection is left to
+   * the operator's local SSH agent. Returns an empty string when no
+   * clients are registered.
    */
   exportSshConfig: () => requestText("/clients/export/ssh-config"),
 

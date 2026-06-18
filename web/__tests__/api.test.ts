@@ -221,8 +221,7 @@ describe("endpoint paths", () => {
     const body =
       "Host alpha.vpn\n" +
       "    HostName 10.9.0.2\n" +
-      "    User ubuntu\n" +
-      "    IdentityFile ~/.ssh/lab\n";
+      "    User ubuntu\n";
     const fetchSpy = vi
       .spyOn(global, "fetch")
       .mockResolvedValue(makeResponse(200, body));
