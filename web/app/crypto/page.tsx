@@ -77,11 +77,12 @@ function CryptoStatusPanel({
         <CardHeader>
           <CardTitle>Backend</CardTitle>
           <CardDescription>
-            Which wg-manager component is wrapping persisted secrets.
-            Currently no row carries ciphertext (Alembic 0008 dropped
-            the SSH key columns; 0009 dropped the manual-client column);
-            the backend stays bootstrapped as the substrate for any
-            future encrypted-at-rest column.
+            Which wg-manager component is wrapping persisted secrets. No
+            secret material is persisted at rest today (Alembic 0008
+            dropped the SSH key columns; 0009 dropped the manual-client
+            column), so nothing needs rewrapping after a Vault Transit
+            rotation. The backend stays bootstrapped as the substrate for
+            any future encrypted-at-rest column.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex items-center gap-3">
@@ -92,24 +93,6 @@ function CryptoStatusPanel({
               {data.key_version}
             </code>
           </span>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Storage</CardTitle>
-          <CardDescription>
-            What persisted secret material the schema currently holds.
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Badge variant="success">No encrypted columns</Badge>
-          <p className="mt-2 text-xs text-muted-foreground">
-            SSH auth mints from the CA at task time; manual-client
-            wg0.conf bodies are delivered exactly once at registration
-            and never persisted. Nothing on disk needs rewrapping after
-            a Vault Transit rotation.
-          </p>
         </CardContent>
       </Card>
 
