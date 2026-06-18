@@ -23,6 +23,7 @@ paths = [
   '''^tests/test_ssh_migrate\.py$''',
   '''^tests/test_cli_ssh_migrate\.py$''',
   '''^tests/test_tasks_crypto\.py$''',
+  '''^tests/test_tasks_provision_bootstrap\.py$''',
   # Published dev Fernet key. The conftest header documents that this
   # value is in the repo on purpose — the suite needs deterministic
   # encrypt() output across runs.
@@ -30,4 +31,9 @@ paths = [
   # PEM-shaped textarea placeholder rendered in the SSH-roles form, not
   # a real key.
   '''^web/app/ssh-keys/page\.tsx$''',
+  # PEM-shaped textarea placeholder in the Register-server bootstrap-key
+  # field ("-----BEGIN OPENSSH PRIVATE KEY-----\n<contents...>"), not a
+  # real key. Operator-pasted keys are encrypted client-side and never
+  # committed.
+  '''^web/app/servers/page\.tsx$''',
 ]
