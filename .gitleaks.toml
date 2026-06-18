@@ -30,4 +30,9 @@ paths = [
   # PEM-shaped textarea placeholder rendered in the SSH-roles form, not
   # a real key.
   '''^web/app/ssh-keys/page\.tsx$''',
+  # PEM-shaped textarea placeholder in the Register-server bootstrap-key
+  # field ("-----BEGIN OPENSSH PRIVATE KEY-----\n<contents...>"), not a
+  # real key. Operator-pasted keys are encrypted client-side and never
+  # committed.
+  '''^web/app/servers/page\.tsx$''',
 ]
