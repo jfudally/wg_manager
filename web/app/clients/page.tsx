@@ -646,9 +646,8 @@ function SshConfigExport({ onClose }: { onClose: () => void }) {
           One <code>Host &lt;name&gt;.vpn</code> entry per registered
           client, ready to append to <code>~/.ssh/config</code> (or to
           drop into a file referenced by an <code>Include</code>{" "}
-          directive there). <code>IdentityFile</code> expects each key
-          to live under your local <code>$HOME/.ssh/</code> using the
-          same name it&apos;s registered with in wg-manager.
+          directive there). No <code>IdentityFile</code> is emitted — key
+          selection is left to your local SSH agent.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">

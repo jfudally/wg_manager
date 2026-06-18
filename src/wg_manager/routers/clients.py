@@ -268,16 +268,16 @@ def export_ssh_config(session: _SessionDep) -> str:
         Host <name>.vpn
             HostName <wg-ip>
             User <ssh_username>
-            IdentityFile ~/.ssh/<key-name>
 
     The ``Host`` alias is the client's ``name`` with a ``.vpn`` suffix so
     operators can type ``ssh <name>.vpn`` after they've connected to the
     VPN. ``HostName`` is the wg-assigned host address — the ``/32``
     netmask stored on the row is stripped so the value is a bare IPv4
     address. ``User`` is the client's per-row ``ssh_username``.
-    ``IdentityFile`` points at ``~/.ssh/<key-name>`` where ``<key-name>``
-    is the SSHKey row's ``name`` column; wg-manager assumes the operator
-    has placed that key under their own ``$HOME/.ssh/`` directory.
+
+    No ``IdentityFile`` line is emitted: key selection is delegated to
+    the operator's local SSH agent so the export stays independent of
+    where any key file lives on disk.
 
     Entries are separated by a blank line and ordered by client ID
     (insertion order in practice) so the export is stable across calls.
@@ -290,7 +290,7 @@ def export_ssh_config(session: _SessionDep) -> str:
     """
     # Manual clients have no SSH credentials, so they can't appear in an
     # SSH-config export. Skip them rather than emit broken ``Host`` blocks
-    # with empty User / IdentityFile lines.
+    # with an empty User line.
     clients = [
         c
         for c in session.exec(select(Client).order_by(Client.id)).all()
@@ -299,22 +299,13 @@ def export_ssh_config(session: _SessionDep) -> str:
     if not clients:
         return ""
 
-    key_ids = {c.ssh_key_id for c in clients if c.ssh_key_id is not None}
-    key_names: dict[int, str] = {
-        k.id: k.name
-        for k in session.exec(select(SSHKey).where(SSHKey.id.in_(key_ids))).all()
-        if k.id is not None
-    }
-
     blocks: list[str] = []
     for c in clients:
         host_ip = str(ip_interface(c.address).ip) if c.address else ""
-        identity = key_names.get(c.ssh_key_id, "") if c.ssh_key_id is not None else ""
         blocks.append(
             f"Host {c.name}.vpn\n"
             f"    HostName {host_ip}\n"
             f"    User {c.ssh_username}\n"
-            f"    IdentityFile ~/.ssh/{identity}\n"
         )
     return "\n".join(blocks)
 

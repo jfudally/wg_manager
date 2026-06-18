@@ -397,10 +397,9 @@ class TestClientsSSHConfigExport:
 
     Each managed client becomes one entry whose ``Host`` alias is the
     client's ``name`` with a ``.vpn`` suffix, whose ``HostName`` is the
-    wg-assigned IP (with the ``/32`` stripped), whose ``User`` is the
-    client's stored ``ssh_username``, and whose ``IdentityFile`` points
-    at ``~/.ssh/<key-name>`` — the operator is expected to have placed
-    the key under ``$HOME/.ssh/`` themselves.
+    wg-assigned IP (with the ``/32`` stripped), and whose ``User`` is the
+    client's stored ``ssh_username``. No ``IdentityFile`` line is emitted
+    — authentication is left to the operator's local SSH agent.
     """
 
     def test_export_returns_text_plain(self, client: TestClient) -> None:
@@ -422,14 +421,14 @@ class TestClientsSSHConfigExport:
         # - name "alpha" → Host alpha.vpn
         # - first allocated client IP in 10.9.0.0/24 is 10.9.0.2
         # - ssh_username "ubuntu" → User ubuntu
-        # - SSHKey was registered with name "lab" → IdentityFile ~/.ssh/lab
+        # No IdentityFile line: auth is delegated to the local SSH agent.
         expected = (
             "Host alpha.vpn\n"
             "    HostName 10.9.0.2\n"
             "    User ubuntu\n"
-            "    IdentityFile ~/.ssh/lab\n"
         )
         assert expected in body
+        assert "IdentityFile" not in body
 
     def test_export_omits_cidr_prefix_from_hostname(
         self, client: TestClient
@@ -468,29 +467,6 @@ class TestClientsSSHConfigExport:
         body = client.get("/clients/export/ssh-config").text
         assert "User deploy" in body
         assert "User ubuntu" not in body
-
-    def test_export_uses_per_client_ssh_key_name(
-        self, client: TestClient
-    ) -> None:
-        """IdentityFile path comes from the SSHKey row, not the client itself."""
-        key_id, server_id = _bootstrap_server(client)
-        # Register a second SSH key with a different name and point alpha at it.
-        other_key_id = int(
-            client.post(
-                "/ssh-keys",
-                json={"name": "prod"},
-            ).json()["id"]
-        )
-        created = _register_managed_client(client, key_id, server_id, "alpha")
-        client.patch(
-            f"/clients/{created['id']}",
-            json={"ssh_key_id": other_key_id},
-        )
-
-        body = client.get("/clients/export/ssh-config").text
-        assert "IdentityFile ~/.ssh/prod" in body
-        # The original "lab" key name must not appear for alpha.
-        assert "IdentityFile ~/.ssh/lab" not in body
 
     def test_export_empty_when_no_clients(self, client: TestClient) -> None:
         # No bootstrap_server: nothing managed.

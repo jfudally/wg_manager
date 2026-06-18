@@ -316,7 +316,7 @@ class TestClientsCLI:
         assert "Host alpha.vpn" in result.output
         assert "HostName 10.9.0.2" in result.output
         assert "User ubuntu" in result.output
-        assert "IdentityFile ~/.ssh/lab" in result.output
+        assert "IdentityFile" not in result.output
 
     def test_add_manual_prints_config_to_stdout(
         self,
@@ -414,7 +414,7 @@ class TestClientsCLI:
         assert "Host alpha.vpn" not in result.output
         body = outfile.read_text()
         assert "Host alpha.vpn" in body
-        assert "IdentityFile ~/.ssh/lab" in body
+        assert "IdentityFile" not in body
 
 
 class TestTasksCLI:
