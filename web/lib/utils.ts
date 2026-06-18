@@ -12,13 +12,28 @@ export function cn(...inputs: ClassValue[]): string {
 }
 
 /**
+ * Parse an ISO timestamp string from the API into a `Date`.
+ *
+ * The backend stores aware-UTC instants but serializes them through
+ * timezone-naive DB columns, so the JSON often lacks an offset
+ * designator (e.g. "2026-06-18T18:00:00"). The browser would otherwise
+ * interpret a naive string as *local* time, shifting timestamps into the
+ * future for users behind UTC (showing negative "ago" durations). We
+ * append "Z" when no timezone is present so naive values are read as UTC.
+ */
+function parseApiDate(value: string): Date {
+  const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(value.trim());
+  return new Date(hasTimezone ? value : `${value}Z`);
+}
+
+/**
  * Format an ISO timestamp from the API into a short locale string. Falls
  * back to the raw value if parsing fails (e.g. when the backend returns
  * an unexpected shape during development).
  */
 export function formatDateTime(value: string | null | undefined): string {
   if (!value) return "—";
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
 }
@@ -26,7 +41,7 @@ export function formatDateTime(value: string | null | undefined): string {
 /** Human-friendly relative duration, e.g. "5m ago". */
 export function relativeFromNow(value: string | null | undefined): string {
   if (!value) return "—";
-  const date = new Date(value);
+  const date = parseApiDate(value);
   if (Number.isNaN(date.getTime())) return value;
   const diffMs = Date.now() - date.getTime();
   const diffSec = Math.round(diffMs / 1000);
