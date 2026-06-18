@@ -23,6 +23,7 @@ paths = [
   '''^tests/test_ssh_migrate\.py$''',
   '''^tests/test_cli_ssh_migrate\.py$''',
   '''^tests/test_tasks_crypto\.py$''',
+  '''^tests/test_tasks_provision_bootstrap\.py$''',
   # Published dev Fernet key. The conftest header documents that this
   # value is in the repo on purpose — the suite needs deterministic
   # encrypt() output across runs.
