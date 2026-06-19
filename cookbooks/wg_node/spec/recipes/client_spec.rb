@@ -165,6 +165,33 @@ RSpec.describe 'wg_node::client' do
         expect(chef_run).to enable_service('wg-quick@wg0')
         expect(chef_run).to start_service('wg-quick@wg0')
       end
+
+      it 'restarts the tunnel when the config is (re)written' do
+        cfg = chef_run.file('/etc/wireguard/wg0.conf')
+        expect(cfg).to notify('service[wg-quick@wg0]').to(:restart).delayed
+      end
+
+      it 'does not use a bare wg-quick down (which desyncs systemd state)' do
+        expect(chef_run).to_not run_execute('wg-quick down wg0 (pre-join reset)')
+      end
+    end
+
+    context 'self-heal when the interface is down' do
+      before do
+        allow(File).to receive(:exist?).with('/var/lib/wg_node/wg0.json').and_return(true)
+      end
+
+      it 'restarts wg-quick when config exists but the interface is missing' do
+        # `ip link show wg0` already stubbed false (interface down) above.
+        chef_run = join_runner.converge('wg_node::client')
+        expect(chef_run).to run_execute('restart wg-quick@wg0 (interface down)')
+      end
+
+      it 'leaves a healthy interface alone (no flap)' do
+        stub_command('ip link show wg0').and_return(true)
+        chef_run = join_runner.converge('wg_node::client')
+        expect(chef_run).to_not run_execute('restart wg-quick@wg0 (interface down)')
+      end
     end
 
     context 'when already joined' do

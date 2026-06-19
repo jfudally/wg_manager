@@ -55,6 +55,7 @@ end
 action :join do
   cfg_path = new_resource.resolved_config_path
   state = new_resource.resolved_state_path
+  iface = new_resource.interface
 
   unless ::File.exist?(state)
     response = nil
@@ -75,21 +76,18 @@ action :join do
       end
     end
 
-    # Reprovision safety (see memory: tear down a running interface before
-    # writing a fresh config). On a true first join the interface won't
-    # exist; the guard keeps this a no-op in that case.
-    iface = new_resource.interface
-    execute "wg-quick down #{iface} (pre-join reset)" do
-      command "wg-quick down #{iface}"
-      only_if "ip link show #{iface}"
-    end
-
     file cfg_path do
       content response.fetch('wg_config')
       owner 'root'
       group 'root'
       mode '0600'
       sensitive true
+      # A new/changed config needs the tunnel (re)started to take effect. A
+      # restart does a clean down+up, so a stale interface from a prior
+      # config can't linger (the reprovision-safety the memory calls for)
+      # without the systemd/wg-quick state desync a bare `wg-quick down`
+      # would cause.
+      notifies :restart, "service[wg-quick@#{iface}]", :delayed
     end
 
     file state do
@@ -109,9 +107,19 @@ action :join do
 
   # Always reconcile the service so a rebooted or stopped node comes back
   # up. Idempotent: starts only if not already running.
-  service "wg-quick@#{new_resource.interface}" do
+  service "wg-quick@#{iface}" do
     action [:enable, :start]
     only_if { ::File.exist?(cfg_path) }
+  end
+
+  # Self-heal: if the config is present but the interface is actually down
+  # (a prior failed converge, or a manual `wg-quick down` that left systemd
+  # thinking the unit is still active), bring it back. `not_if` makes this a
+  # no-op on a healthy node, so the tunnel doesn't flap every converge.
+  execute "restart wg-quick@#{iface} (interface down)" do
+    command "systemctl restart wg-quick@#{iface}"
+    only_if { ::File.exist?(cfg_path) }
+    not_if "ip link show #{iface}"
   end
 end
 

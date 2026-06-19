@@ -6,6 +6,16 @@ this cookbook adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-06-19
+
+### Fixed
+- First-join tunnel bring-up. The pre-join `wg-quick down` left systemd
+  thinking the unit was active while the interface was down, so the
+  follow-up `:start` was a no-op and the tunnel stayed down until the next
+  manual restart. Replaced it with a restart notification on config change
+  plus a self-heal that restarts `wg-quick@<iface>` only when the config
+  exists but the interface is actually missing (no flap on healthy nodes).
+
 ## [0.1.3] - 2026-06-19
 
 ### Added

@@ -3,7 +3,7 @@ maintainer 'Justin Fudally'
 maintainer_email 'justinfudally@gmail.com'
 license 'MIT'
 description 'Self-provisions a node onto a WireGuard VPN via the wg_manager API'
-version '0.1.3'
+version '0.1.4'
 chef_version '>= 16.0'
 
 # Phase 1 targets Debian-family hosts (the wg_manager worker installs the
