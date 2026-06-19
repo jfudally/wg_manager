@@ -702,6 +702,14 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
     the operator can tell observed peers apart from wg-manager-controlled
     ones.
 
+    Each successful pass is **authoritative** for the server: any existing
+    ``DiscoveredPeer`` row whose public key is *not* observed in this pass
+    is pruned, so a peer removed from the server's running config clears
+    from the table instead of lingering as stale data. Pruning runs only
+    after a successful ``wg show`` — an SSH failure returns early (below)
+    and never wipes the known peer set for a host that was merely
+    unreachable.
+
     Phase 3d cycle 2 idempotency: **NATURALLY_IDEMPOTENT**. Read-only
     SSH + upsert keyed on ``(server_id, public_key)``. Two workers
     racing the same ``server_id`` converge to the same row set with
@@ -717,8 +725,8 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
     :param server_id: Primary key of the :class:`Server` to query.
     :type server_id: int
     :return: A summary of the discovery result with one of two shapes:
-        ``{"status": "ok", "server_id", "peer_count", "new", "updated"}``
-        on success, or
+        ``{"status": "ok", "server_id", "peer_count", "new", "updated",
+        "pruned"}`` on success, or
         ``{"status": "ssh_failed", "server_id", "peer_count": 0, "error"}``
         when the server could not be reached.
     :rtype: dict[str, Any]
@@ -773,6 +781,7 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
         now = datetime.now(tz=timezone.utc)
         new_count = 0
         updated_count = 0
+        observed_keys = {peer.public_key for peer in peers}
         for peer in peers:
             existing = session.exec(
                 select(DiscoveredPeer).where(
@@ -813,6 +822,28 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
                 existing.last_seen_at = now
                 session.add(existing)
                 updated_count += 1
+
+        # Prune stale rows: any DiscoveredPeer for this server whose public
+        # key was *not* observed in this pass has been removed from the
+        # server's running config and must not linger as a ghost. This only
+        # runs on a successful pass — an SSH failure returns early above, so
+        # an unreachable host never wipes the known peer set (see
+        # ``test_ssh_failure_does_not_prune``).
+        stale_query = select(DiscoveredPeer).where(
+            DiscoveredPeer.server_id == server_id
+        )
+        if observed_keys:
+            # When the server reported peers, keep only those; otherwise the
+            # ``notin_`` below would short-circuit and the bare server-scope
+            # filter already selects every row to prune.
+            stale_query = stale_query.where(
+                DiscoveredPeer.public_key.notin_(observed_keys)  # type: ignore[attr-defined]
+            )
+        stale_rows = session.exec(stale_query).all()
+        pruned_count = 0
+        for row in stale_rows:
+            session.delete(row)
+            pruned_count += 1
         session.commit()
 
         return {
@@ -822,6 +853,7 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
             "peer_count": len(peers),
             "new": new_count,
             "updated": updated_count,
+            "pruned": pruned_count,
         }
 
 

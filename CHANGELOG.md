@@ -20,6 +20,22 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   before rewriting the config preserves the reprovision-safety contract.
   Shape tests in `tests/test_wg_bootstrap_script.py`.
 
+### Changed
+
+- **Peer discovery now clears stale results instead of accumulating
+  ghosts.** Each successful discovery pass is treated as authoritative
+  for the server: any `DiscoveredPeer` row whose public key was not
+  observed in the pass is pruned, so a peer removed from a server's
+  running config disappears from the table on the next run rather than
+  lingering with an old `last_seen_at`. Pruning runs only after a
+  successful `wg show` — an unreachable host returns early and never
+  wipes the known peer set. The `discover_peers_task` result gains a
+  `pruned` count, and the Discovered Peers dashboard clears its
+  displayed list the moment a "Discover all servers" run is dispatched
+  so the table never shows a previous pass's peers while a new run is
+  in flight. Regression tests in `tests/test_discovery.py` and
+  `web/__tests__/discovered-peers.test.tsx`.
+
 ### Removed
 
 - **The `wg_node` Cinc cookbook (`cookbooks/wg_node/`).** It brought a node
