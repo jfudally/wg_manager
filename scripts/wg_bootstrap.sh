@@ -150,6 +150,17 @@ on_node() {
   ssh -o ConnectTimeout=15 "$(ssh_target)" "$@"
 }
 
+# Single-quote an arbitrary string so it survives as one literal argument
+# through the remote shell. ssh concatenates its command args and re-parses
+# them with a shell on the node, so embedding a multi-line script as a
+# 'bash -c <body>' argument requires bullet-proof quoting. The classic POSIX
+# idiom: wrap in single quotes and replace every embedded single quote with
+# the sequence '\'' (close-quote, escaped-quote, reopen-quote).
+quote_for_remote() {
+  local s=$1
+  printf "'%s'" "${s//\'/\'\\\'\'}"
+}
+
 # --------------------------------------------------------------------------
 # vpn — join the node to the WireGuard VPN
 # --------------------------------------------------------------------------
@@ -228,7 +239,15 @@ sys.stdout.write(addr.split("/")[0])
   # one remote sudo script so we make a single SSH round-trip and keep the
   # private-key-bearing config off argv (it's fed on stdin).
   log "Installing WireGuard config and bringing up ${INTERFACE} on the node"
-  printf '%s' "$wg_config" | on_node "sudo bash -s -- '${INTERFACE}'" <<'REMOTE'
+  # The remote script is delivered as a 'bash -c' *argument* (not on stdin) so
+  # that the node's stdin stays free for the rendered config we pipe in below.
+  # Earlier this fed the script to a stdin-reading bash (heredoc) while also
+  # piping $wg_config — both contend for the command's stdin, the heredoc
+  # wins, and the remote `cat > wg0.conf` then read the trailing script lines
+  # instead of the config (wg-quick then failed with "Line unrecognized").
+  # Keep these two channels separate: script via argv, config via stdin.
+  local remote_script
+  remote_script='
 set -euo pipefail
 iface="$1"
 # Ensure WireGuard is present (Debian/Ubuntu). No-op if already installed.
@@ -238,16 +257,19 @@ if ! command -v wg-quick >/dev/null 2>&1; then
   apt-get install -y -qq wireguard
 fi
 # Reprovision-safety: tear down any running interface BEFORE writing the new
-# config, so a stale tunnel from a prior join can't linger. A bare teardown is
+# config, so a stale tunnel from a prior join cant linger. A bare teardown is
 # fine here because we immediately rewrite + bring back up.
 wg-quick down "$iface" 2>/dev/null || true
 install -d -m 0700 /etc/wireguard
 umask 077
+# Read the rendered config (piped from the workstation) into wg0.conf.
 cat > "/etc/wireguard/${iface}.conf"
 chmod 600 "/etc/wireguard/${iface}.conf"
 systemctl enable "wg-quick@${iface}" >/dev/null 2>&1 || true
 systemctl restart "wg-quick@${iface}"
-REMOTE
+'
+  printf '%s' "$wg_config" \
+    | on_node "sudo bash -c $(quote_for_remote "$remote_script") -- '${INTERFACE}'"
 
   # Validate: a real handshake is the only proof the tunnel works. `wg show`
   # exits 0 even before a handshake, so just surface it for the operator.
