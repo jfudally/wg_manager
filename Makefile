@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes cookbook-test cookbook-lint
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -63,8 +63,7 @@ help:
 	@echo "  lockfiles      Verify pyproject.toml/uv.lock + web/package*.json parity (Phase 2e cycle 3)"
 	@echo "  evidence       Generate SOC 2-style evidence pack into evidence/ (Phase 2e cycle 4)"
 	@echo "  release-notes  Preview the release-notes body for VERSION=vX.Y.Z (Phase 2f cycle 2)"
-	@echo "  cookbook-test  Run the wg_node Cinc cookbook RSpec suite (cookbooks/wg_node)"
-	@echo "  cookbook-lint  Run cookstyle over the wg_node cookbook"
+	@echo "  node-bootstrap VPN-first node enrollment — see scripts/wg_bootstrap.sh --help"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -413,13 +412,13 @@ release-notes:
 	$(PYTHON) scripts/extract_changelog.py "$(VERSION)"
 
 # ---------------------------------------------------------------------------
-# wg_node Cinc cookbook (cookbooks/wg_node) — self-provisions a node onto
-# the VPN via the API. Delegates to the cookbook's own Makefile, which
-# drives the Chef Workstation toolchain (chef exec rspec, cookstyle).
+# Node enrollment — VPN-first bootstrap (scripts/wg_bootstrap.sh)
 # ---------------------------------------------------------------------------
-
-cookbook-test:
-	$(MAKE) -C cookbooks/wg_node test
-
-cookbook-lint:
-	$(MAKE) -C cookbooks/wg_node lint
+# The `wg_node` Cinc cookbook was retired in favour of scripts/wg_bootstrap.sh,
+# which joins a node to the VPN via the API first and only then bootstraps
+# Cinc over the tunnel (so the Cinc server need not be public-facing). The
+# script takes per-run SSH/API/cert arguments, so it is invoked directly
+# rather than through a fixed make target:
+#
+#   scripts/wg_bootstrap.sh --help
+#   scripts/wg_bootstrap.sh all --target <node> --api-url <url> --server-id <id> ...

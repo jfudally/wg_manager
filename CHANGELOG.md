@@ -10,6 +10,16 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`scripts/wg_bootstrap.sh` — VPN-first node bootstrap.** A multipurpose
+  orchestrator-run script that enrolls a node from the operator
+  workstation: `vpn` joins the node to the WireGuard VPN by calling the
+  control plane directly (`POST /<ver>/clients/manual` over mTLS), pushes
+  the rendered `wg0.conf` to the node, and brings the tunnel up; `cinc`
+  runs `knife bootstrap` over the now-up VPN; `all` does both, handing the
+  assigned VPN IP from the first phase to the second. The tunnel teardown
+  before rewriting the config preserves the reprovision-safety contract.
+  Shape tests in `tests/test_wg_bootstrap_script.py`.
+
 ### Changed
 
 - **Peer discovery now clears stale results instead of accumulating
@@ -25,6 +35,16 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   so the table never shows a previous pass's peers while a new run is
   in flight. Regression tests in `tests/test_discovery.py` and
   `web/__tests__/discovered-peers.test.tsx`.
+
+### Removed
+
+- **The `wg_node` Cinc cookbook (`cookbooks/wg_node/`).** It brought a node
+  onto the VPN *by converging against the Cinc server first*, which forced
+  the Cinc server to be reachable before the node had any VPN connectivity
+  — i.e. public-facing. `scripts/wg_bootstrap.sh` (above) replaces it by
+  flipping the order: VPN first, then Cinc over the tunnel, so the Cinc
+  server can stay VPN-only/private. The `cookbook-test` / `cookbook-lint`
+  Makefile targets are dropped with it.
 
 ## [v0.4.0] - 2026-06-19
 
