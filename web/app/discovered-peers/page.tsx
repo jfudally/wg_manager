@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api, ApiError } from "@/lib/api";
+import type { DiscoveredPeer } from "@/lib/types";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
@@ -47,7 +48,15 @@ export default function DiscoveredPeersPage() {
 
   const discoverAll = useMutation({
     mutationFn: api.discoverAllServers,
-    onSuccess: (data) => setActiveTaskId(data.task_id),
+    onSuccess: (data) => {
+      // Clear the displayed results the moment a new run is dispatched so
+      // the table never shows a previous pass's peers while discovery is in
+      // flight. The TaskPoller's onSuccess re-fetches the authoritative list
+      // once the run completes (the backend prunes vanished peers on its
+      // side, so the refetch reflects exactly what is on the wire now).
+      qc.setQueryData<DiscoveredPeer[]>(["discovered-peers", "all"], []);
+      setActiveTaskId(data.task_id);
+    },
   });
 
   const peers = peersQuery.data ?? [];

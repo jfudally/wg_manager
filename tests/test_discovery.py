@@ -157,6 +157,102 @@ class TestDiscoverEndpoint:
         assert by_key[managed_pubkey]["is_managed"] is True
         assert by_key["STRANGER_PUBKEY"]["is_managed"] is False
 
+    def test_discover_prunes_vanished_peers(self, client: TestClient) -> None:
+        """A peer absent from a later pass is pruned, not left as stale data.
+
+        Discovery is the operator's source of truth for "what is on the wire
+        right now". A peer that has been removed from the server's running
+        config must disappear from the discovered-peers table on the next
+        pass — otherwise the table accumulates ghosts that never clear.
+        """
+        _key_id, server_id = _bootstrap_server(client)
+
+        # First pass: both ALPHA and BETA are present on the wire.
+        FakeSSHRunner.OUTPUTS[("hub.example.com", "wg show wg0 dump")] = _WG_DUMP
+        client.post(f"/servers/{server_id}/discover")
+        first = client.get(f"/servers/{server_id}/discovered-peers").json()
+        assert {p["public_key"] for p in first} == {
+            "PEER_ALPHA_PUBKEY",
+            "PEER_BETA_PUBKEY",
+        }
+
+        # Second pass: BETA has been removed from the server — only ALPHA
+        # is still reported by ``wg show``.
+        only_alpha = (
+            "SRV_PRIV_KEY\tSRV_PUB_KEY\t51820\toff\n"
+            "PEER_ALPHA_PUBKEY\t(none)\t203.0.113.10:51820\t10.9.0.2/32\t1715000000\t1024\t2048\t25\n"
+        )
+        FakeSSHRunner.OUTPUTS[("hub.example.com", "wg show wg0 dump")] = only_alpha
+        client.post(f"/servers/{server_id}/discover")
+        second = client.get(f"/servers/{server_id}/discovered-peers").json()
+
+        # BETA must be gone — the stale row is pruned, not accumulated.
+        assert {p["public_key"] for p in second} == {"PEER_ALPHA_PUBKEY"}
+
+    def test_discover_prune_is_scoped_to_server(self, client: TestClient) -> None:
+        """Pruning a server's vanished peers must not touch another server."""
+        _key_id, server_a = _bootstrap_server(client)
+        # Register a second, distinct server.
+        key_b = int(client.post("/ssh-keys", json={"name": "lab2"}).json()["id"])
+        server_b = int(
+            client.post(
+                "/servers",
+                json={
+                    "hostname": "hub2.example.com",
+                    "ssh_username": "ubuntu",
+                    "ssh_key_id": key_b,
+                    "endpoint_host": "hub2.example.com",
+                },
+            ).json()["server"]["id"]
+        )
+
+        # Discover peers on both servers.
+        FakeSSHRunner.OUTPUTS[("hub.example.com", "wg show wg0 dump")] = _WG_DUMP
+        FakeSSHRunner.OUTPUTS[("hub2.example.com", "wg show wg0 dump")] = _WG_DUMP
+        client.post(f"/servers/{server_a}/discover")
+        client.post(f"/servers/{server_b}/discover")
+
+        # Re-run discovery on A with an empty peer list. B's peers must remain.
+        empty_dump = "SRV_PRIV_KEY\tSRV_PUB_KEY\t51820\toff\n"
+        FakeSSHRunner.OUTPUTS[("hub.example.com", "wg show wg0 dump")] = empty_dump
+        client.post(f"/servers/{server_a}/discover")
+
+        peers_a = client.get(f"/servers/{server_a}/discovered-peers").json()
+        peers_b = client.get(f"/servers/{server_b}/discovered-peers").json()
+        assert peers_a == []
+        assert {p["public_key"] for p in peers_b} == {
+            "PEER_ALPHA_PUBKEY",
+            "PEER_BETA_PUBKEY",
+        }
+
+    def test_ssh_failure_does_not_prune(self, client: TestClient) -> None:
+        """A failed pass yields no data, so it must not wipe known peers.
+
+        Pruning keys off "what this pass observed". An SSH failure observes
+        *nothing*, which is categorically different from "the server has no
+        peers" — treating it as the latter would clear the whole table every
+        time a host is briefly unreachable.
+        """
+        import socket
+
+        _key_id, server_id = _bootstrap_server(client)
+        FakeSSHRunner.OUTPUTS[("hub.example.com", "wg show wg0 dump")] = _WG_DUMP
+        client.post(f"/servers/{server_id}/discover")
+        assert len(client.get(f"/servers/{server_id}/discovered-peers").json()) == 2
+
+        # Next pass: the host is unreachable.
+        FakeSSHRunner.RAISE_ON_ENTER["hub.example.com"] = socket.timeout(
+            "connection timed out"
+        )
+        client.post(f"/servers/{server_id}/discover")
+
+        # The previously-known peers must survive an unreachable pass.
+        peers = client.get(f"/servers/{server_id}/discovered-peers").json()
+        assert {p["public_key"] for p in peers} == {
+            "PEER_ALPHA_PUBKEY",
+            "PEER_BETA_PUBKEY",
+        }
+
     def test_discover_unknown_server_404(self, client: TestClient) -> None:
         resp = client.post("/servers/999/discover")
         assert resp.status_code == 404
