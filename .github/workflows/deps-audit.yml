@@ -3,7 +3,12 @@
 # - pip-audit: walks the synced ``.venv`` after ``uv sync --frozen``
 #   and checks every installed package against PyPI's vulnerability
 #   feed + OSV. ``--strict`` makes "vuln service unreachable" a
-#   failure rather than a silent pass.
+#   failure rather than a silent pass. The sync uses
+#   ``--no-install-project`` so the local ``wg-manager`` distribution
+#   (editable + unpublished) is left out of the environment — pip-audit
+#   can't resolve it against PyPI and, under ``--strict``, that missing
+#   lookup was failing the whole gate. Third-party deps are still all
+#   present, so coverage is unchanged.
 # - npm-audit: ``npm audit --omit=dev`` per the Phase 2e ROADMAP —
 #   devDependencies are tooling (vitest, tsc) that never reach the
 #   browser. ``--audit-level=high`` gates only on high+/critical so
@@ -59,16 +64,21 @@ jobs:
         run: uv python install 3.13
 
       - name: Sync dependencies
-        run: uv sync --extra dev --frozen
+        # ``--no-install-project`` installs every third-party dep but
+        # not the local ``wg-manager`` package, which is editable and
+        # unpublished — pip-audit can't look it up on PyPI.
+        run: uv sync --extra dev --frozen --no-install-project
 
       - name: Run pip-audit
+        # ``--no-sync`` keeps the run step from re-adding the local
+        # project that the sync above deliberately left out.
         # CVE-2026-44405 (paramiko 4.0.0) has no upstream fix at time
         # of writing; documented + tracked in docs/runbooks (Phase 2e
         # cycle 5 will land the runbook). Re-evaluate every time the
         # paramiko version moves and drop the ignore once a patched
         # release is out.
         run: >
-          uv run --frozen --with pip-audit pip-audit
+          uv run --frozen --no-sync --with pip-audit pip-audit
           --strict
           --ignore-vuln CVE-2026-44405
 
