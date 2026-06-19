@@ -1,5 +1,0 @@
-source 'https://supermarket.chef.io'
-
-# wg_node has no external cookbook dependencies; the API client is a
-# self-contained library. metadata pulls in whatever metadata.rb declares.
-metadata
