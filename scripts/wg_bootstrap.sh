@@ -59,7 +59,7 @@ vpn options:
   --insecure             Skip API server-cert verification (CN=localhost dialed by IP).
 
 cinc options:
-  --node-name NAME       Chef node/client name. (default: the node's non-VPN IP)
+  --node-name NAME       Chef node/client name. (default: the node's VPN IP)
   --run-list LIST        knife run-list, e.g. 'role[homelab],role[wireguard]'.
   --secret-file PATH     Encrypted data-bag secret to hand to 'knife bootstrap'.
   --                     Everything after '--' is passed through to 'knife bootstrap'.
@@ -270,11 +270,19 @@ cmd_cinc() {
   # the vpn phase in `all`); otherwise fall back to the SSH --target.
   local dial="${ASSIGNED_VPN_IP:-$TARGET}"
 
-  # Default the Chef node name to the node's non-VPN (LAN/management) IP, the
-  # fleet convention — never the 10.x VPN address (assigned post-enrollment).
+  # Default the Chef node/client name to the node's VPN IP — the fleet
+  # convention. VPN-first enrollment makes this non-circular: the `vpn` phase
+  # already assigned the address (ASSIGNED_VPN_IP, set when run via `all`), so
+  # the Chef identity is tied to the stable VPN address rather than a mutable
+  # LAN/DHCP one. Standalone `cinc` re-derives it from the node's WireGuard
+  # interface; fall back to the dial target only if that can't be read.
   if [[ -z "$NODE_NAME" ]]; then
-    NODE_NAME="$(on_node "ip -4 -o addr show scope global | awk '{print \$4}' | cut -d/ -f1 | grep -v '^10\\.' | head -1" | tr -d '[:space:]' || true)"
-    [[ -n "$NODE_NAME" ]] || NODE_NAME="$TARGET"
+    if [[ -n "$ASSIGNED_VPN_IP" ]]; then
+      NODE_NAME="$ASSIGNED_VPN_IP"
+    else
+      NODE_NAME="$(on_node "ip -4 -o addr show dev ${INTERFACE} 2>/dev/null | awk '{print \$4}' | cut -d/ -f1 | head -1" | tr -d '[:space:]' || true)"
+      [[ -n "$NODE_NAME" ]] || NODE_NAME="$dial"
+    fi
   fi
 
   log "Bootstrapping Cinc on node '${NODE_NAME}' over ${dial}"
