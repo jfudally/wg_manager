@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes cookbook-test cookbook-lint
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -63,6 +63,8 @@ help:
 	@echo "  lockfiles      Verify pyproject.toml/uv.lock + web/package*.json parity (Phase 2e cycle 3)"
 	@echo "  evidence       Generate SOC 2-style evidence pack into evidence/ (Phase 2e cycle 4)"
 	@echo "  release-notes  Preview the release-notes body for VERSION=vX.Y.Z (Phase 2f cycle 2)"
+	@echo "  cookbook-test  Run the wg_node Cinc cookbook RSpec suite (cookbooks/wg_node)"
+	@echo "  cookbook-lint  Run cookstyle over the wg_node cookbook"
 	@echo "  clean          Remove caches and build artifacts"
 
 install:
@@ -409,3 +411,15 @@ evidence:
 release-notes:
 	@if [ -z "$(VERSION)" ]; then echo "usage: make release-notes VERSION=vX.Y.Z"; exit 2; fi
 	$(PYTHON) scripts/extract_changelog.py "$(VERSION)"
+
+# ---------------------------------------------------------------------------
+# wg_node Cinc cookbook (cookbooks/wg_node) — self-provisions a node onto
+# the VPN via the API. Delegates to the cookbook's own Makefile, which
+# drives the Chef Workstation toolchain (chef exec rspec, cookstyle).
+# ---------------------------------------------------------------------------
+
+cookbook-test:
+	$(MAKE) -C cookbooks/wg_node test
+
+cookbook-lint:
+	$(MAKE) -C cookbooks/wg_node lint

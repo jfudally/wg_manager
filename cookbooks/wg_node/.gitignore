@@ -1,0 +1,16 @@
+# Test Kitchen
+.kitchen/
+.kitchen.local.yml
+
+# Bundler
+.bundle/
+vendor/bundle/
+
+# Berkshelf
+Berksfile.lock
+.berkshelf/
+
+# Local secrets — never commit real mTLS material or data bag secrets
+*.pem
+secrets/
+data_bags_secret*

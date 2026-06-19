@@ -1,0 +1,42 @@
+# Test Kitchen config (Phase 3 — see ROADMAP.md).
+#
+# NOTE: a full `kitchen test` converge calls the live wg_manager API during
+# wg_node::client, so it needs either a reachable test instance or a mocked
+# endpoint. Until that harness lands (Phase 3), this file documents the
+# intended shape and lets `kitchen list` work. The InSpec profile in
+# test/integration/default asserts the post-converge state.
+---
+driver:
+  name: dokken
+  privileged: true
+
+provisioner:
+  name: dokken
+  chef_license: accept-no-persist
+
+transport:
+  name: dokken
+
+verifier:
+  name: inspec
+
+platforms:
+  - name: ubuntu-22.04
+    driver:
+      image: dokken/ubuntu-22.04
+      pid_one_command: /bin/systemd
+
+suites:
+  - name: client
+    run_list:
+      - recipe[wg_node::default]
+    attributes:
+      wg_node:
+        role: client
+        api_url: https://wg-api.test:8000
+        server_id: 1
+        tls:
+          verify: false
+    verifier:
+      inspec_tests:
+        - test/integration/default
