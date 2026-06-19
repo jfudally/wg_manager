@@ -1,0 +1,13 @@
+# Files that should not be uploaded to the Chef/Cinc server with the
+# cookbook. Tests, CI config, and editor cruft stay local.
+spec/
+test/
+.rspec
+.kitchen/
+.kitchen.local.yml
+kitchen.yml
+Makefile
+ROADMAP.md
+CHANGELOG.md
+.gitignore
+.rubocop.yml
