@@ -85,6 +85,35 @@ class TestVpnPhase:
         # project memory on reprovision wg checks.
         assert "wg-quick down" in body
 
+    def test_config_not_delivered_via_bash_dash_s_stdin_collision(
+        self, body: str
+    ) -> None:
+        # Regression (2026-06-19): the wg0.conf was delivered by piping
+        # ``$wg_config`` into ``ssh ... 'bash -s' <<'REMOTE'``. A heredoc and a
+        # pipe both claim the command's stdin; the heredoc wins, so ``bash -s``
+        # consumed the REMOTE *script* as its stdin and the remote ``cat >
+        # wg0.conf`` then read the *trailing script lines* instead of
+        # ``$wg_config``. The node's wg0.conf ended up containing shell
+        # commands (``chmod 600 ...``), wg-quick failed with "Line
+        # unrecognized", and the tunnel never came up.
+        #
+        # The remote script body must NOT be fed to ``bash -s`` on stdin while
+        # ``$wg_config`` is also piped in — those two channels collide. Deliver
+        # the script body as a ``bash -c`` argument so stdin is free for the
+        # config.
+        assert "bash -s" not in body, (
+            "remote script fed to 'bash -s' on stdin collides with the "
+            "wg_config piped on the same stdin — use 'bash -c <body>' so the "
+            "config can be read from stdin by the remote cat"
+        )
+
+    def test_config_piped_to_remote_for_cat(self, body: str) -> None:
+        # The rendered config (carrying the node's private key inline) must
+        # reach the node's ``cat > wg0.conf`` on stdin — keep it off argv and
+        # off any intermediate file.
+        assert 'printf' in body and '"$wg_config"' in body
+        assert 'cat > "/etc/wireguard/${iface}.conf"' in body
+
 
 class TestCincPhase:
     """The cinc phase bootstraps the node into Cinc over the VPN."""
