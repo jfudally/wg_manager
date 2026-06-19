@@ -8,6 +8,10 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+### Added
+
+## [v0.4.0] - 2026-06-19
+
 ### Fixed
 
 - **`SSH_CA_VAULT_ALLOWED_USERS` / `SSH_CA_VAULT_ALLOWED_HOST_DOMAINS`
