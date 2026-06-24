@@ -10,6 +10,10 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.5.0] - 2026-06-24
+
+### Added
+
 - **`scripts/wg_bootstrap.sh` — VPN-first node bootstrap.** A multipurpose
   orchestrator-run script that enrolls a node from the operator
   workstation: `vpn` joins the node to the WireGuard VPN by calling the

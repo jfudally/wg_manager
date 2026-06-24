@@ -46,18 +46,25 @@ DATE=$(date -u +%Y-%m-%d)
 VERSION=v0.1.0   # adjust
 
 # Replace the Unreleased heading with the versioned one + add a
-# fresh empty Unreleased section above for next time.
+# fresh empty Unreleased section above for next time. Anchor the
+# match at the start of a line (re.MULTILINE) so the literal
+# `## [Unreleased]` inside the intro prose is left untouched.
 python - <<EOF
+import re
 from pathlib import Path
 path = Path("CHANGELOG.md")
 body = path.read_text()
 versioned = f"## [{VERSION}] - $DATE"
-fresh = "## [Unreleased]\n\n### Added\n\n"
-path.write_text(body.replace(
-    "## [Unreleased]",
-    fresh + "\n" + versioned,
-    1,
-))
+fresh = "## [Unreleased]\n\n### Added\n"
+new, n = re.subn(
+    r"^## \[Unreleased\]\n",
+    fresh + "\n" + versioned + "\n",
+    body,
+    count=1,
+    flags=re.MULTILINE,
+)
+assert n == 1, f"expected exactly 1 heading replacement, got {n}"
+path.write_text(new)
 EOF
 
 # Preview the extracted notes locally before tagging:
