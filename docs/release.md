@@ -9,11 +9,14 @@ actual publish; this doc walks the human side.
 A single `git push origin v<X.Y.Z>` produces:
 
 - Two Docker images on GHCR:
-  - `ghcr.io/<owner>/wg-manager:v<X.Y.Z>` — API + worker
-  - `ghcr.io/<owner>/wg-manager-web:v<X.Y.Z>` — dashboard
-- Each image carries the full semver tag set (`vX.Y.Z`, `vX.Y`,
-  `vX`), the commit SHA, and the `latest` floating tag, so
-  consumers pin to whatever granularity they want.
+  - `ghcr.io/<owner>/<repo>:<X.Y.Z>` — API + worker
+  - `ghcr.io/<owner>/<repo>-web:<X.Y.Z>` — dashboard
+- Each image carries the full semver tag set as **bare** versions
+  (`X.Y.Z`, `X.Y`, `X` — `docker/metadata-action`'s `{{version}}`
+  strips the leading `v`), plus the commit SHA and the `latest`
+  floating tag, so consumers pin to whatever granularity they want.
+  The git tag stays `v`-prefixed (`v<X.Y.Z>`); the registry tags do
+  not.
 - A GitHub release at `v<X.Y.Z>` whose body is the matching
   `## [v<X.Y.Z>]` section from `CHANGELOG.md` plus a footer with
   the image-pull lines.
@@ -158,8 +161,14 @@ cosign verify \
         'https://github.com/<owner>/wg_manager/.github/workflows/release.yml@.*' \
     --certificate-oidc-issuer \
         'https://token.actions.githubusercontent.com' \
-    ghcr.io/<owner>/wg-manager:v0.1.0
+    ghcr.io/<owner>/wg_manager:0.1.0
 ```
+
+Note the **bare** image tag (`0.1.0`, not `v0.1.0`) — see
+[What a release ships](#what-a-release-ships). The published packages
+are private, so `cosign` needs a GHCR login first
+(`echo $TOKEN | cosign login ghcr.io -u <user> --password-stdin`
+with a `read:packages`-scoped token).
 
 A successful verification returns the signature payload + a
 ``Verification for ghcr.io/...`` confirmation line. A failed
@@ -226,7 +235,7 @@ cosign verify-attestation \
         'https://github.com/<owner>/wg_manager/.github/workflows/release.yml@.*' \
     --certificate-oidc-issuer \
         'https://token.actions.githubusercontent.com' \
-    ghcr.io/<owner>/wg-manager:v0.1.0
+    ghcr.io/<owner>/wg_manager:0.1.0
 ```
 
 A successful verify returns the in-toto envelope with the
