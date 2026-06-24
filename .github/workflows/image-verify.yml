@@ -43,6 +43,11 @@ on:
 
 permissions:
   contents: read
+  # cosign pulls each image's signature manifest from GHCR before
+  # verifying it. The published packages are private, so an anonymous
+  # pull gets `UNAUTHORIZED` — the job needs package-read to fetch the
+  # signature at all (the verify itself is offline-cryptographic).
+  packages: read
 
 env:
   REGISTRY: ghcr.io
@@ -62,6 +67,13 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Verify API image signature
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_API }}:${{ inputs.tag || 'latest' }}
@@ -77,6 +89,13 @@ jobs:
     steps:
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify dashboard image signature
         env:
