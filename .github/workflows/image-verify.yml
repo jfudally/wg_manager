@@ -76,8 +76,17 @@ jobs:
 
       - name: Verify API image signature
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_API }}:${{ inputs.tag || 'latest' }}
+          REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_API }}
+          RAW_TAG: ${{ inputs.tag || 'latest' }}
         run: |
+          # The release workflow tags images via metadata-action's
+          # `{{version}}`, which is the *bare* semver (0.5.0), not the
+          # v-prefixed git tag. Strip a leading `v` so an operator can
+          # dispatch with either `v0.5.0` or `0.5.0` (the docs say
+          # v-prefixed) and still hit the published tag.
+          TAG="${RAW_TAG#v}"
+          IMAGE="${REPO}:${TAG}"
+          echo "Verifying ${IMAGE}"
           cosign verify \
             --certificate-identity-regexp "${IDENTITY_REGEXP}" \
             --certificate-oidc-issuer "${OIDC_ISSUER}" \
@@ -99,8 +108,14 @@ jobs:
 
       - name: Verify dashboard image signature
         env:
-          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_WEB }}:${{ inputs.tag || 'latest' }}
+          REPO: ${{ env.REGISTRY }}/${{ env.IMAGE_WEB }}
+          RAW_TAG: ${{ inputs.tag || 'latest' }}
         run: |
+          # See verify-api: normalise a v-prefixed tag to the bare
+          # semver the release workflow actually pushes.
+          TAG="${RAW_TAG#v}"
+          IMAGE="${REPO}:${TAG}"
+          echo "Verifying ${IMAGE}"
           cosign verify \
             --certificate-identity-regexp "${IDENTITY_REGEXP}" \
             --certificate-oidc-issuer "${OIDC_ISSUER}" \
