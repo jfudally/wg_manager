@@ -95,8 +95,11 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_API }}
-          # ``type=semver`` parses the tag into vX, vX.Y, vX.Y.Z so a
-          # consumer can pin to whatever granularity they want.
+          # ``type=semver`` parses the git tag into the *bare* semver
+          # forms X.Y.Z / X.Y / X (``{{version}}`` strips the leading
+          # ``v``) so a consumer can pin to whatever granularity they
+          # want. Note: the published registry tags are bare — the
+          # release footer and docs/release.md reflect that.
           # ``type=sha`` adds the commit SHA so an operator can always
           # trace an image back to the exact source state.
           tags: |
@@ -291,6 +294,13 @@ jobs:
           NOTES: ${{ needs.extract-notes.outputs.notes }}
         run: |
           set -euo pipefail
+          # metadata-action tags images with the *bare* semver
+          # (`{{version}}` strips the leading `v`), so the published
+          # tags are `0.5.0` / `0.5` / `0`, not `v0.5.0`. Derive the
+          # bare form from the git ref and substitute it into the body
+          # via the `__VERSION__` placeholder below — pointing the
+          # footer's pull/verify lines at tags that actually exist.
+          VERSION="${GITHUB_REF_NAME#v}"
           # The release body is the CHANGELOG section + a footer that
           # points at the published images and explains the bundled
           # SBOM + cosign attestation surface.
@@ -301,10 +311,11 @@ jobs:
 
           ### Published images
 
-          - `ghcr.io/${{ github.repository }}:${{ github.ref_name }}` — API + worker
-          - `ghcr.io/${{ github.repository }}-web:${{ github.ref_name }}` — dashboard
+          - `ghcr.io/${{ github.repository }}:__VERSION__` — API + worker
+          - `ghcr.io/${{ github.repository }}-web:__VERSION__` — dashboard
 
-          Pull either with a granularity-appropriate tag (`vX.Y.Z`, `vX.Y`, `vX`, or `latest`).
+          Pull either with a granularity-appropriate tag (`__VERSION__`, or a
+          coarser `X.Y` / `X` / `latest`).
 
           ### Supply-chain attestation
 
@@ -317,7 +328,7 @@ jobs:
                   'https://github.com/${{ github.repository }}/.github/workflows/release.yml@.*' \
               --certificate-oidc-issuer \
                   'https://token.actions.githubusercontent.com' \
-              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+              ghcr.io/${{ github.repository }}:__VERSION__
           ```
 
           The SBOMs are also attached as release assets:
@@ -325,6 +336,12 @@ jobs:
           - `sbom-api.cdx.json` — CycloneDX SBOM of the API + worker image's Python deps
           - `sbom-web.cdx.json` — CycloneDX SBOM of the dashboard image's Node deps
           BODY
+
+          # Substitute the bare version into the placeholder lines. The
+          # heredoc is quoted (no shell expansion), so this sed pass is
+          # what fills `__VERSION__` — keeping the `${{ github.* }}`
+          # render-time expressions untouched.
+          sed -i "s/__VERSION__/${VERSION}/g" release-body.md
 
           # ``gh release create … <files…>`` attaches every positional
           # file as a release asset — the SBOMs land alongside the

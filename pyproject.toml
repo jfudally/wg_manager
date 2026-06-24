@@ -1,15 +1,15 @@
 [project]
 name = "wg-manager"
-version = "0.4.0"
+version = "0.5.0"
 requires-python = ">=3.13"
 readme = "README.md"
 dependencies = [
-    "fastapi>=0.137.2",
+    "fastapi>=0.138.0",
     "uvicorn[standard]>=0.49.0",
     "sqlmodel>=0.0.22",
     "pymysql>=1.2.0",
     "cryptography>=43.0.0",
-    "pydantic-settings>=2.14.1",
+    "pydantic-settings>=2.14.2",
     "paramiko>=3.5.0",
     "python-dotenv>=1.0.1",
     "celery>=5.4.0",
@@ -49,7 +49,7 @@ wg-manager = "wg_manager.cli:app"
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.1.0",
+    "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     # Phase 2d CP4.2: ``tests/test_mysql_tls_config.py`` parses
     # ``docker-compose.yml`` to pin the MySQL service's TLS-cert + my.cnf
