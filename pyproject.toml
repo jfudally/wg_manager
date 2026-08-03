@@ -4,7 +4,7 @@ version = "0.5.0"
 requires-python = ">=3.13"
 readme = "README.md"
 dependencies = [
-    "fastapi>=0.138.2",
+    "fastapi>=0.141.1",
     "uvicorn[standard]>=0.49.0",
     "sqlmodel>=0.0.39",
     "pymysql>=1.2.0",
@@ -13,9 +13,9 @@ dependencies = [
     "paramiko>=3.5.0",
     "python-dotenv>=1.0.1",
     "celery>=5.4.0",
-    "redis>=8.0.1",
+    "redis>=8.1.0",
     "celery-types>=0.26.0",
-    "typer>=0.26.8",
+    "typer>=0.27.0",
     "httpx>=0.27.0",
     # hvac drives wg_manager.crypto's Vault Transit backend (Phase 2b).
     # The LocalDevBackend path doesn't call into hvac, but the import
@@ -25,13 +25,13 @@ dependencies = [
     # ASGI middleware, Celery signal handlers, and the /metrics
     # endpoint. Pinning the registry and Counter/Histogram primitives
     # to the canonical Python client keeps Grafana dashboards portable.
-    "prometheus-client>=0.20.0",
+    "prometheus-client>=0.26.0",
     # OpenTelemetry powers wg_manager.tracing (Phase 3a cycle 2) —
     # spans on Celery provisioning tasks, SSH connections, and Vault
     # round-trips. Default OTEL_EXPORTER=none ships a NoOp tracer
     # (zero overhead); production sets otlp-http and points at a
     # collector. ``-instrumentation-celery`` auto-wraps every task.
-    "opentelemetry-api>=1.43.0",
+    "opentelemetry-api>=1.44.0",
     "opentelemetry-sdk>=1.27.0",
     "opentelemetry-exporter-otlp-proto-http>=1.27.0",
     "opentelemetry-instrumentation-celery>=0.48b0",
