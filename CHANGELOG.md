@@ -10,6 +10,40 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`make certs-rotate` — single-command cert rotation for the prod
+  stack.** Wraps a new ``scripts/prod_rotate_certs.sh`` orchestrator
+  that runs inside a ``bootstrap-app`` container (so the wg-manager
+  entrypoint shim sources ``VAULT_TOKEN``) and re-mints the three
+  short-TTL cert families the prod overlay loads at startup: the
+  MySQL server + client leaves in ``tls/mysql/``, the API server
+  cert in ``tls/server.{crt,key}`` + ``tls/ca-bundle.crt``, and the
+  operator CLI client cert in ``tls/client.{crt,key}`` +
+  ``tls/client.chain.crt``. After the mint the Makefile target
+  restarts ``mysql``, ``api``, ``worker``, and ``web`` so the
+  runtime tier actually picks up the fresh files. Shape tests in
+  ``tests/test_makefile_certs_rotate.py`` +
+  ``tests/test_prod_rotate_certs_script.py`` pin the flow so a
+  future refactor can't quietly drop the restart step (a common
+  regression class: cert is fresh on disk, but the running process
+  is still holding the old one).
+
+### Fixed
+
+- **`scripts/bootstrap_mysql_tls_files.py` now emits PKCS#8 EC keys.**
+  Vault's PKI backend returns EC private keys wrapped in SEC1
+  (``-----BEGIN EC PRIVATE KEY-----``), which MySQL 8.4 rejects at
+  TLS init with ``[ERROR] [MY-000059] [Server] SSL error: Unable
+  to get private key from '/etc/mysql/certs/server.key'`` — the
+  freshly-minted server cert then never makes it into mysqld's SSL
+  channel, and every ``DATABASE_TLS_REQUIRED=true`` client sees
+  ``(2026, "SSL is required but the server doesn't support it")``.
+  The mint script now normalises to PKCS#8
+  (``-----BEGIN PRIVATE KEY-----``) via a small
+  ``_to_pkcs8_pem`` helper before writing, so future rotations
+  don't need the manual ``openssl pkey`` conversion that unstuck the
+  Sep '26 prod-up incident. Unit tests in
+  ``tests/test_bootstrap_mysql_tls_pkcs8.py``.
+
 ## [v0.5.0] - 2026-06-24
 
 ### Added

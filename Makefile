@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -54,6 +54,7 @@ help:
 	@echo "  transit-bootstrap"
 	@echo "                 Idempotently enable the Vault Transit engine + master key (Phase 2b)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
+	@echo "  certs-rotate   Re-mint MySQL + API + operator CLI certs and bounce mysql/api/worker/web"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
 	@echo "  npm-audit      Run npm audit --omit=dev against the dashboard deps"
@@ -169,6 +170,33 @@ prod-logs:
 
 prod-config:
 	$(PROD_COMPOSE) config
+
+# ---------------------------------------------------------------------------
+# Cert rotation.
+#
+# Runs scripts/prod_rotate_certs.sh inside a bootstrap-app container
+# (so the entrypoint shim sources VAULT_TOKEN) to re-mint the three
+# short-TTL cert families the prod stack loads at startup:
+#
+#   * tls/mysql/{server,client}.{crt,key} — direct-to-Vault mint.
+#   * tls/{server,ca-bundle}.{crt,key}    — API server cert.
+#   * tls/{client,client.chain}.{crt,key} — operator CLI client cert.
+#
+# The mint script fixes the SEC1-vs-PKCS#8 EC-key trap that made the
+# previous rotation cascade into MySQL "Unable to get private key"
+# errors. After the mint we bounce every runtime container that
+# holds cert material in memory — mysql (server.crt), api
+# (server.crt + ca-bundle.crt), worker (client.crt), web (BFF's
+# client.crt) — because none of them re-read the file otherwise.
+# ---------------------------------------------------------------------------
+certs-rotate:
+	@if [ ! -f .env.prod ]; then \
+		echo "ERROR: .env.prod is missing — cert rotation needs it for MYSQL_APP_PASSWORD, BOOTSTRAP_OPERATOR_CN, etc."; \
+		exit 2; \
+	fi
+	$(PROD_COMPOSE) run --rm --entrypoint /usr/local/bin/entrypoint-wg-manager.sh bootstrap-app /app/scripts/prod_rotate_certs.sh
+	@echo "==> Restarting mysql, api, worker, web to load fresh certs..."
+	$(PROD_COMPOSE) restart mysql api worker web
 
 migrate:
 	$(ALEMBIC) upgrade head
