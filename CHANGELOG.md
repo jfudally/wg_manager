@@ -54,6 +54,21 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Fixed
 
+- **`make prod-up` is idempotent again after first-run.** The recipe
+  unconditionally ran `touch vault-init.json && chmod 0600` before
+  handing off to compose, which succeeds only on the very first
+  invocation: after that, `bootstrap-substrate` has re-authored the
+  file as UID 1001 (the container's `wgmanager` user), and a
+  host-side touch by any other UID fails with
+  ``touch: cannot touch 'vault-init.json': Permission denied`` —
+  forcing the operator to `sudo chown` before every re-run. The
+  touch/chmod is now guarded on file absence
+  (``if [ ! -e vault-init.json ]; then …; fi``), preserving the
+  first-run "make sure Docker doesn't mkdir the mount target"
+  behavior while making every subsequent run a no-op. Shape test in
+  ``tests/test_makefile_prod_up.py`` pins the guard so a future
+  refactor can't silently regress this.
+
 - **`SSH_CA_VAULT_ALLOWED_USERS` / `SSH_CA_VAULT_ALLOWED_HOST_DOMAINS`
   now actually take effect from `.env.prod`.** The prod overlay
   hardcoded a small env block on `bootstrap-substrate` and didn't

@@ -146,8 +146,15 @@ prod-up:
 	# token into it via `vault operator init`. Without this touch,
 	# Docker silently creates a directory at the mount target — which
 	# the script then can't write to.
-	@touch vault-init.json
-	@chmod 0600 vault-init.json
+	#
+	# Guarded on absence so re-runs are a no-op: after the first
+	# prod-up the file is owned by the container's wgmanager user
+	# (UID 1001), and a host-side touch/chmod as the operator's UID
+	# would fail with EPERM. The container is the sole writer once
+	# the file exists.
+	@if [ ! -e vault-init.json ]; then \
+		touch vault-init.json && chmod 0600 vault-init.json; \
+	fi
 	# `--wait` blocks until every service reaches its target state
 	# (`healthy` for long-runners, `exited 0` for the two bootstrap
 	# containers). With the self-bootstrap services, that means the
