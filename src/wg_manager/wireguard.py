@@ -148,18 +148,29 @@ def _install_wireguard(runner: SSHRunner) -> None:
 def _ensure_keypair(runner: SSHRunner) -> str:
     """Generate a WireGuard keypair on the remote host if one is not already present.
 
-    Returns the remote node's public key, stripped of whitespace. Existing
-    keys are never overwritten — preserving the public key means previously
+    Returns the remote node's public key, stripped of whitespace. An existing
+    private key is never overwritten — preserving it means previously
     registered peers stay valid after a re-provision.
+
+    The public key is always *derived* from ``privatekey`` (and rewritten to
+    ``publickey``) rather than read from ``publickey``. Hosts with a
+    hand-rolled or half-finished WireGuard setup often have a ``privatekey``
+    but no ``publickey`` (or a stale one); trusting that file either fails
+    provisioning outright or registers a pubkey the interface can't use.
     """
     runner.sudo("mkdir -p /etc/wireguard")
     runner.sudo("chmod 700 /etc/wireguard")
+    # umask 077 so the private key is never world-readable, even briefly.
     runner.sudo(
-        "sh -c 'test -s /etc/wireguard/privatekey || "
-        "(wg genkey | tee /etc/wireguard/privatekey | wg pubkey > /etc/wireguard/publickey)'"
+        "sh -c 'umask 077; test -s /etc/wireguard/privatekey || "
+        "wg genkey > /etc/wireguard/privatekey'"
     )
     runner.sudo("chmod 600 /etc/wireguard/privatekey")
-    result = runner.sudo("cat /etc/wireguard/publickey")
+    # Wrapped in `sh -c` so the redirect and pipe run as root, not as the
+    # SSH user that `sudo -n` was invoked from.
+    result = runner.sudo(
+        "sh -c 'wg pubkey < /etc/wireguard/privatekey | tee /etc/wireguard/publickey'"
+    )
     return result.stdout.strip()
 
 
