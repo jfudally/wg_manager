@@ -27,6 +27,30 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   regression class: cert is fresh on disk, but the running process
   is still holding the old one).
 
+- **Register-client flow can now bootstrap the client in the same
+  task**, matching the Register-server flow. Previously only
+  `POST /servers` accepted the operator's OOB SSH key, so every
+  SSH-provisioned client needed a separate `wg-manager bootstrap-host`
+  run or failed with `host cert signed by an untrusted CA`.
+
+  - **`ClientCreate`** now accepts optional `bootstrap_ssh_key_pem` +
+    `bootstrap_ssh_key_passphrase`. Both create schemas share a new
+    `BootstrapKeyFields` base (`src/wg_manager/schemas.py`), including
+    the "passphrase requires PEM" 422.
+  - **`POST /clients`** encrypts the material with the crypto backend
+    before queueing (contexts `provision-client:bootstrap-pem` /
+    `provision-client:bootstrap-passphrase`), so the broker only sees
+    ciphertext. Server and client routers share
+    `wg_manager.routers._bootstrap.encrypt_bootstrap_kwargs`.
+  - **`provision_client_task`** accepts the `bootstrap_*` kwargs and
+    runs `_run_bootstrap_if_supplied` (now node-agnostic) before the
+    CA-mode session. A bootstrap failure marks the client `error`
+    and skips provisioning. Omitting the PEM keeps today's behaviour.
+  - **Dashboard `/clients`** gains the same collapsible "Bootstrap this
+    host first" section as `/servers`.
+  - Tests: `tests/test_tasks_provision_client_bootstrap.py`,
+    `web/__tests__/clients-bootstrap.test.tsx`.
+
 ### Fixed
 
 - **`scripts/bootstrap_mysql_tls_files.py` now emits PKCS#8 EC keys.**
@@ -51,6 +75,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   now allowlists the PKCS#8 test file by path and header-only mentions
   by match shape (header immediately followed by a closing backtick
   pair or quote), so real keys in the same files are still caught.
+
+- **Gitleaks CI no longer fails PRs for leaks on other branches.**
+  `gitleaks detect` defaults to `git log --all`, and the workflow's
+  `fetch-depth: 0` checkout fetches every remote branch, so a clean PR
+  failed whenever *any* unmerged branch held a finding. The scan (CI
+  and `make gitleaks`) now passes `--log-opts=HEAD`, covering only the
+  checked-out commit's full ancestry — main plus the PR's commits.
 
 ## [v0.5.0] - 2026-06-24
 

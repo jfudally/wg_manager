@@ -386,7 +386,9 @@ gitleaks:
 		echo "       The CI workflow pins v8.30.1; match locally if you want byte-for-byte parity."; \
 		exit 2; \
 	fi
-	gitleaks detect --source . --no-banner --redact
+	@# --log-opts=HEAD: scan the current branch's history only, not every
+	@# local branch (gitleaks defaults to git log --all). Mirrors CI.
+	gitleaks detect --source . --no-banner --redact --log-opts=HEAD
 
 # pip-audit walks the synced .venv against PyPI's vulnerability feed.
 # ``--ignore-vuln`` mirrors the CI workflow so a local repro matches.

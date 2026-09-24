@@ -10,9 +10,9 @@ from sqlmodel import Session, select
 
 from wg_manager import audit
 from wg_manager.config import settings
-from wg_manager.crypto import make_backend as make_crypto_backend
 from wg_manager.db import get_session
 from wg_manager.ipam import subnet_in_pool
+from wg_manager.routers._bootstrap import encrypt_bootstrap_kwargs
 from wg_manager.tenant_scope import (
     ScopeDep,
     require_tenant_role,
@@ -137,38 +137,11 @@ def register_server(
     session.refresh(row)
 
     # Optional bootstrap material — when the operator pasted their
-    # OOB SSH key in the Register form, encrypt it with the crypto
-    # backend before queueing so the broker never sees plaintext
-    # key material. The task layer decrypts in worker memory and
-    # uses the PEM for a single TOFU bootstrap session before
-    # opening the regular CA-mode provision session. ``None`` for
-    # both ciphertexts skips the bootstrap step entirely.
-    bootstrap_pem_ciphertext: str | None = None
-    bootstrap_pem_context: str | None = None
-    bootstrap_passphrase_ciphertext: str | None = None
-    bootstrap_passphrase_context: str | None = None
-    if payload.bootstrap_ssh_key_pem is not None:
-        crypto = make_crypto_backend(settings)
-        bootstrap_pem_context = "provision-server:bootstrap-pem"
-        bootstrap_pem_ciphertext = crypto.encrypt(
-            payload.bootstrap_ssh_key_pem.encode("utf-8"),
-            context=bootstrap_pem_context,
-        )
-        if payload.bootstrap_ssh_key_passphrase is not None:
-            bootstrap_passphrase_context = (
-                "provision-server:bootstrap-passphrase"
-            )
-            bootstrap_passphrase_ciphertext = crypto.encrypt(
-                payload.bootstrap_ssh_key_passphrase.encode("utf-8"),
-                context=bootstrap_passphrase_context,
-            )
-
+    # OOB SSH key in the Register form, encrypt it before queueing so
+    # the broker never sees plaintext key material. All-``None``
+    # kwargs make the task skip the bootstrap step entirely.
     async_result = provision_server_task.delay(
-        row.id,
-        bootstrap_pem_ciphertext=bootstrap_pem_ciphertext,
-        bootstrap_pem_context=bootstrap_pem_context,
-        bootstrap_passphrase_ciphertext=bootstrap_passphrase_ciphertext,
-        bootstrap_passphrase_context=bootstrap_passphrase_context,
+        row.id, **encrypt_bootstrap_kwargs(payload, node_kind="server")
     )
     return ServerRegisterResponse(
         task_id=async_result.id,

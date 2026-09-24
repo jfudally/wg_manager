@@ -206,6 +206,19 @@ export interface ClientCreate {
   ssh_username: string;
   ssh_key_id: number;
   server_id: number;
+  /**
+   * Optional operator OOB SSH private key (PEM body). Same contract as
+   * `ServerCreate.bootstrap_ssh_key_pem`: the provisioning task runs
+   * `bootstrap_host()` against the client BEFORE the CA-mode session so
+   * a fresh spoke trusts the SSH CA in the same round-trip. Encrypted
+   * server-side before queueing; never persisted or echoed back.
+   */
+  bootstrap_ssh_key_pem?: string;
+  /**
+   * Optional passphrase protecting `bootstrap_ssh_key_pem`. The API
+   * rejects it (422) when sent without the PEM.
+   */
+  bootstrap_ssh_key_passphrase?: string;
 }
 
 /**
