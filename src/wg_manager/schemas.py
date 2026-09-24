@@ -350,13 +350,17 @@ class ClientRead(BaseModel):
     created_at: datetime
     # Phase 3b cycle 3 — see ServerRead.tenant_id.
     tenant_id: int | None = None
-    # Host-cert metadata (Alembic 0017) so the dashboard can show the
-    # serial + expiry and offer rotation. The cert body and CA pubkey
-    # stay DB-side; ``NULL`` for manual clients and never-provisioned rows.
+    # Host-cert snapshot (Alembic 0017) — same six fields as ServerRead
+    # so the dashboard can show serial + expiry and callers can spot rows
+    # pinned to a since-rotated CA. The cert body and CA pubkey are public
+    # material (sshd hands the cert to every connecting client). ``NULL``
+    # for manual clients and never-provisioned rows.
     host_cert_serial: int | None = None
     host_cert_principals: str | None = None
     host_cert_valid_after: datetime | None = None
     host_cert_valid_before: datetime | None = None
+    host_cert_pem: str | None = None
+    host_cert_ca_public_key: str | None = None
 
 
 # ---------------------------------------------------------------------------

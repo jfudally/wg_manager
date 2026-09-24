@@ -25,8 +25,9 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
     returning `202 {task_id, client}`. 404 for a missing client, 400
     for a manual client, 409 when the SSH key row is gone. A failed
     rotation leaves the client's status untouched.
-  - **`ClientRead`** exposes `host_cert_serial`, `host_cert_principals`,
-    `host_cert_valid_after` and `host_cert_valid_before`.
+  - **`ClientRead`** exposes all six `host_cert_*` fields (serial,
+    principals, validity window, cert body, signing CA pubkey), matching
+    `ServerRead`.
   - **Dashboard `/clients`** shows each SSH client's cert serial and
     expiry, and adds a **Rotate cert** button. `HostCertSummary` moved
     to `web/components/host-cert-summary.tsx` (shared with `/servers`)

@@ -206,6 +206,10 @@ export interface Client {
   host_cert_principals?: string | null;
   host_cert_valid_after?: string | null;
   host_cert_valid_before?: string | null;
+  /** Full OpenSSH-formatted host cert body (public material). */
+  host_cert_pem?: string | null;
+  /** CA public key that signed the cert, captured at signing time. */
+  host_cert_ca_public_key?: string | null;
 }
 
 /**

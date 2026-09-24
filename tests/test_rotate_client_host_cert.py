@@ -87,13 +87,35 @@ class TestProvisionInstallsClientHostCert:
         assert row.host_cert_ca_public_key
 
     def test_client_read_exposes_cert_metadata(self, client: TestClient) -> None:
-        """``GET /clients/{id}`` surfaces serial + expiry for the dashboard."""
+        """``GET /clients/{id}`` and the list surface all six ``host_cert_*`` fields.
+
+        Same set as ``ServerRead`` (#106): the cert body and signing CA
+        pubkey are public material, and the CA key lets callers spot rows
+        still pinned to a CA that has since been rotated.
+        """
         client_id = _register_ready_client(client)
 
-        body = client.get(f"/clients/{client_id}").json()
-        assert isinstance(body["host_cert_serial"], int)
-        assert body["host_cert_valid_before"]
-        assert body["host_cert_principals"] == _CLIENT_HOST
+        one = client.get(f"/clients/{client_id}").json()
+        listed = next(c for c in client.get("/clients").json() if c["id"] == client_id)
+        for body in (one, listed):
+            assert isinstance(body["host_cert_serial"], int)
+            assert body["host_cert_valid_after"]
+            assert body["host_cert_valid_before"]
+            assert body["host_cert_principals"] == _CLIENT_HOST
+            assert body["host_cert_pem"].startswith("ssh-ed25519-cert-v01@openssh.com ")
+            assert body["host_cert_ca_public_key"].startswith("ssh-")
+
+    def test_manual_client_has_null_cert_fields(self, client: TestClient) -> None:
+        """Manual clients never get a host cert; the fields are present but null."""
+        _register_ready_client(client)
+        server_id = client.get("/servers").json()[0]["id"]
+        manual_id = client.post(
+            "/clients/manual", json={"name": "phone", "server_id": server_id}
+        ).json()["client"]["id"]
+
+        body = client.get(f"/clients/{manual_id}").json()
+        assert body["host_cert_pem"] is None
+        assert body["host_cert_ca_public_key"] is None
 
 
 class TestRotateClientHostCertEndpoint:
