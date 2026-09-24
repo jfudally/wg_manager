@@ -19,11 +19,11 @@ constructs a runner.
 from __future__ import annotations
 
 import socket
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from celery.utils.log import get_task_logger
-from sqlmodel import Session, select
+from sqlmodel import Session, col, or_, select
 
 from wg_manager.bootstrap_ssh import BootstrapSSHRunner, bootstrap_host
 from wg_manager.celery_app import celery_app
@@ -632,6 +632,103 @@ def rotate_client_host_cert_task(self, client_id: int) -> dict[str, Any]:
                     else None
                 ),
             }
+
+
+@celery_app.task(name="wg_manager.tasks.rotate_expiring_host_certs", bind=True)
+def rotate_expiring_host_certs_task(self) -> dict[str, Any]:
+    """Dispatch host-cert rotation for every host whose cert is about to lapse.
+
+    Run by Celery beat every ``SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS``
+    (see ``beat_schedule`` in :mod:`wg_manager.celery_app`). Needed
+    because :class:`wg_manager.ssh.KnownHostsCAPolicy` rejects expired
+    host certs, and an expired host can't be rotated (rotation itself
+    needs a trusted session) — only re-bootstrapped by hand.
+
+    Selects rows that are ``ready`` and whose ``host_cert_valid_before``
+    is either within ``SSH_HOST_CERT_RENEW_BEFORE_SECONDS`` of now
+    (including already expired — the dispatch fails cleanly and the
+    failure is visible in the task result / logs) or ``NULL`` (cert
+    state unknown, e.g. rows provisioned before host-cert tracking):
+
+    * servers → :func:`rotate_host_cert_task`
+    * SSH-provisioned clients (``is_manual=False``) →
+      :func:`rotate_client_host_cert_task`
+
+    Non-ready rows are skipped: a pending row is mid-provision (which
+    installs a fresh cert anyway) and an error row needs an operator.
+
+    Each rotation is its own task so one unreachable host can't block
+    the rest, and a dispatch failure (broker hiccup) is logged and
+    reported without aborting the sweep.
+
+    Phase 3d cycle 2 idempotency: **BENIGN_OVERWRITE**. The sweep holds
+    no lock and mutates nothing itself; the dispatched rotation tasks
+    each take their row lock, so a duplicate sweep (two beats, or a
+    manual trigger racing beat) only costs redundant Vault signatures.
+
+    :return: ``{"servers": [ids], "clients": [ids], "failed": [...]}``
+        where ``failed`` lists ``{"kind", "id", "error"}`` for dispatches
+        that raised.
+    """
+    from wg_manager.db import engine
+
+    settings = Settings()
+    # Stored datetimes are naive UTC (SQLite / MySQL DATETIME drop tzinfo).
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+        seconds=settings.ssh_host_cert_renew_before_seconds
+    )
+
+    with Session(engine) as session:
+        server_ids = list(
+            session.exec(
+                select(Server.id).where(
+                    Server.status == NodeStatus.ready,
+                    or_(
+                        col(Server.host_cert_valid_before).is_(None),
+                        col(Server.host_cert_valid_before) < cutoff,
+                    ),
+                )
+            ).all()
+        )
+        client_ids = list(
+            session.exec(
+                select(Client.id).where(
+                    Client.status == NodeStatus.ready,
+                    col(Client.is_manual).is_(False),
+                    or_(
+                        col(Client.host_cert_valid_before).is_(None),
+                        col(Client.host_cert_valid_before) < cutoff,
+                    ),
+                )
+            ).all()
+        )
+
+    failed: list[dict[str, Any]] = []
+    dispatched: dict[str, list[int]] = {"servers": [], "clients": []}
+    for kind, ids, task in (
+        ("server", server_ids, rotate_host_cert_task),
+        ("client", client_ids, rotate_client_host_cert_task),
+    ):
+        for row_id in ids:
+            try:
+                task.delay(row_id)
+            except Exception as exc:  # noqa: BLE001 — isolate per-row dispatch
+                # Log with context and keep going: one bad dispatch must
+                # not strand every other host's renewal until next sweep.
+                logger.exception(
+                    "host-cert rotation dispatch failed for %s %s", kind, row_id
+                )
+                failed.append({"kind": kind, "id": row_id, "error": str(exc)})
+            else:
+                dispatched[f"{kind}s"].append(row_id)
+
+    logger.info(
+        "host-cert sweep: %d server(s), %d client(s) dispatched, %d failed",
+        len(dispatched["servers"]),
+        len(dispatched["clients"]),
+        len(failed),
+    )
+    return {**dispatched, "failed": failed}
 
 
 @celery_app.task(name="wg_manager.tasks.reconfigure_server", bind=True)

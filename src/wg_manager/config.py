@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -122,6 +122,15 @@ class Settings(BaseSettings):
     # ``POST /servers/{id}/rotate-host-cert`` (Phase 2c CP3). Must be
     # ``<= max_ttl`` on the configured host role.
     ssh_host_cert_ttl_seconds: int = 86400
+    # Automatic host-cert renewal (Celery beat). ``KnownHostsCAPolicy``
+    # rejects expired host certs, and an expired host can only be
+    # recovered with ``bootstrap-host`` — so every ready server / SSH
+    # client whose cert expires within ``renew_before`` is rotated by a
+    # sweep that runs every ``rotation_interval``. Defaults: renew with
+    # 12h left, sweep hourly → ~11 retry chances before expiry.
+    # Invariant (validated below): interval < renew_before < ttl.
+    ssh_host_cert_renew_before_seconds: int = 43200
+    ssh_host_cert_rotation_interval_seconds: int = 3600
 
     # ----- PKI (Phase 2d, see wg_manager.pki) -----
     # Which X.509 backend :func:`wg_manager.pki.make_pki_backend`
@@ -247,6 +256,36 @@ class Settings(BaseSettings):
     # Service name carried on every span. Pinned at module level so
     # all spans (API, worker, CLI) share one resource identity.
     otel_service_name: str = "wg-manager"
+
+    @model_validator(mode="after")
+    def _validate_host_cert_rotation_windows(self) -> "Settings":
+        """Reject rotation settings that would let host certs lapse.
+
+        * ``SSH_HOST_CERT_RENEW_BEFORE_SECONDS`` must be shorter than the
+          TTL, or every sweep re-rotates every host (a freshly minted
+          cert would already be "inside" the renew window).
+        * ``SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS`` must be shorter than
+          the renew window, or a cert can enter the window and expire
+          between two sweeps — and an expired host needs a manual
+          ``bootstrap-host`` to recover.
+        """
+        if self.ssh_host_cert_renew_before_seconds >= self.ssh_host_cert_ttl_seconds:
+            raise ValueError(
+                "SSH_HOST_CERT_RENEW_BEFORE_SECONDS "
+                f"({self.ssh_host_cert_renew_before_seconds}) must be less than "
+                f"SSH_HOST_CERT_TTL_SECONDS ({self.ssh_host_cert_ttl_seconds})"
+            )
+        if (
+            self.ssh_host_cert_rotation_interval_seconds
+            >= self.ssh_host_cert_renew_before_seconds
+        ):
+            raise ValueError(
+                "SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS "
+                f"({self.ssh_host_cert_rotation_interval_seconds}) must be less "
+                "than SSH_HOST_CERT_RENEW_BEFORE_SECONDS "
+                f"({self.ssh_host_cert_renew_before_seconds})"
+            )
+        return self
 
     @field_validator("default_subnet")
     @classmethod

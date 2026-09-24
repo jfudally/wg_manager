@@ -150,6 +150,119 @@ class TestKnownHostsCAPolicy:
             )
 
 
+def _host_cert_with_window(
+    ca_private: Ed25519PrivateKey, valid_after: int, valid_before: int
+) -> tuple[str, str]:
+    """Sign a host cert with an explicit validity window.
+
+    :class:`LocalDevSSHCA` always starts the window at "now", so the
+    expiry tests build certs directly to control both bounds (including
+    the OpenSSH "forever" sentinel ``2**64 - 1``).
+
+    :return: ``(host_private_pem, cert_line)``.
+    """
+    from cryptography.hazmat.primitives.serialization import (
+        SSHCertificateBuilder,
+        SSHCertificateType,
+    )
+
+    host_key, host_private_pem, _ = _ed25519_pair()
+    cert = (
+        SSHCertificateBuilder()
+        .public_key(host_key.public_key())
+        .serial(1)
+        .type(SSHCertificateType.HOST)
+        .key_id(b"expiry-test")
+        .valid_principals([b"hub.example.com"])
+        .valid_after(valid_after)
+        .valid_before(valid_before)
+        .sign(ca_private)
+    )
+    return host_private_pem, cert.public_bytes().decode("ascii")
+
+
+def _ca_public_line(ca_private: Ed25519PrivateKey) -> str:
+    return (
+        ca_private.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.OpenSSH,
+            format=serialization.PublicFormat.OpenSSH,
+        )
+        .decode("ascii")
+    )
+
+
+class TestKnownHostsCAPolicyValidityWindow:
+    """The policy enforces the cert's validity window like OpenSSH does.
+
+    Regression: the policy used to check only the signer, on the (wrong)
+    assumption that sshd enforces the TTL. Host-cert validity is checked
+    by the *connecting client*, so without this an expired or
+    not-yet-valid CA-signed cert was accepted indefinitely. Semantics
+    match OpenSSH: valid iff ``valid_after <= now < valid_before``.
+    """
+
+    _AFTER = 1_800_000_000
+    _BEFORE = 1_800_086_400  # +24h
+
+    def _offer(self, ca: Ed25519PrivateKey, after: int, before: int) -> paramiko.PKey:
+        private_pem, cert_line = _host_cert_with_window(ca, after, before)
+        return _paramiko_key_with_cert(private_pem, cert_line)
+
+    def test_rejects_expired_cert(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = self._offer(ca, self._AFTER, self._BEFORE)
+        policy = KnownHostsCAPolicy(
+            _ca_public_line(ca), clock=lambda: self._BEFORE + 60
+        )
+        with pytest.raises(UntrustedHostKeyError, match="expired"):
+            policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
+
+    def test_rejects_not_yet_valid_cert(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = self._offer(ca, self._AFTER, self._BEFORE)
+        policy = KnownHostsCAPolicy(
+            _ca_public_line(ca), clock=lambda: self._AFTER - 60
+        )
+        with pytest.raises(UntrustedHostKeyError, match="not yet valid"):
+            policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
+
+    def test_valid_before_is_exclusive(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = self._offer(ca, self._AFTER, self._BEFORE)
+        policy = KnownHostsCAPolicy(_ca_public_line(ca), clock=lambda: self._BEFORE)
+        with pytest.raises(UntrustedHostKeyError, match="expired"):
+            policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
+
+    def test_valid_after_is_inclusive(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = self._offer(ca, self._AFTER, self._BEFORE)
+        policy = KnownHostsCAPolicy(_ca_public_line(ca), clock=lambda: self._AFTER)
+        policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
+
+    def test_accepts_forever_cert(self) -> None:
+        """``valid_before = 2**64-1`` is OpenSSH's "forever" and must not overflow."""
+        ca = Ed25519PrivateKey.generate()
+        offered = self._offer(ca, 0, 2**64 - 1)
+        policy = KnownHostsCAPolicy(_ca_public_line(ca), clock=lambda: self._AFTER)
+        policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
+
+    def test_signer_is_checked_before_validity(self) -> None:
+        """An expired cert from the wrong CA reports the CA problem, not expiry.
+
+        The untrusted-signer message is the security-relevant one; it
+        must not be masked by an incidental expiry.
+        """
+        trusted = Ed25519PrivateKey.generate()
+        attacker = Ed25519PrivateKey.generate()
+        offered = self._offer(attacker, self._AFTER, self._BEFORE)
+        policy = KnownHostsCAPolicy(
+            _ca_public_line(trusted), clock=lambda: self._BEFORE + 60
+        )
+        with pytest.raises(UntrustedHostKeyError, match="untrusted CA"):
+            policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
+
+
 # ---------------------------------------------------------------------------
 # SSHRunner cert-mode wiring
 # ---------------------------------------------------------------------------

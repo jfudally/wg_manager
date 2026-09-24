@@ -26,9 +26,10 @@ from __future__ import annotations
 import io
 import shlex
 import socket
+import time
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any
+from typing import Any, Callable
 
 import paramiko
 from cryptography.hazmat.primitives import serialization
@@ -189,23 +190,45 @@ class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
        by a hostile intermediary).
     3. The certificate's signing key matches the CA pubkey body the
        policy was constructed with.
+    4. The certificate is inside its validity window:
+       ``valid_after <= now < valid_before`` (OpenSSH semantics, no
+       clock-skew allowance — Vault backdates ``valid_after`` by 30s by
+       default, which absorbs worker/Vault drift).
 
     Anything else raises :class:`UntrustedHostKeyError`.
 
-    The cert's principals / TTL are NOT enforced here — sshd enforces
-    them on the wire and our CA bootstrap (see
-    :class:`wg_manager.ssh_ca.VaultSSHCA.bootstrap`) constrains the
-    issuance role. This policy's job is "is the *signer* the right CA".
+    Rule 4 must live here: a *host* cert's validity is checked by the
+    connecting client, not by sshd (sshd just presents whatever
+    ``HostCertificate`` it's configured with). An earlier version
+    assumed sshd enforced it, so expired certs were silently accepted.
+
+    The cert's principals are still NOT matched against the dialed
+    hostname: ``bootstrap-host --principal`` allows a principal that
+    legitimately differs from the dial name, and the CA's issuance role
+    (see :class:`wg_manager.ssh_ca.VaultSSHCA.bootstrap`) constrains
+    which principals can be signed.
 
     :ivar ca_public_key: The OpenSSH-format CA public key passed to
         the constructor. Stored verbatim so callers can read it back
         (the runner-mode tests do this).
     """
 
-    def __init__(self, ca_public_key: str) -> None:
-        """Bind to ``ca_public_key`` (one-line OpenSSH format)."""
+    def __init__(
+        self,
+        ca_public_key: str,
+        *,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        """Bind to ``ca_public_key`` (one-line OpenSSH format).
+
+        :param ca_public_key: The trusted CA's OpenSSH public key line.
+        :param clock: Returns the current Unix time in seconds. Defaults
+            to :func:`time.time`; injectable so tests can pin "now"
+            against a cert's validity window.
+        """
         self.ca_public_key = ca_public_key
         self._ca_body = _ca_pubkey_body(ca_public_key)
+        self._clock = clock
 
     def missing_host_key(
         self,
@@ -275,6 +298,25 @@ class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
             raise UntrustedHostKeyError(
                 hostname,
                 "host cert signed by an untrusted CA",
+            )
+
+        # Validity window — checked after the signer so an attacker's
+        # cert always reports "untrusted CA" rather than an incidental
+        # expiry. Compare as ints: ``valid_before`` may be OpenSSH's
+        # "forever" sentinel (2**64-1), which overflows datetime.
+        now = int(self._clock())
+        if now < cert.valid_after:
+            raise UntrustedHostKeyError(
+                hostname,
+                f"host cert not yet valid (valid_after={cert.valid_after}, "
+                f"now={now}); check the clock on the wg-manager worker",
+            )
+        if now >= cert.valid_before:
+            raise UntrustedHostKeyError(
+                hostname,
+                f"host cert expired (valid_before={cert.valid_before}, "
+                f"now={now}); rotate it via rotate-host-cert or re-run "
+                "bootstrap-host",
             )
         # Accept by returning.
 
