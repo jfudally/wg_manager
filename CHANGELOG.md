@@ -34,6 +34,15 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   - Tests: `tests/test_tasks_provision_client_bootstrap.py`,
     `web/__tests__/clients-bootstrap.test.tsx`.
 
+### Fixed
+
+- **Gitleaks CI no longer fails PRs for leaks on other branches.**
+  `gitleaks detect` defaults to `git log --all`, and the workflow's
+  `fetch-depth: 0` checkout fetches every remote branch, so a clean PR
+  failed whenever *any* unmerged branch held a finding. The scan (CI
+  and `make gitleaks`) now passes `--log-opts=HEAD`, covering only the
+  checked-out commit's full ancestry — main plus the PR's commits.
+
 ## [v0.5.0] - 2026-06-24
 
 ### Added
