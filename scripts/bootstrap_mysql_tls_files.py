@@ -40,6 +40,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    load_pem_private_key,
+)
+
 from wg_manager.pki import make_pki_backend
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +57,28 @@ _SERVER_SANS = ["localhost", "127.0.0.1", "mysql", "wg_manager_mysql"]
 _CLIENT_CN = "wg-manager-app"
 _CLIENT_SANS = ["wg-manager-app"]
 _TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days; matches the CLI default
+
+
+def _to_pkcs8_pem(pem: str) -> str:
+    """Return ``pem`` re-encoded as an unencrypted PKCS#8 PEM.
+
+    Vault's PKI backend returns EC private keys wrapped in SEC1
+    (``-----BEGIN EC PRIVATE KEY-----``), which MySQL 8.4 rejects at
+    TLS init with ``[ERROR] [MY-000059] [Server] SSL error: Unable
+    to get private key from '/etc/mysql/certs/server.key'``. Every
+    modern OpenSSL build accepts PKCS#8 (``-----BEGIN PRIVATE KEY-----``),
+    so we normalise on the way out.
+
+    Idempotent — a PEM that's already PKCS#8 round-trips as PKCS#8.
+    RSA / EC / Ed25519 inputs are all handled by
+    :func:`cryptography.hazmat.primitives.serialization.load_pem_private_key`.
+    """
+    key = load_pem_private_key(pem.encode(), password=None)
+    return key.private_bytes(
+        Encoding.PEM,
+        PrivateFormat.PKCS8,
+        NoEncryption(),
+    ).decode()
 
 
 def _write(path: Path, contents: str, *, mode: int = 0o644) -> None:
@@ -71,7 +100,7 @@ def main() -> int:
         ttl_seconds=_TTL_SECONDS,
     )
     _write(_TLS_DIR / "server.crt", server.cert_pem)
-    _write(_TLS_DIR / "server.key", server.private_pem, mode=0o600)
+    _write(_TLS_DIR / "server.key", _to_pkcs8_pem(server.private_pem), mode=0o600)
     _write(_TLS_DIR / "ca.crt", server.chain_pem)
 
     print("Minting MySQL client cert ...")
@@ -81,7 +110,7 @@ def main() -> int:
         ttl_seconds=_TTL_SECONDS,
     )
     _write(_TLS_DIR / "client.crt", client.cert_pem)
-    _write(_TLS_DIR / "client.key", client.private_pem, mode=0o600)
+    _write(_TLS_DIR / "client.key", _to_pkcs8_pem(client.private_pem), mode=0o600)
     _write(_TLS_DIR / "client-ca.crt", client.chain_pem)
 
     print()
