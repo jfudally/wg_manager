@@ -71,6 +71,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   and `make gitleaks`) now passes `--log-opts=HEAD`, covering only the
   checked-out commit's full ancestry — main plus the PR's commits.
 
+### Security
+
+- **Patched dependency advisories that failed `pip-audit` / `npm audit`.**
+  Python: anyio 4.14.2 (CVE-2026-63374, CVE-2026-64847), click 8.5.0
+  (PYSEC-2026-2132), cryptography 50.0.1 (PYSEC-2026-3552). Dashboard
+  (lockfile only): next 16.3.6, postcss 8.5.23, sharp 0.35.4, nanoid
+  3.3.19, baseline-browser-mapping 2.11.26.
+
 ## [v0.5.0] - 2026-06-24
 
 ### Added
