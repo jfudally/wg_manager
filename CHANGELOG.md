@@ -8,6 +8,19 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Provisioning no longer fails on hosts that have a WireGuard
+  `privatekey` but no `publickey`.** `_ensure_keypair` skipped key
+  generation whenever `/etc/wireguard/privatekey` existed, then read
+  `/etc/wireguard/publickey`, so a host with a hand-rolled or partial
+  WireGuard setup failed with `cat: /etc/wireguard/publickey: No such
+  file or directory`. The public key is now always derived from the
+  private key (`wg pubkey < privatekey`) and rewritten to `publickey`,
+  which also corrects a stale `publickey` that no longer matched the
+  private key. Existing private keys are still never overwritten, and
+  new ones are created under `umask 077`.
+
 ### Security
 
 - **`KnownHostsCAPolicy` now checks the host cert was issued for the

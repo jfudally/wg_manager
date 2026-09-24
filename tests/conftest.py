@@ -77,8 +77,8 @@ class FakeSSHRunner:
     """In-process stand-in for :class:`wg_manager.ssh.SSHRunner`.
 
     Records every command invocation into a class-level ``COMMANDS`` list so
-    tests can assert on provisioning behaviour. The ``cat /etc/wireguard/publickey``
-    probe returns a canned pubkey unique per host.
+    tests can assert on provisioning behaviour. The ``wg pubkey < /etc/wireguard/privatekey``
+    derivation returns a canned pubkey unique per host.
     """
 
     COMMANDS: list[tuple[str, str]] = []  # (host, cmd)
@@ -165,7 +165,7 @@ class FakeSSHRunner:
             if host == self.host and needle in cmd:
                 stdout = canned
                 return CommandResult(cmd=cmd, rc=0, stdout=stdout, stderr="")
-        if "cat /etc/wireguard/publickey" in cmd:
+        if "wg pubkey < /etc/wireguard/privatekey" in cmd:
             stdout = self._canned_pubkey() + "\n"
         elif "ssh_host_ed25519_key.pub" in cmd:
             # Phase 2c CP4.4 made the host-cert install unconditional —
