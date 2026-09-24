@@ -343,6 +343,12 @@ class Client(SQLModel, table=True):
     :ivar is_manual: ``True`` when the row was created via the manual
         registration flow. Manual rows skip provisioning and instead
         ship their config to the operator for hand-install.
+    :ivar host_cert_pem: Last CA-signed SSH host cert installed on the
+        client (Alembic 0017). The six ``host_cert_*`` columns mirror
+        :class:`Server`'s — see its docstring for per-column semantics.
+        Populated by ``provision_client_task`` and
+        ``rotate_client_host_cert_task``; always ``NULL`` for manual
+        clients.
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -359,6 +365,19 @@ class Client(SQLModel, table=True):
     is_manual: bool = Field(default=False)
     status: NodeStatus = Field(default=NodeStatus.pending)
     created_at: datetime = Field(default_factory=_utcnow)
+    # Host cert snapshot (Alembic 0017) — same shape as Server's.
+    host_cert_pem: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
+    host_cert_serial: int | None = Field(
+        default=None, sa_column=Column(BigInteger, nullable=True)
+    )
+    host_cert_principals: str | None = Field(default=None)
+    host_cert_valid_after: datetime | None = Field(default=None)
+    host_cert_valid_before: datetime | None = Field(default=None)
+    host_cert_ca_public_key: str | None = Field(
+        default=None, sa_column=Column(Text, nullable=True)
+    )
 
     def __repr__(self) -> str:
         return (

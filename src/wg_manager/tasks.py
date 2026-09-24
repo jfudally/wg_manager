@@ -126,8 +126,13 @@ def _open_runner(
     )
 
 
-def _persist_host_cert(server: Server, cert: HostCert, ca_public_key: str) -> None:
-    """Copy ``cert`` and the signing CA pubkey onto ``server``'s CP3.1 columns.
+def _persist_host_cert(
+    server: Server | Client, cert: HostCert, ca_public_key: str
+) -> None:
+    """Copy ``cert`` and the signing CA pubkey onto the row's ``host_cert_*`` columns.
+
+    Works for both hubs and SSH-provisioned clients — the two models
+    carry identical ``host_cert_*`` columns (Alembic 0006 / 0017).
 
     Pure data assignment — does not commit. The caller (a Celery task
     inside its open session) owns the commit so the host-cert update
@@ -147,10 +152,12 @@ def _persist_host_cert(server: Server, cert: HostCert, ca_public_key: str) -> No
 def _install_host_cert(
     *,
     runner: SSHRunner,
-    server: Server,
+    server: Server | Client,
     settings: Settings,
 ) -> None:
     """Mint + install a host cert for ``server`` and persist its metadata.
+
+    ``server`` may be a hub or an SSH-provisioned client row.
 
     Phase 2c CP4.4 made this unconditional — every connection is
     CA-mode now, so the matching CA trust anchor + host cert always
@@ -537,6 +544,96 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
             }
 
 
+@celery_app.task(name="wg_manager.tasks.rotate_client_host_cert", bind=True)
+def rotate_client_host_cert_task(self, client_id: int) -> dict[str, Any]:
+    """Re-mint and install the SSH host certificate for client ``client_id``.
+
+    Client twin of :func:`rotate_host_cert_task`: opens a CA-mode SSH
+    session to the client, re-runs the idempotent host-side install
+    (:func:`wg_manager.host_ssh.install_host_cert`), and overwrites the
+    row's ``host_cert_*`` columns with the fresh cert. Lets operators
+    renew a client's cert before ``SSH_HOST_CERT_TTL_SECONDS`` expires
+    without re-running ``bootstrap-host``.
+
+    A failed rotation does NOT flip the row to ``error`` — the client's
+    WireGuard config is untouched and still working; only the cert
+    renewal failed, which the task result reports.
+
+    Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK**. Acquires
+    :func:`wg_manager.locks.task_row_lock` on ``wgm:client:<id>`` before
+    minting, so it also serializes against a concurrent
+    ``provision_client_task`` on the same row. On contention returns
+    ``{"status": "skipped", ...}`` without any SSH or DB work.
+
+    :param client_id: Primary key of the :class:`Client` to rotate.
+    :return: ``{"status", "client_id", "serial", "valid_before"}`` with
+        ``valid_before`` as an ISO-8601 string (JSON-safe for
+        ``GET /tasks/{id}``).
+    :raises ValueError: If the client is missing, manual, or its SSH
+        key is gone.
+    :raises RuntimeError: One clean line when the SSH / CA work fails.
+    """
+    from wg_manager.db import engine
+
+    settings = Settings()
+
+    with Session(engine) as session:
+        with task_row_lock(session, "client", client_id) as acquired:
+            if not acquired:
+                return {
+                    "status": "skipped",
+                    "reason": "concurrent_run",
+                    "client_id": client_id,
+                }
+            client = session.get(Client, client_id)
+            if client is None:
+                raise ValueError(f"Client {client_id} not found")
+            if client.is_manual or client.hostname is None:
+                raise ValueError(
+                    f"Client {client_id} is a manual client; no SSH access "
+                    "to rotate a host cert on"
+                )
+            if client.ssh_key_id is None or client.ssh_username is None:
+                raise ValueError(f"Client {client_id} has no SSH credentials")
+            ssh_key = session.get(SSHKey, client.ssh_key_id)
+            if ssh_key is None:
+                raise ValueError(f"SSH key {client.ssh_key_id} not found")
+
+            try:
+                with _open_runner(
+                    host=client.hostname,
+                    port=client.ssh_port,
+                    username=client.ssh_username,
+                    ssh_key=ssh_key,
+                ) as runner:
+                    _install_host_cert(runner=runner, server=client, settings=settings)
+            except _SSH_EXPECTED_ERRORS as exc:
+                logger.error(
+                    "host-cert rotation failed for client %s (%s): %s",
+                    client_id,
+                    client.hostname,
+                    exc,
+                )
+                raise _fail_clean(
+                    f"host-cert rotation failed for client {client_id} "
+                    f"({client.hostname}): {exc}"
+                ) from None
+
+            session.add(client)
+            session.commit()
+            session.refresh(client)
+            return {
+                "status": "ok",
+                "client_id": client_id,
+                "serial": client.host_cert_serial,
+                "valid_before": (
+                    client.host_cert_valid_before.isoformat()
+                    if client.host_cert_valid_before
+                    else None
+                ),
+            }
+
+
 @celery_app.task(name="wg_manager.tasks.reconfigure_server", bind=True)
 def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
     """Regenerate the server's ``wg0.conf`` from DB state and restart the interface.
@@ -694,6 +791,15 @@ def provision_client_task(
                     ssh_key=client_key,
                 ) as client_runner:
                     client_pubkey = provision_client(client_runner, client, server)
+                    # Parity with provision_server_task: refresh the
+                    # client's host cert on every successful provision so
+                    # its ``host_cert_*`` columns are populated and the
+                    # TTL clock restarts.
+                    _install_host_cert(
+                        runner=client_runner,
+                        server=client,
+                        settings=Settings(),
+                    )
             except _SSH_EXPECTED_ERRORS as exc:
                 logger.error(
                     "client %s provisioning failed for %s: %s",

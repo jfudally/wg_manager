@@ -316,7 +316,9 @@ provision now also installs the CA pubkey + a freshly-minted host
 cert on the target host, so [`KnownHostsCAPolicy`](../src/wg_manager/ssh.py)
 has something real to verify against. The new module is
 [`wg_manager.host_ssh`](../src/wg_manager/host_ssh.py); the operator-
-facing rotation hook is `POST /servers/{id}/rotate-host-cert`.
+facing rotation hook is `POST /servers/{id}/rotate-host-cert`
+(and, since Alembic 0017, `POST /clients/{id}/rotate-host-cert` for
+SSH-provisioned clients).
 
 What CP3 turns on (on top of the CP2 setting flip):
 

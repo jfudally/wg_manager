@@ -260,6 +260,19 @@ re-installs a fresh host cert during `POST
 /servers/{id}/rotate-host-cert` (Phase 2c CP3) once the row is
 registered.
 
+Clients work the same way: every successful client provision
+installs a fresh host cert, and `POST /clients/{id}/rotate-host-cert`
+(or **Clients → Rotate cert** in the dashboard) re-mints it without
+touching the WireGuard config. The Clients table shows each SSH
+client's cert serial and time to expiry. With the default 24h TTL,
+schedule the rotation (cron / systemd timer hitting the endpoint) for
+any client you don't reprovision daily so the cert on the host stays
+valid — standard OpenSSH clients trusting the CA via
+`@cert-authority` reject an expired host cert. (wg-manager's own
+`KnownHostsCAPolicy` currently checks only the signing CA, not the
+validity window, so an expired cert doesn't block rotation itself.)
+Manual clients have no SSH access and are rejected with a 400.
+
 ## What the self-bootstrap actually does
 
 Two run-to-completion containers do the work. They use the same

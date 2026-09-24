@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol, runtime_checkable
 
-from wg_manager.models import Server
+from wg_manager.models import Client, Server
 from wg_manager.ssh import CommandResult, SSHRunner
 from wg_manager.ssh_ca import HostCert, SSHCABackend
 
@@ -221,7 +221,7 @@ def _install_host_cert_files(
 def install_host_cert(
     *,
     runner: SSHRunner,
-    server: Server,
+    server: Server | Client,
     ca: SSHCABackend,
     ttl_seconds: int,
 ) -> HostCert:
@@ -248,8 +248,9 @@ def install_host_cert(
 
     :param runner: Open SSH runner bound to the target host. The
         caller is responsible for entering it as a context manager.
-    :param server: The :class:`Server` row whose hostname is used as
-        the cert principal.
+    :param server: The :class:`Server` (hub) or SSH-provisioned
+        :class:`Client` (spoke) whose ``hostname`` is used as the cert
+        principal. Only ``hostname`` is read.
     :param ca: An :class:`SSHCABackend` (local-dev or vault) that can
         sign host certs.
     :param ttl_seconds: TTL the cert request asks the CA for. Vault
