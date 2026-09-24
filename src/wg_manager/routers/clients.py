@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 from wg_manager import audit
 from wg_manager.db import get_session
 from wg_manager.ipam import IPPoolExhausted, allocate_client_ip
+from wg_manager.routers._bootstrap import encrypt_bootstrap_kwargs
 from wg_manager.models import Client, NodeStatus, SSHKey, Server
 from wg_manager.schemas import (
     ClientCreate,
@@ -51,6 +52,10 @@ def register_client(payload: ClientCreate, session: _SessionDep) -> ClientRegist
     a Celery task is enqueued to install WireGuard on the client and add it
     as a peer on the server. The response includes a ``task_id`` the caller
     can poll at ``GET /tasks/{task_id}``.
+
+    When ``bootstrap_ssh_key_pem`` is supplied, the task first opens one
+    TOFU session with that key to install the SSH CA trust + host cert
+    on the client (see :class:`wg_manager.schemas.BootstrapKeyFields`).
     """
     existing = session.exec(select(Client).where(Client.name == payload.name)).first()
     if existing is not None:
@@ -89,7 +94,12 @@ def register_client(payload: ClientCreate, session: _SessionDep) -> ClientRegist
     session.commit()
     session.refresh(row)
 
-    async_result = provision_client_task.delay(row.id)
+    # Same contract as ``POST /servers``: optional OOB bootstrap key is
+    # encrypted here so the broker only ever carries ciphertext. When
+    # it is present the task bootstraps the client before provisioning.
+    async_result = provision_client_task.delay(
+        row.id, **encrypt_bootstrap_kwargs(payload, node_kind="client")
+    )
     return ClientRegisterResponse(
         task_id=async_result.id,
         client=ClientRead.model_validate(row),

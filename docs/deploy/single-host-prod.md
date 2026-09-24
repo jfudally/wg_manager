@@ -106,8 +106,8 @@ HTTP.
 
 ## Onboarding a target host (SSH CA install)
 
-Before wg-manager can SSH into a freshly-provisioned VPN hub box,
-the box needs to trust the Vault SSH CA — that means
+Before wg-manager can SSH into a freshly-provisioned VPN hub **or
+SSH-provisioned client** box, the box needs to trust the Vault SSH CA — that means
 `/etc/ssh/wg-manager-user-ca.pub`, a signed host cert, and an
 `sshd_config.d` drop-in pointing at them. The full design + cert
 profiles live in `docs/operator-guide.md` §3; this section is the
@@ -231,6 +231,24 @@ From here every wg-manager SSH session into that host uses a fresh
 5-minute CA-minted user cert with `permit-pty` — no stored private
 key on the wg-manager side, no `authorized_keys` entry on the
 target side.
+
+### Register a client (DB-side)
+
+SSH-provisioned clients need the same CA trust as hubs, and the
+Register-client form offers the same shortcut: **Clients → +
+Register client**, fill in the usual fields, then expand
+**Bootstrap this host first** and paste the OOB private key the
+client already trusts (optionally with its passphrase). The single
+`provision_client_task` bootstraps the client, then runs the
+regular CA-mode provision and reconfigures the hub. Leave the
+section collapsed when the client was already bootstrapped
+(`wg-manager bootstrap-host` against the client, baked image, prior
+run). Over the API, send `bootstrap_ssh_key_pem` /
+`bootstrap_ssh_key_passphrase` in the `POST /clients` body — same
+fields, same encrypt-before-queue handling as `POST /servers`.
+
+Devices wg-manager can't SSH into (phones, IoT) skip all of this —
+use `wg-manager clients add-manual` instead.
 
 ### Re-running against an already-bootstrapped host
 

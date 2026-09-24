@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/ui/badge";
 import {
   Table,
@@ -428,12 +429,22 @@ function RegisterClientForm({
   const [sshPort, setSshPort] = useState(22);
   const [sshKeyId, setSshKeyId] = useState<number | "">("");
   const [serverId, setServerId] = useState<number | "">("");
+  // Bootstrap section state — mirrors the Register-server form. Lives
+  // in a collapsed <details> so an already-bootstrapped client stays
+  // one click; an empty PEM at submit time means "no bootstrap".
+  const [bootstrapPem, setBootstrapPem] = useState("");
+  const [bootstrapPassphrase, setBootstrapPassphrase] = useState("");
 
   const mutation = useMutation({
     mutationFn: () => {
       if (sshKeyId === "" || serverId === "") {
         throw new Error("SSH role and server are required");
       }
+      const trimmedPem = bootstrapPem.trim();
+      // Passphrase is deliberately not trimmed (whitespace can be
+      // significant) and is only sent alongside a PEM — the API 422s a
+      // passphrase on its own.
+      const passphrase = bootstrapPassphrase;
       return api.registerClient({
         name: name.trim(),
         hostname: hostname.trim(),
@@ -441,11 +452,18 @@ function RegisterClientForm({
         ssh_port: sshPort,
         ssh_key_id: Number(sshKeyId),
         server_id: Number(serverId),
+        ...(trimmedPem ? { bootstrap_ssh_key_pem: bootstrapPem } : {}),
+        ...(trimmedPem && passphrase
+          ? { bootstrap_ssh_key_passphrase: passphrase }
+          : {}),
       });
     },
     onSuccess: (data) => {
       setName("");
       setHostname("");
+      // Drop the operator's key material from React state on success.
+      setBootstrapPem("");
+      setBootstrapPassphrase("");
       onRegistered(data.task_id);
     },
   });
@@ -551,6 +569,59 @@ function RegisterClientForm({
               ))}
             </select>
           </div>
+          <details className="md:col-span-2 group rounded-md border border-border bg-muted/30 p-3">
+            <summary className="cursor-pointer text-sm font-medium select-none">
+              Bootstrap this host first{" "}
+              <span className="text-xs font-normal text-muted-foreground">
+                (only needed when the client hasn&apos;t trusted the
+                wg-manager SSH CA yet)
+              </span>
+            </summary>
+            <div className="mt-3 flex flex-col gap-3">
+              <p className="text-xs text-muted-foreground">
+                Paste the operator OOB SSH private key the client already
+                trusts. The API encrypts it before queueing, runs{" "}
+                <code>bootstrap_host()</code> over a single TOFU session to
+                lay down the SSH CA trust + signed host cert, then continues
+                with the normal CA-mode provision. The key is never persisted
+                server-side. Leave blank when the client was already
+                bootstrapped (CLI flow, baked image, prior run).
+              </p>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="cli-bootstrap-pem">
+                  Bootstrap SSH private key (PEM)
+                </Label>
+                <Textarea
+                  id="cli-bootstrap-pem"
+                  value={bootstrapPem}
+                  onChange={(e) => setBootstrapPem(e.target.value)}
+                  placeholder={
+                    "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
+                    "<contents of ~/.ssh/id_ed25519 or whichever key the client trusts>\n" +
+                    "-----END OPENSSH PRIVATE KEY-----"
+                  }
+                  autoComplete="off"
+                  spellCheck={false}
+                  rows={6}
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <Label htmlFor="cli-bootstrap-passphrase">
+                  Key passphrase{" "}
+                  <span className="text-xs text-muted-foreground">
+                    (optional — leave blank for an unencrypted key)
+                  </span>
+                </Label>
+                <Input
+                  id="cli-bootstrap-passphrase"
+                  type="password"
+                  value={bootstrapPassphrase}
+                  onChange={(e) => setBootstrapPassphrase(e.target.value)}
+                  autoComplete="off"
+                />
+              </div>
+            </div>
+          </details>
           {mutation.isError ? (
             <div className="md:col-span-2">
               <Alert variant="error">
