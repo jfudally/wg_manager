@@ -206,14 +206,18 @@ def _ready_clients_for(session: Session, server_id: int) -> list[Client]:
 
 def _run_bootstrap_if_supplied(
     *,
-    server: Server,
+    node: Server | Client,
     bootstrap_pem_ciphertext: str | None,
     bootstrap_pem_context: str | None,
     bootstrap_passphrase_ciphertext: str | None,
     bootstrap_passphrase_context: str | None,
     bootstrap_connect_timeout: float,
 ) -> None:
-    """Optionally do the operator-driven SSH-CA bootstrap on ``server``.
+    """Optionally do the operator-driven SSH-CA bootstrap on ``node``.
+
+    ``node`` is either a hub (:class:`Server`) or an SSH-provisioned
+    spoke (:class:`Client`); only its ``hostname`` / ``ssh_port`` /
+    ``ssh_username`` are read, so both share this one code path.
 
     When ``bootstrap_pem_ciphertext`` is present, opens **one**
     TOFU-permitted :class:`BootstrapSSHRunner` session against the
@@ -235,8 +239,8 @@ def _run_bootstrap_if_supplied(
     :raises SSHConnectionError, SSHCommandError, HostCertInstallError,
         SSHCAError: propagated unwrapped so the surrounding
         ``except _SSH_EXPECTED_ERRORS`` in
-        :func:`provision_server_task` catches them with the rest of
-        the SSH error family.
+        :func:`provision_server_task` / :func:`provision_client_task`
+        catches them with the rest of the SSH error family.
     """
     if bootstrap_pem_ciphertext is None:
         return
@@ -265,9 +269,9 @@ def _run_bootstrap_if_supplied(
     settings = Settings()
     ca = make_ssh_ca_backend(settings)
     runner = BootstrapSSHRunner(
-        host=server.hostname,
-        port=server.ssh_port,
-        username=server.ssh_username,
+        host=node.hostname,
+        port=node.ssh_port,
+        username=node.ssh_username,
         key_pem=pem,
         passphrase=passphrase,
         connect_timeout=bootstrap_connect_timeout,
@@ -275,16 +279,16 @@ def _run_bootstrap_if_supplied(
     with runner as session:
         bootstrap_host(
             runner=session,
-            hostname=server.hostname,
+            hostname=node.hostname,
             # Phase 2c: the cert principal defaults to the SSH dial
             # name. Operators who need a different principal use the
             # CLI or the (deprecated) standalone bootstrap path —
             # the merged registration flow is intentionally narrow
             # so the form stays one page.
-            principal=server.hostname,
+            principal=node.hostname,
             ca=ca,
             ttl_seconds=settings.ssh_host_cert_ttl_seconds,
-            cn=server.ssh_username,
+            cn=node.ssh_username,
         )
 
 
@@ -382,7 +386,7 @@ def provision_server_task(
                 # row error + surfaces a single tidy line, exactly like
                 # a provision-side SSH failure.
                 _run_bootstrap_if_supplied(
-                    server=server,
+                    node=server,
                     bootstrap_pem_ciphertext=bootstrap_pem_ciphertext,
                     bootstrap_pem_context=bootstrap_pem_context,
                     bootstrap_passphrase_ciphertext=bootstrap_passphrase_ciphertext,
@@ -601,11 +605,27 @@ def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
 
 
 @celery_app.task(name="wg_manager.tasks.provision_client", bind=True)
-def provision_client_task(self, client_id: int) -> dict[str, Any]:
+def provision_client_task(
+    self,
+    client_id: int,
+    *,
+    bootstrap_pem_ciphertext: str | None = None,
+    bootstrap_pem_context: str | None = None,
+    bootstrap_passphrase_ciphertext: str | None = None,
+    bootstrap_passphrase_context: str | None = None,
+    bootstrap_connect_timeout: float = 15.0,
+) -> dict[str, Any]:
     """Provision (or re-provision) a WireGuard spoke.
 
     On success the task commits the client in ``ready`` state and dispatches
     :func:`reconfigure_server_task` so the hub picks up the new peer.
+
+    **Optional bootstrap step.** Same contract as
+    :func:`provision_server_task`: when ``POST /clients`` carried the
+    operator's OOB key, the router passes its ciphertext here and the
+    task runs :func:`_run_bootstrap_if_supplied` against the client
+    BEFORE opening the CA-mode session. A bootstrap failure marks the
+    client ``error`` and skips provisioning. Omitted → no bootstrap.
 
     Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK** (cycle 3
     upgraded from BENIGN_OVERWRITE). Acquires
@@ -618,6 +638,16 @@ def provision_client_task(self, client_id: int) -> dict[str, Any]:
 
     :param client_id: Primary key of the :class:`Client` row to provision.
     :type client_id: int
+    :param bootstrap_pem_ciphertext: Crypto-backend ciphertext of the
+        operator's OOB SSH private key. ``None`` disables bootstrap.
+    :param bootstrap_pem_context: Encryption context for the PEM
+        ciphertext. Required when ``bootstrap_pem_ciphertext`` is set.
+    :param bootstrap_passphrase_ciphertext: Optional ciphertext of the
+        passphrase protecting the bootstrap PEM.
+    :param bootstrap_passphrase_context: Context for the passphrase
+        ciphertext.
+    :param bootstrap_connect_timeout: Seconds the bootstrap SSH session
+        waits for TCP / banner / auth before giving up.
     :return: Summary of the final state.
     :rtype: dict[str, Any]
     :raises ValueError: If any required row cannot be loaded.
@@ -646,6 +676,17 @@ def provision_client_task(self, client_id: int) -> dict[str, Any]:
                 raise ValueError("SSH key for client is missing")
 
             try:
+                # Optional first hop, inside the same try so a bootstrap
+                # failure marks the client error with one tidy line.
+                _run_bootstrap_if_supplied(
+                    node=client,
+                    bootstrap_pem_ciphertext=bootstrap_pem_ciphertext,
+                    bootstrap_pem_context=bootstrap_pem_context,
+                    bootstrap_passphrase_ciphertext=bootstrap_passphrase_ciphertext,
+                    bootstrap_passphrase_context=bootstrap_passphrase_context,
+                    bootstrap_connect_timeout=bootstrap_connect_timeout,
+                )
+
                 with _open_runner(
                     host=client.hostname,
                     port=client.ssh_port,

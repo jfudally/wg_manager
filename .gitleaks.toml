@@ -24,6 +24,13 @@ paths = [
   '''^tests/test_cli_ssh_migrate\.py$''',
   '''^tests/test_tasks_crypto\.py$''',
   '''^tests/test_tasks_provision_bootstrap\.py$''',
+  # Client-side twin of the above: a PEM-shaped literal with a dummy
+  # body ("CLIENTBOOTSTRAP"), used only to assert it's threaded through
+  # encrypted and never reaches the broker in plaintext.
+  '''^tests/test_tasks_provision_client_bootstrap\.py$''',
+  # Dashboard component test for the Register-client bootstrap section;
+  # dummy PEM body ("SPOKE"), never a real key.
+  '''^web/__tests__/clients-bootstrap\.test\.tsx$''',
   # Published dev Fernet key. The conftest header documents that this
   # value is in the repo on purpose — the suite needs deterministic
   # encrypt() output across runs.
@@ -36,4 +43,7 @@ paths = [
   # real key. Operator-pasted keys are encrypted client-side and never
   # committed.
   '''^web/app/servers/page\.tsx$''',
+  # Same PEM-shaped placeholder in the Register-client bootstrap-key
+  # field — not a real key.
+  '''^web/app/clients/page\.tsx$''',
 ]

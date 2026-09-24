@@ -267,8 +267,15 @@ response) or `GET /servers/{id}` (its `status` column flips too).
 ### 5. Register clients
 
 Same shape as servers — `wg-manager clients register` /
-**Dashboard → Clients → + Register client** — except for devices
-wg-manager can't SSH into (phones, IoT boxes). For those:
+**Dashboard → Clients → + Register client**. The client must trust
+the SSH CA first, exactly like a hub (step 3): either run
+`wg-manager bootstrap-host` against it, or expand **Bootstrap this
+host first** in the Register-client form and paste the OOB key the
+client already trusts (`bootstrap_ssh_key_pem` on `POST /clients`),
+which bootstraps and provisions in one task.
+
+Devices wg-manager can't SSH into (phones, IoT boxes) are the
+exception. For those:
 
 ```bash
 wg-manager clients add-manual \

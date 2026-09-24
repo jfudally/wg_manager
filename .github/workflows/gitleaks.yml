@@ -44,4 +44,10 @@ jobs:
           gitleaks version
 
       - name: Scan repo for secrets
-        run: gitleaks detect --source . --no-banner --redact --verbose
+        # ``--log-opts=HEAD`` scopes the walk to the checked-out commit's
+        # ancestry. Without it gitleaks runs ``git log --all``, and since
+        # ``fetch-depth: 0`` fetches every remote branch, a PR would fail
+        # on leaks that live only on *other* unmerged branches. HEAD is
+        # the PR merge ref on ``pull_request`` (main + the PR's commits)
+        # and the new tip on ``push``, so full history is still covered.
+        run: gitleaks detect --source . --no-banner --redact --verbose --log-opts=HEAD

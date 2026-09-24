@@ -126,55 +126,33 @@ class SSHKeyRead(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ServerCreate(BaseModel):
-    """Payload for registering a new WireGuard server.
+class BootstrapKeyFields(BaseModel):
+    """Optional one-shot SSH-CA bootstrap material for a registration.
 
-    :ivar subnet: Optional IPv4 CIDR that defines the WireGuard network.
-        When omitted the API falls back to ``settings.default_subnet`` so
-        existing callers see the legacy ``10.9.0.0/24`` default. Must be
-        network-aligned (no host bits set) and have a prefix length of
-        ``/30`` or larger so IPAM can hand out at least one client IP.
+    Shared by :class:`ServerCreate` and :class:`ClientCreate` so a fresh
+    hub *or* spoke can be bootstrapped and provisioned in one operator
+    action. When the PEM is present, the provisioning task opens one
+    :class:`~wg_manager.bootstrap_ssh.BootstrapSSHRunner` session with
+    this key + TOFU BEFORE the CA-mode provision session and lays down
+    the SSH CA trust + a signed host cert + the sshd drop-in.
+
+    The router encrypts both values with the crypto backend before
+    queueing so the broker never sees plaintext key material, and
+    neither value is persisted to the DB.
+
     :ivar bootstrap_ssh_key_pem: Optional operator OOB private key
-        (PEM body). When present, the provisioning task opens one
-        :class:`BootstrapSSHRunner` session with this key + TOFU
-        BEFORE the CA-mode provision session and lays down the SSH
-        CA trust + a signed host cert. Lets a fresh box land in the
-        registry in one round-trip instead of two operator actions.
-        The router encrypts this with the crypto backend before
-        queueing so the broker never sees plaintext key material.
-        Omit when the host has already been bootstrapped (e.g. via
-        the ``wg-manager bootstrap-host`` CLI); the task falls
-        through to today's behaviour and will fail cleanly with
-        "host cert signed by an untrusted CA" if the box really
-        isn't ready yet.
-    :ivar bootstrap_ssh_key_passphrase: Optional passphrase
-        protecting ``bootstrap_ssh_key_pem``. Treated as a secret;
-        encrypted alongside the PEM. Has no meaning when
-        ``bootstrap_ssh_key_pem`` is omitted — supplying it without
-        the PEM is rejected at the schema layer.
+        (PEM body). Omit when the host has already been bootstrapped
+        (e.g. via the ``wg-manager bootstrap-host`` CLI or a baked
+        image); the task then falls through to plain CA-mode
+        provisioning and fails cleanly with "host cert signed by an
+        untrusted CA" if the box really isn't ready yet.
+    :ivar bootstrap_ssh_key_passphrase: Optional passphrase protecting
+        ``bootstrap_ssh_key_pem``. Treated as a secret; encrypted
+        alongside the PEM. Supplying it without the PEM is rejected.
     """
 
-    hostname: str
-    ssh_port: int = 22
-    ssh_username: str
-    ssh_key_id: int
-    endpoint_host: str
-    endpoint_port: int = 51820
-    interface: str = "wg0"
-    subnet: str | None = None
-    # Phase 3b cycle 5 — explicit tenant resolution. See
-    # :func:`wg_manager.tenant_scope.resolve_create_tenant`.
-    tenant_id: int | None = None
     bootstrap_ssh_key_pem: str | None = None
     bootstrap_ssh_key_passphrase: str | None = None
-
-    @field_validator("subnet")
-    @classmethod
-    def _validate_subnet(cls, value: str | None) -> str | None:
-        """Reject malformed, host-bits-set or too-narrow subnet values."""
-        if value is None:
-            return None
-        return str(_parse_strict_subnet(value))
 
     @field_validator("bootstrap_ssh_key_passphrase")
     @classmethod
@@ -195,6 +173,39 @@ class ServerCreate(BaseModel):
                 "bootstrap_ssh_key_pem"
             )
         return value
+
+
+class ServerCreate(BootstrapKeyFields):
+    """Payload for registering a new WireGuard server.
+
+    :ivar subnet: Optional IPv4 CIDR that defines the WireGuard network.
+        When omitted the API falls back to ``settings.default_subnet`` so
+        existing callers see the legacy ``10.9.0.0/24`` default. Must be
+        network-aligned (no host bits set) and have a prefix length of
+        ``/30`` or larger so IPAM can hand out at least one client IP.
+    :ivar bootstrap_ssh_key_pem: See :class:`BootstrapKeyFields`.
+    :ivar bootstrap_ssh_key_passphrase: See :class:`BootstrapKeyFields`.
+    """
+
+    hostname: str
+    ssh_port: int = 22
+    ssh_username: str
+    ssh_key_id: int
+    endpoint_host: str
+    endpoint_port: int = 51820
+    interface: str = "wg0"
+    subnet: str | None = None
+    # Phase 3b cycle 5 — explicit tenant resolution. See
+    # :func:`wg_manager.tenant_scope.resolve_create_tenant`.
+    tenant_id: int | None = None
+
+    @field_validator("subnet")
+    @classmethod
+    def _validate_subnet(cls, value: str | None) -> str | None:
+        """Reject malformed, host-bits-set or too-narrow subnet values."""
+        if value is None:
+            return None
+        return str(_parse_strict_subnet(value))
 
 
 class ServerUpdate(BaseModel):
@@ -253,8 +264,14 @@ class ServerRead(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-class ClientCreate(BaseModel):
-    """Payload for registering a new WireGuard client."""
+class ClientCreate(BootstrapKeyFields):
+    """Payload for registering a new SSH-provisioned WireGuard client.
+
+    Inherits the optional ``bootstrap_ssh_key_pem`` /
+    ``bootstrap_ssh_key_passphrase`` pair from
+    :class:`BootstrapKeyFields` so a fresh client can be bootstrapped
+    in the same task that provisions it, exactly like a server.
+    """
 
     name: str
     hostname: str
