@@ -21,7 +21,7 @@ export function cn(...inputs: ClassValue[]): string {
  * future for users behind UTC (showing negative "ago" durations). We
  * append "Z" when no timezone is present so naive values are read as UTC.
  */
-function parseApiDate(value: string): Date {
+export function parseApiDate(value: string): Date {
   const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(value.trim());
   return new Date(hasTimezone ? value : `${value}Z`);
 }

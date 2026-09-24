@@ -10,7 +10,7 @@
  * under a day is shown in hours because the default host-cert TTL is
  * 24h (`SSH_HOST_CERT_TTL_SECONDS`), where "0d" would say nothing.
  */
-import { cn } from "@/lib/utils";
+import { cn, parseApiDate } from "@/lib/utils";
 
 const HOUR_MS = 1000 * 60 * 60;
 
@@ -29,7 +29,10 @@ export function HostCertSummary({ node }: { node: HostCertFields }) {
   if (!node.host_cert_serial || !node.host_cert_valid_before) {
     return null;
   }
-  const msLeft = new Date(node.host_cert_valid_before).getTime() - Date.now();
+  // parseApiDate, not new Date(): the API sends naive-UTC strings, which
+  // new Date() would read as local time and skew by the UTC offset.
+  const msLeft =
+    parseApiDate(node.host_cert_valid_before).getTime() - Date.now();
   const expired = msLeft < 0;
   const daysLeft = Math.floor(msLeft / (24 * HOUR_MS));
   const warning = daysLeft < 30 && !expired;

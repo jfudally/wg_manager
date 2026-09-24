@@ -30,7 +30,10 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   - **Dashboard `/clients`** shows each SSH client's cert serial and
     expiry, and adds a **Rotate cert** button. `HostCertSummary` moved
     to `web/components/host-cert-summary.tsx` (shared with `/servers`)
-    and now shows sub-day expiries in hours instead of "0d".
+    and now shows sub-day expiries in hours instead of "0d". It also
+    parses the API's naive-UTC timestamps as UTC (via `parseApiDate`)
+    instead of local time, which had skewed the expiry hint by the
+    viewer's UTC offset — e.g. an expired cert read as valid in UTC−8.
   - Tests: `tests/test_rotate_client_host_cert.py`,
     `tests/test_alembic_0017.py`, `web/__tests__/clients-host-cert.test.tsx`.
 
