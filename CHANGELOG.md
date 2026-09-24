@@ -44,6 +44,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   Sep '26 prod-up incident. Unit tests in
   ``tests/test_bootstrap_mysql_tls_pkcs8.py``.
 
+- **Gitleaks false positives on PEM header mentions.** The default
+  `private-key` rule matched from one header-only mention (in a
+  docstring, this changelog, or a `startswith` assertion) to the next,
+  failing the secret scan with no key material present. `.gitleaks.toml`
+  now allowlists the PKCS#8 test file by path and header-only mentions
+  by match shape (header immediately followed by a closing backtick
+  pair or quote), so real keys in the same files are still caught.
+
 ## [v0.5.0] - 2026-06-24
 
 ### Added

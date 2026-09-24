@@ -24,6 +24,12 @@ paths = [
   '''^tests/test_cli_ssh_migrate\.py$''',
   '''^tests/test_tasks_crypto\.py$''',
   '''^tests/test_tasks_provision_bootstrap\.py$''',
+  # PKCS#8-conversion unit tests. No committed key material — the file
+  # only contains string literals for `-----BEGIN PRIVATE KEY-----` used
+  # in `.startswith()` assertions against PEMs generated at runtime by
+  # cryptography.hazmat. Gitleaks matches on the header shape regardless
+  # of whether real key bytes follow.
+  '''^tests/test_bootstrap_mysql_tls_pkcs8\.py$''',
   # Published dev Fernet key. The conftest header documents that this
   # value is in the repo on purpose — the suite needs deterministic
   # encrypt() output across runs.
@@ -36,4 +42,17 @@ paths = [
   # real key. Operator-pasted keys are encrypted client-side and never
   # committed.
   '''^web/app/servers/page\.tsx$''',
+]
+# Header-only PEM mentions in prose and assertions, e.g. the docs line
+# "SEC1 (``-----BEGIN EC PRIVATE KEY-----``) is rejected by MySQL". The
+# default private-key rule matches from one header to the next
+# "KEY-----" 64+ chars later, so two such mentions in one paragraph read
+# as a single "key". Allowlisted by *shape*, not path, so a real key
+# pasted into CHANGELOG.md or scripts/bootstrap_mysql_tls_files.py still
+# fails: the match must open with a header immediately closed by ``
+# (RST/Markdown literal) or ") / ') (string literal) — a genuine PEM
+# header is always followed by a newline and a base64 body.
+regexTarget = "match"
+regexes = [
+  '''^-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY-----(``|["']\))''',
 ]
