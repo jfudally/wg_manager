@@ -350,6 +350,13 @@ class ClientRead(BaseModel):
     created_at: datetime
     # Phase 3b cycle 3 — see ServerRead.tenant_id.
     tenant_id: int | None = None
+    # Host-cert metadata (Alembic 0017) so the dashboard can show the
+    # serial + expiry and offer rotation. The cert body and CA pubkey
+    # stay DB-side; ``NULL`` for manual clients and never-provisioned rows.
+    host_cert_serial: int | None = None
+    host_cert_principals: str | None = None
+    host_cert_valid_after: datetime | None = None
+    host_cert_valid_before: datetime | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +436,22 @@ class HostCertRotateResponse(BaseModel):
     server: ServerRead
 
 
+
+
+class ClientHostCertRotateResponse(BaseModel):
+    """202 response for ``POST /clients/{id}/rotate-host-cert``.
+
+    Client twin of :class:`HostCertRotateResponse`. The row's
+    ``host_cert_*`` fields reflect the *previous* cert at 202 time; poll
+    ``GET /tasks/{task_id}`` for the new serial / ``valid_before``.
+
+    :ivar task_id: Celery task ID of the dispatched
+        :func:`wg_manager.tasks.rotate_client_host_cert_task`.
+    :ivar client: The client row at dispatch time.
+    """
+
+    task_id: str
+    client: ClientRead
 
 
 class ClientRegisterResponse(BaseModel):

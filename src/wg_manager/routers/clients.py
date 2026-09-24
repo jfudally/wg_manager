@@ -17,6 +17,7 @@ from wg_manager.models import Client, NodeStatus, SSHKey, Server
 from wg_manager.schemas import (
     ClientCreate,
     ClientDeleteResponse,
+    ClientHostCertRotateResponse,
     ClientManualCreate,
     ClientManualRegisterResponse,
     ClientRead,
@@ -24,7 +25,11 @@ from wg_manager.schemas import (
     ClientUpdate,
 )
 from wg_manager.models import OperatorRole
-from wg_manager.tasks import provision_client_task, reconfigure_server_task
+from wg_manager.tasks import (
+    provision_client_task,
+    reconfigure_server_task,
+    rotate_client_host_cert_task,
+)
 from wg_manager.tenant_scope import (
     ScopeDep,
     require_tenant_role,
@@ -242,6 +247,56 @@ def reprovision_client(client_id: int, session: _SessionDep) -> ClientRegisterRe
 
     async_result = provision_client_task.delay(row.id)
     return ClientRegisterResponse(
+        task_id=async_result.id,
+        client=ClientRead.model_validate(row),
+    )
+
+
+@router.post(
+    "/{client_id}/rotate-host-cert",
+    response_model=ClientHostCertRotateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def rotate_client_host_cert(
+    client_id: int, session: _SessionDep
+) -> ClientHostCertRotateResponse:
+    """Re-mint and install the client's SSH host certificate.
+
+    Client twin of ``POST /servers/{id}/rotate-host-cert``. Dispatches
+    :func:`wg_manager.tasks.rotate_client_host_cert_task`, which SSHes
+    into the client, re-runs the idempotent host-side install, and
+    overwrites the row's ``host_cert_*`` columns. Run it (manually or on
+    a schedule) before ``SSH_HOST_CERT_TTL_SECONDS`` elapses so the next
+    CA-mode session to the client still validates. The row's status is
+    left alone — rotation doesn't touch the WireGuard config.
+
+    :return: ``{task_id, client}`` — the task to poll plus the row as it
+        was at dispatch time (still showing the previous cert).
+    :raises HTTPException: 404 if the client does not exist; 400 for a
+        manual client (no SSH access); 409 if the referenced SSH key
+        row has been deleted.
+    """
+    row = session.get(Client, client_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if row.is_manual:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot rotate a host cert on a manual client — no SSH access",
+        )
+    if row.ssh_key_id is None or session.get(SSHKey, row.ssh_key_id) is None:
+        # Same 409 shape as the server endpoint: the FK should prevent
+        # this, but a clear conflict beats a task-side 500.
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"client {row.id} references SSHKey {row.ssh_key_id} "
+                f"which no longer exists; reassign before rotating"
+            ),
+        )
+
+    async_result = rotate_client_host_cert_task.delay(row.id)
+    return ClientHostCertRotateResponse(
         task_id=async_result.id,
         client=ClientRead.model_validate(row),
     )

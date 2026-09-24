@@ -197,6 +197,25 @@ export interface Client {
    * `tenant_id=1`.
    */
   tenant_id?: number | null;
+  /**
+   * Host-cert metadata (Alembic 0017). NULL for manual clients and rows
+   * not yet provisioned since host-cert tracking landed. Refreshed by
+   * provisioning and `POST /clients/{id}/rotate-host-cert`.
+   */
+  host_cert_serial?: number | null;
+  host_cert_principals?: string | null;
+  host_cert_valid_after?: string | null;
+  host_cert_valid_before?: string | null;
+}
+
+/**
+ * 202 response for `POST /clients/{id}/rotate-host-cert`. The client row
+ * is returned at dispatch time (still showing the previous cert); poll
+ * `GET /tasks/{task_id}` for the new serial / `valid_before`.
+ */
+export interface ClientHostCertRotateResponse {
+  task_id: string;
+  client: Client;
 }
 
 export interface ClientCreate {
