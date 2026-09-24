@@ -486,3 +486,35 @@ class TestBootstrapHostOrchestration:
         assert record["principal"] == "fresh-host.example.com"
         assert record["cert_serial"] == str(cert.serial)
         assert record["cn"] == "ubuntu"
+
+
+class TestBootstrapPrincipalAlias:
+    """``--principal`` adds an alias; the dial name always stays on the cert.
+
+    ``KnownHostsCAPolicy`` now matches the dialed hostname against the
+    cert's principals. If ``bootstrap-host --principal X`` minted a cert
+    for ``X`` alone, the very first provision (which dials ``--hostname``)
+    would be refused. So the cert carries both names.
+    """
+
+    def test_distinct_principal_is_added_alongside_hostname(self) -> None:
+        ca = LocalDevSSHCA.generate()
+        cert = bootstrap_host(
+            runner=_FakeRunner(_HOST_PUBKEY),
+            hostname="203.0.113.10",
+            principal="vpn-hub-1.internal",
+            ca=ca,
+            ttl_seconds=86400,
+        )
+        assert list(cert.principals) == ["203.0.113.10", "vpn-hub-1.internal"]
+
+    def test_same_principal_is_not_duplicated(self) -> None:
+        ca = LocalDevSSHCA.generate()
+        cert = bootstrap_host(
+            runner=_FakeRunner(_HOST_PUBKEY),
+            hostname="hub.example.com",
+            principal="HUB.example.com.",
+            ca=ca,
+            ttl_seconds=86400,
+        )
+        assert list(cert.principals) == ["hub.example.com"]

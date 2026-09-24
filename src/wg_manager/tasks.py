@@ -83,6 +83,7 @@ def _open_runner(
     port: int,
     username: str,
     ssh_key: SSHKey,  # noqa: ARG001 — kept for call-site symmetry and future routing
+    known_principals: str | None = None,
 ) -> SSHRunner:
     """Construct an :class:`SSHRunner` against the SSH CA.
 
@@ -105,6 +106,11 @@ def _open_runner(
         cert's ``valid_principals`` list.
     :param ssh_key: The SSH role row; unused today, retained for
         forwards compatibility.
+    :param known_principals: The row's ``host_cert_principals`` — the
+        comma-separated names on the host cert this control plane last
+        issued. Accepted by :class:`~wg_manager.ssh.KnownHostsCAPolicy`
+        in addition to ``host``, so a row whose hostname was edited can
+        still be reached (and re-certified for its new name).
     :return: An unentered :class:`SSHRunner`. The caller is responsible
         for entering it as a context manager.
     :raises SSHCAError: If the CA backend cannot be constructed
@@ -123,6 +129,9 @@ def _open_runner(
         pkey_pem=user_cert.private_pem,
         cert_pem=user_cert.cert_pem,
         ca_public_key=ca.ca_public_key,
+        accepted_principals=tuple(
+            name.strip() for name in (known_principals or "").split(",") if name.strip()
+        ),
     )
 
 
@@ -403,6 +412,7 @@ def provision_server_task(
 
                 with _open_runner(
                     host=server.hostname,
+                    known_principals=server.host_cert_principals,
                     port=server.ssh_port,
                     username=server.ssh_username,
                     ssh_key=ssh_key,
@@ -502,6 +512,7 @@ def rotate_host_cert_task(self, server_id: int) -> dict[str, Any]:
             try:
                 with _open_runner(
                     host=server.hostname,
+                    known_principals=server.host_cert_principals,
                     port=server.ssh_port,
                     username=server.ssh_username,
                     ssh_key=ssh_key,
@@ -602,6 +613,7 @@ def rotate_client_host_cert_task(self, client_id: int) -> dict[str, Any]:
             try:
                 with _open_runner(
                     host=client.hostname,
+                    known_principals=client.host_cert_principals,
                     port=client.ssh_port,
                     username=client.ssh_username,
                     ssh_key=ssh_key,
@@ -775,6 +787,7 @@ def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
             try:
                 with _open_runner(
                     host=server.hostname,
+                    known_principals=server.host_cert_principals,
                     port=server.ssh_port,
                     username=server.ssh_username,
                     ssh_key=ssh_key,
@@ -883,6 +896,7 @@ def provision_client_task(
 
                 with _open_runner(
                     host=client.hostname,
+                    known_principals=client.host_cert_principals,
                     port=client.ssh_port,
                     username=client.ssh_username,
                     ssh_key=client_key,
@@ -989,6 +1003,7 @@ def discover_peers_task(self, server_id: int) -> dict[str, Any]:
         try:
             with _open_runner(
                 host=server.hostname,
+                known_principals=server.host_cert_principals,
                 port=server.ssh_port,
                 username=server.ssh_username,
                 ssh_key=ssh_key,

@@ -199,9 +199,11 @@ wg-manager bootstrap-host \
     --ssh-key ~/.ssh/id_ed25519
 ```
 
-Optional flags: `--principal <name>` (when the cert principal
-differs from the SSH dial-name — typically internal DNS vs public
-IP), `--ssh-key-passphrase <pass>` (or set
+Optional flags: `--principal <name>` (adds an alias principal to
+the host cert alongside `--hostname` — typically internal DNS when
+you dial a public IP; wg-manager always requires the cert to name the
+host it dials, so register the row with the same `--hostname`),
+`--ssh-key-passphrase <pass>` (or set
 `WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE`), `--ssh-port 22`,
 `--ttl-seconds 86400`, `--connect-timeout 15`.
 

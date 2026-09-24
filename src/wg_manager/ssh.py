@@ -29,7 +29,7 @@ import socket
 import time
 from dataclasses import dataclass
 from types import TracebackType
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 import paramiko
 from cryptography.hazmat.primitives import serialization
@@ -172,6 +172,19 @@ def _ca_pubkey_body(openssh_line: str) -> str:
     return parts[1]
 
 
+def _normalise_principal(name: str) -> str:
+    """Canonical form for comparing host names: DNS is case-insensitive
+    and ``host.`` (fully-qualified) names the same host as ``host``."""
+    return name.strip().rstrip(".").casefold()
+
+
+def _dialed_name(paramiko_hostname: str) -> str:
+    """Strip paramiko's ``[host]:port`` wrapper (used for non-22 ports)."""
+    if paramiko_hostname.startswith("[") and "]:" in paramiko_hostname:
+        return paramiko_hostname[1 : paramiko_hostname.index("]:")]
+    return paramiko_hostname
+
+
 class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
     """Trust a host iff it offers an Ed25519 host cert signed by ``ca_public_key``.
 
@@ -194,6 +207,12 @@ class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
        ``valid_after <= now < valid_before`` (OpenSSH semantics, no
        clock-skew allowance — Vault backdates ``valid_after`` by 30s by
        default, which absorbs worker/Vault drift).
+    5. The certificate was issued for the host being dialed: at least
+       one of its principals matches an accepted name (case-insensitive,
+       trailing dot ignored). Without this, any host holding a cert from
+       our CA — e.g. a compromised client — could impersonate any other
+       managed host. Certs with *no* principals (OpenSSH's "valid for any
+       host") are refused outright; our CA never issues them.
 
     Anything else raises :class:`UntrustedHostKeyError`.
 
@@ -202,11 +221,11 @@ class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
     ``HostCertificate`` it's configured with). An earlier version
     assumed sshd enforced it, so expired certs were silently accepted.
 
-    The cert's principals are still NOT matched against the dialed
-    hostname: ``bootstrap-host --principal`` allows a principal that
-    legitimately differs from the dial name, and the CA's issuance role
-    (see :class:`wg_manager.ssh_ca.VaultSSHCA.bootstrap`) constrains
-    which principals can be signed.
+    Accepted names come from ``principals`` when given —
+    :class:`SSHRunner` passes its own ``host`` plus any names the control
+    plane recorded on the row's last-issued cert (so a renamed row can
+    still be reached and re-certified). Otherwise the name paramiko
+    reports is used, with its ``[host]:port`` wrapper stripped.
 
     :ivar ca_public_key: The OpenSSH-format CA public key passed to
         the constructor. Stored verbatim so callers can read it back
@@ -218,6 +237,7 @@ class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
         ca_public_key: str,
         *,
         clock: Callable[[], float] = time.time,
+        principals: Iterable[str] | None = None,
     ) -> None:
         """Bind to ``ca_public_key`` (one-line OpenSSH format).
 
@@ -225,10 +245,18 @@ class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
         :param clock: Returns the current Unix time in seconds. Defaults
             to :func:`time.time`; injectable so tests can pin "now"
             against a cert's validity window.
+        :param principals: Host names the offered cert may be issued for.
+            ``None`` means "the name paramiko reports for the connection".
         """
         self.ca_public_key = ca_public_key
         self._ca_body = _ca_pubkey_body(ca_public_key)
         self._clock = clock
+        #: Normalised accepted names, or ``None`` to derive per connection.
+        self.principals: frozenset[str] | None = (
+            None
+            if principals is None
+            else frozenset(_normalise_principal(p) for p in principals if p.strip())
+        )
 
     def missing_host_key(
         self,
@@ -318,6 +346,27 @@ class KnownHostsCAPolicy(paramiko.MissingHostKeyPolicy):
                 f"now={now}); rotate it via rotate-host-cert or re-run "
                 "bootstrap-host",
             )
+
+        # Principals — checked last so signer / validity problems (the
+        # more fundamental failures) are the ones reported first.
+        cert_principals = [p.decode("utf-8", "replace") for p in cert.valid_principals]
+        if not cert_principals:
+            raise UntrustedHostKeyError(
+                hostname,
+                "host cert has no principals (valid for any host); refusing",
+            )
+        accepted = (
+            self.principals
+            if self.principals is not None
+            else frozenset({_normalise_principal(_dialed_name(hostname))})
+        )
+        if accepted.isdisjoint(_normalise_principal(p) for p in cert_principals):
+            raise UntrustedHostKeyError(
+                hostname,
+                f"host cert not issued for {', '.join(sorted(accepted))} "
+                f"(cert principals: {', '.join(cert_principals)}); if the host "
+                "was renamed outside wg-manager, re-run bootstrap-host",
+            )
         # Accept by returning.
 
 
@@ -354,6 +403,7 @@ class SSHRunner:
         *,
         cert_pem: str | None = None,
         ca_public_key: str | None = None,
+        accepted_principals: Iterable[str] = (),
     ) -> None:
         """Initialise the runner.
 
@@ -386,6 +436,11 @@ class SSHRunner:
             runner trusts the remote host iff its presented host cert
             is signed by this CA. Pair with ``cert_pem``.
         :type ca_public_key: str | None
+        :param accepted_principals: Extra host names the host cert may be
+            issued for, on top of ``host`` (always accepted). Tasks pass
+            the principals recorded on the row's last-issued cert so a
+            renamed row stays reachable until it's re-certified.
+        :type accepted_principals: Iterable[str]
         :raises ValueError: If exactly one of ``cert_pem`` /
             ``ca_public_key`` is supplied — see the class docstring for
             why this combination is rejected.
@@ -404,6 +459,7 @@ class SSHRunner:
         self.connect_timeout = connect_timeout
         self.cert_pem = cert_pem
         self.ca_public_key = ca_public_key
+        self.accepted_principals = tuple(accepted_principals)
         self._client: paramiko.SSHClient | None = None
 
     def __enter__(self) -> SSHRunner:
@@ -427,7 +483,10 @@ class SSHRunner:
         client = paramiko.SSHClient()
         if self.ca_public_key is not None:
             client.set_missing_host_key_policy(
-                KnownHostsCAPolicy(self.ca_public_key)
+                KnownHostsCAPolicy(
+                    self.ca_public_key,
+                    principals=(self.host, *self.accepted_principals),
+                )
             )
         else:
             # Reachable only from test fixtures that construct a runner

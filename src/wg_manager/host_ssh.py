@@ -128,7 +128,7 @@ def _install_host_cert_files(
     *,
     runner: HostInstallRunner,
     ca: SSHCABackend,
-    principal: str,
+    principals: list[str],
     ttl_seconds: int,
 ) -> HostCert:
     """Lower-level "lay down the three files + reload sshd" worker.
@@ -153,10 +153,12 @@ def _install_host_cert_files(
     :type runner: HostInstallRunner
     :param ca: An :class:`SSHCABackend` that can sign host certs.
     :type ca: SSHCABackend
-    :param principal: The hostname / DNS name the cert is bound to.
-        Production callers pass the :attr:`Server.hostname` value;
-        bootstrap callers pass the operator-supplied ``--hostname``.
-    :type principal: str
+    :param principals: Host names the cert is bound to. The first is
+        the name wg-manager dials (production callers pass the row's
+        ``hostname``); bootstrap may append an operator alias from
+        ``--principal``. :class:`~wg_manager.ssh.KnownHostsCAPolicy`
+        requires the dialed name to be among them.
+    :type principals: list[str]
     :param ttl_seconds: TTL the cert request asks the CA for. Vault
         caps this at the role's ``max_ttl``; the local backend
         honours it verbatim.
@@ -171,7 +173,7 @@ def _install_host_cert_files(
     host_pubkey = _read_host_pubkey(runner)
     cert = ca.mint_host_cert(
         public_key_openssh=host_pubkey,
-        principals=[principal],
+        principals=principals,
         ttl_seconds=ttl_seconds,
     )
 
@@ -265,6 +267,6 @@ def install_host_cert(
     return _install_host_cert_files(
         runner=runner,
         ca=ca,
-        principal=server.hostname,
+        principals=[server.hostname],
         ttl_seconds=ttl_seconds,
     )

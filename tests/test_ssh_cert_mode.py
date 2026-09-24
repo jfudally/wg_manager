@@ -263,6 +263,139 @@ class TestKnownHostsCAPolicyValidityWindow:
             policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
 
 
+def _host_cert_for(
+    ca_private: Ed25519PrivateKey, principals: list[str]
+) -> paramiko.PKey:
+    """Offered host key whose (currently valid) cert names ``principals``."""
+    from cryptography.hazmat.primitives.serialization import (
+        SSHCertificateBuilder,
+        SSHCertificateType,
+    )
+
+    host_key, host_private_pem, _ = _ed25519_pair()
+    cert = (
+        SSHCertificateBuilder()
+        .public_key(host_key.public_key())
+        .serial(7)
+        .type(SSHCertificateType.HOST)
+        .key_id(b"principal-test")
+        .valid_principals([p.encode() for p in principals])
+        .valid_after(0)
+        .valid_before(2**64 - 1)
+        .sign(ca_private)
+    )
+    return _paramiko_key_with_cert(host_private_pem, cert.public_bytes().decode())
+
+
+def _host_cert_no_principals(ca_private: Ed25519PrivateKey) -> paramiko.PKey:
+    from cryptography.hazmat.primitives.serialization import (
+        SSHCertificateBuilder,
+        SSHCertificateType,
+    )
+
+    host_key, host_private_pem, _ = _ed25519_pair()
+    cert = (
+        SSHCertificateBuilder()
+        .public_key(host_key.public_key())
+        .serial(8)
+        .type(SSHCertificateType.HOST)
+        .key_id(b"no-principals")
+        .valid_for_all_principals()
+        .valid_after(0)
+        .valid_before(2**64 - 1)
+        .sign(ca_private)
+    )
+    return _paramiko_key_with_cert(host_private_pem, cert.public_bytes().decode())
+
+
+class TestKnownHostsCAPolicyPrincipals:
+    """The host cert must be issued for the host we meant to reach.
+
+    Regression: the policy checked only signer + validity, so ANY host
+    holding a cert from our CA could impersonate any other managed host
+    (e.g. a compromised client answering for a hub under a DNS/ARP
+    spoof). OpenSSH clients match the dialed name against the cert's
+    principals; so do we. Names compare case-insensitively with a
+    trailing dot ignored (DNS semantics).
+    """
+
+    def test_rejects_cert_issued_for_another_host(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = _host_cert_for(ca, ["client-7.example.com"])
+        policy = KnownHostsCAPolicy(_ca_public_line(ca))
+        with pytest.raises(UntrustedHostKeyError, match="not issued for"):
+            policy.missing_host_key(client=None, hostname="hub.example.com", key=offered)
+
+    def test_accepts_when_dialed_name_is_a_principal(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = _host_cert_for(ca, ["alias.internal", "hub.example.com"])
+        KnownHostsCAPolicy(_ca_public_line(ca)).missing_host_key(
+            client=None, hostname="hub.example.com", key=offered
+        )
+
+    def test_non_default_port_hostname_form_is_normalised(self) -> None:
+        """paramiko passes ``[host]:port`` for non-22 ports."""
+        ca = Ed25519PrivateKey.generate()
+        offered = _host_cert_for(ca, ["hub.example.com"])
+        KnownHostsCAPolicy(_ca_public_line(ca)).missing_host_key(
+            client=None, hostname="[hub.example.com]:2222", key=offered
+        )
+
+    def test_ipv6_bracket_form_is_normalised(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = _host_cert_for(ca, ["2001:db8::1"])
+        KnownHostsCAPolicy(_ca_public_line(ca)).missing_host_key(
+            client=None, hostname="[2001:db8::1]:2222", key=offered
+        )
+
+    def test_dns_case_and_trailing_dot_ignored(self) -> None:
+        ca = Ed25519PrivateKey.generate()
+        offered = _host_cert_for(ca, ["Hub.Example.COM"])
+        KnownHostsCAPolicy(_ca_public_line(ca)).missing_host_key(
+            client=None, hostname="hub.example.com.", key=offered
+        )
+
+    def test_explicit_principals_override_paramiko_hostname(self) -> None:
+        """SSHRunner passes the names it will accept; paramiko's is ignored.
+
+        Covers a renamed row: the host still carries the cert for its
+        old name, which the control plane recorded when it issued it.
+        """
+        ca = Ed25519PrivateKey.generate()
+        offered = _host_cert_for(ca, ["old-name.example.com"])
+        policy = KnownHostsCAPolicy(
+            _ca_public_line(ca),
+            principals=["new-name.example.com", "old-name.example.com"],
+        )
+        policy.missing_host_key(client=None, hostname="[whatever]:22", key=offered)
+
+        strict = KnownHostsCAPolicy(
+            _ca_public_line(ca), principals=["new-name.example.com"]
+        )
+        with pytest.raises(UntrustedHostKeyError, match="not issued for"):
+            strict.missing_host_key(
+                client=None, hostname="old-name.example.com", key=offered
+            )
+
+    def test_rejects_cert_valid_for_all_principals(self) -> None:
+        """Our CA never issues wildcard host certs; don't accept one."""
+        ca = Ed25519PrivateKey.generate()
+        offered = _host_cert_no_principals(ca)
+        with pytest.raises(UntrustedHostKeyError, match="no principals"):
+            KnownHostsCAPolicy(_ca_public_line(ca)).missing_host_key(
+                client=None, hostname="hub.example.com", key=offered
+            )
+
+    def test_signer_is_checked_before_principals(self) -> None:
+        trusted = Ed25519PrivateKey.generate()
+        attacker = Ed25519PrivateKey.generate()
+        offered = _host_cert_for(attacker, ["someone-else.example.com"])
+        with pytest.raises(UntrustedHostKeyError, match="untrusted CA"):
+            KnownHostsCAPolicy(_ca_public_line(trusted)).missing_host_key(
+                client=None, hostname="hub.example.com", key=offered
+            )
+
+
 # ---------------------------------------------------------------------------
 # SSHRunner cert-mode wiring
 # ---------------------------------------------------------------------------
@@ -355,6 +488,29 @@ class TestSSHRunnerCertMode:
         # The CA pubkey must be bound to the policy, not silently dropped.
         assert recorder.policy.ca_public_key.split()[1] == (
             ca.ca_public_key.split()[1]
+        )
+
+    def test_cert_mode_policy_accepts_dial_host_plus_extras(
+        self, recorder: _RecorderClient
+    ) -> None:
+        """The policy matches the runner's own ``host``, plus any extra names."""
+        ca = LocalDevSSHCA.generate()
+        user_cert = ca.mint_user_cert(principals=["root"], ttl_seconds=60)
+
+        with SSHRunner(
+            host="hub.example.com",
+            port=2222,
+            username="root",
+            pkey_pem=user_cert.private_pem,
+            cert_pem=user_cert.cert_pem,
+            ca_public_key=ca.ca_public_key,
+            accepted_principals=["old-hub.example.com"],
+        ):
+            pass
+
+        assert isinstance(recorder.policy, KnownHostsCAPolicy)
+        assert recorder.policy.principals == frozenset(
+            {"hub.example.com", "old-hub.example.com"}
         )
 
     def test_legacy_mode_unchanged(self, recorder: _RecorderClient) -> None:

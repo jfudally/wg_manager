@@ -468,11 +468,12 @@ def bootstrap_host(
         — surfaced in audit emission in cycle 4 — but kept on the
         signature so the cycle 4 wiring doesn't have to widen it.
     :type hostname: str
-    :param principal: The DNS / hostname principal the host cert
-        will carry. Production callers typically pass the same
-        value as ``hostname``; the CLI lets the operator override
-        with ``--principal`` for fleets where the SSH hostname and
-        the cert principal differ (e.g. internal DNS vs public IP).
+    :param principal: An extra DNS / hostname principal for the host
+        cert. The cert always carries ``hostname`` (the name
+        wg-manager will dial — :class:`~wg_manager.ssh.KnownHostsCAPolicy`
+        requires it); when ``principal`` names something else (the
+        CLI's ``--principal``, e.g. internal DNS vs public IP) it is
+        added as an alias rather than replacing ``hostname``.
     :type principal: str
     :param ca: The SSH CA backend that signs the host cert.
         Typically the Vault-backed one returned by
@@ -496,10 +497,16 @@ def bootstrap_host(
         on the host first).
     :raises wg_manager.ssh_ca.SSHCAError: If the CA refuses to sign.
     """
+    # Dial name first, operator alias second (deduplicated with DNS
+    # semantics) — replacing the dial name would lock the production
+    # runner out on its very first session.
+    principals = [hostname]
+    if principal.strip().rstrip(".").casefold() != hostname.strip().rstrip(".").casefold():
+        principals.append(principal)
     cert = _install_host_cert_files(
         runner=runner,
         ca=ca,
-        principal=principal,
+        principals=principals,
         ttl_seconds=ttl_seconds,
     )
     # Audit emission lands *after* the install commits, so a failure
