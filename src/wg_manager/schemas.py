@@ -236,7 +236,21 @@ class ServerUpdate(BaseModel):
 
 
 class ServerRead(BaseModel):
-    """Serialized view of a :class:`wg_manager.models.Server`."""
+    """Serialized view of a :class:`wg_manager.models.Server`.
+
+    :ivar host_cert_serial: Serial of the SSH host cert last installed
+        on the hub (Phase 2c CP3.1 columns). All six ``host_cert_*``
+        fields are ``None`` until the first successful provision.
+    :ivar host_cert_principals: Comma-separated principals in the cert.
+    :ivar host_cert_valid_after: Start of the cert's validity window.
+    :ivar host_cert_valid_before: Cert expiry — the rotation deadline
+        the dashboard's expiry hint is computed from.
+    :ivar host_cert_pem: Full OpenSSH-format cert body. Public material
+        (sshd hands it to every connecting client), safe to expose.
+    :ivar host_cert_ca_public_key: CA public key that signed the cert,
+        captured at signing time — lets callers spot rows still pinned
+        to a CA that has since been rotated.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -257,6 +271,15 @@ class ServerRead(BaseModel):
     # render the tenant column (nullable: existing rows backfilled
     # by Alembic 0014 carry ``tenant_id=1``).
     tenant_id: int | None = None
+    # Phase 2c CP3.1 host-cert snapshot. These columns were persisted
+    # from day one but never declared here, so the API dropped them and
+    # the dashboard's cert-expiry line never rendered.
+    host_cert_serial: int | None = None
+    host_cert_principals: str | None = None
+    host_cert_valid_after: datetime | None = None
+    host_cert_valid_before: datetime | None = None
+    host_cert_pem: str | None = None
+    host_cert_ca_public_key: str | None = None
 
 
 # ---------------------------------------------------------------------------
