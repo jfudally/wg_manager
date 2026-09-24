@@ -264,14 +264,35 @@ Clients work the same way: every successful client provision
 installs a fresh host cert, and `POST /clients/{id}/rotate-host-cert`
 (or **Clients → Rotate cert** in the dashboard) re-mints it without
 touching the WireGuard config. The Clients table shows each SSH
-client's cert serial and time to expiry. With the default 24h TTL,
-schedule the rotation (cron / systemd timer hitting the endpoint) for
-any client you don't reprovision daily so the cert on the host stays
-valid — standard OpenSSH clients trusting the CA via
-`@cert-authority` reject an expired host cert. (wg-manager's own
-`KnownHostsCAPolicy` currently checks only the signing CA, not the
-validity window, so an expired cert doesn't block rotation itself.)
-Manual clients have no SSH access and are rejected with a 400.
+client's cert serial and time to expiry. Manual clients have no SSH
+access and are rejected with a 400.
+
+### Automatic host-cert renewal
+
+`KnownHostsCAPolicy` rejects a host cert outside its validity window,
+and a host whose cert has **already expired can't be rotated** —
+rotation needs a trusted session — only re-bootstrapped with
+`bootstrap-host`. So the stack runs a `beat` service (Celery beat)
+that sweeps every `SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS` (1h) and
+rotates every `ready` server and SSH client whose cert expires within
+`SSH_HOST_CERT_RENEW_BEFORE_SECONDS` (12h), or whose cert state is
+unknown. With the 24h default TTL that gives each host ~11 attempts
+before expiry. Tune all three in `.env.prod`; startup fails unless
+`ROTATION_INTERVAL < RENEW_BEFORE < SSH_HOST_CERT_TTL`.
+
+Run exactly one `beat` per deployment. A host that stays unreachable
+through the whole renew window will expire — watch the worker logs for
+`host-cert rotation failed` and re-run `bootstrap-host` for it.
+
+**Upgrading from a version without the validity check:** older
+versions silently accepted expired host certs, so hubs and clients
+that haven't been provisioned in the last day are probably already
+expired. *Before* deploying, rotate every host with the old version
+still running (it tolerates expired certs), e.g.
+`POST /servers/{id}/rotate-host-cert` and
+`POST /clients/{id}/rotate-host-cert` for each row. Anything you miss
+will fail with `host cert expired` after the upgrade and needs
+`bootstrap-host`.
 
 ## What the self-bootstrap actually does
 

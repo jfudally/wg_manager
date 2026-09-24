@@ -37,6 +37,17 @@ celery_app.conf.update(
     result_expires=3600,
     timezone="UTC",
     enable_utc=True,
+    # Celery beat (the ``beat`` service in docker-compose.prod.yml, or
+    # ``make beat`` locally). Exactly one beat process must run per
+    # deployment, or each sweep is dispatched twice.
+    beat_schedule={
+        # Renew host certs before they expire — KnownHostsCAPolicy
+        # rejects expired ones. See rotate_expiring_host_certs_task.
+        "rotate-expiring-host-certs": {
+            "task": "wg_manager.tasks.rotate_expiring_host_certs",
+            "schedule": float(settings.ssh_host_cert_rotation_interval_seconds),
+        },
+    },
 )
 
 # Phase 3a cycle 1: importing the metrics module registers its

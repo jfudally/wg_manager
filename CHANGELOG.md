@@ -8,7 +8,37 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
+### Security
+
+- **`KnownHostsCAPolicy` now enforces the host cert's validity
+  window.** It previously checked only the signing CA, on the mistaken
+  assumption that sshd enforces the TTL (host-cert validity is checked
+  by the connecting client). wg-manager therefore accepted expired and
+  not-yet-valid CA-signed host certs indefinitely. Semantics match
+  OpenSSH: valid iff `valid_after <= now < valid_before`; the "forever"
+  sentinel is honoured. The untrusted-CA check still runs first so a
+  forged cert is never reported as merely expired.
+  ⚠️ **Upgrade:** rotate every server and client host cert *before*
+  deploying — see "Automatic host-cert renewal" in
+  `docs/deploy/single-host-prod.md`.
+
+- **Patched dependency advisories that failed `pip-audit` / `npm audit`.**
+  Python: anyio 4.14.2 (CVE-2026-63374, CVE-2026-64847), click 8.5.0
+  (PYSEC-2026-2132), cryptography 50.0.1 (PYSEC-2026-3552). Dashboard
+  (lockfile only): next 16.3.6, postcss 8.5.23, sharp 0.35.4, nanoid
+  3.3.19, baseline-browser-mapping 2.11.26.
+
 ### Added
+
+- **Automatic host-cert renewal via Celery beat.** New
+  `rotate_expiring_host_certs_task` fans out
+  `rotate_host_cert_task` / `rotate_client_host_cert_task` for every
+  ready server / SSH client whose cert expires within
+  `SSH_HOST_CERT_RENEW_BEFORE_SECONDS` (default 12h) or is untracked;
+  beat runs it every `SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS` (default
+  1h). Startup validates `interval < renew_before < ttl`. New `beat`
+  service in `docker-compose.prod.yml` (same image/env as the worker,
+  via YAML anchors) and `make beat` for local dev.
 
 - **Client host-cert tracking and rotation.** SSH-provisioned clients
   now get the same host-cert lifecycle as hubs, closing the gap where a
@@ -110,14 +140,6 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   failed whenever *any* unmerged branch held a finding. The scan (CI
   and `make gitleaks`) now passes `--log-opts=HEAD`, covering only the
   checked-out commit's full ancestry — main plus the PR's commits.
-
-### Security
-
-- **Patched dependency advisories that failed `pip-audit` / `npm audit`.**
-  Python: anyio 4.14.2 (CVE-2026-63374, CVE-2026-64847), click 8.5.0
-  (PYSEC-2026-2132), cryptography 50.0.1 (PYSEC-2026-3552). Dashboard
-  (lockfile only): next 16.3.6, postcss 8.5.23, sharp 0.35.4, nanoid
-  3.3.19, baseline-browser-mapping 2.11.26.
 
 ## [v0.5.0] - 2026-06-24
 

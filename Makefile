@@ -1,4 +1,4 @@
-.PHONY: help install test test-e2e test-e2e-tls run worker db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -20,6 +20,7 @@ help:
 	@echo "  e2e-logs       Tail the e2e sshd container logs"
 	@echo "  run            Start the FastAPI app with uvicorn (HOST=$(HOST) PORT=$(PORT))"
 	@echo "  worker         Start a Celery worker for the provisioning queue"
+	@echo "  beat           Start Celery beat (schedules the host-cert rotation sweep)"
 	@echo "  db-up          Start MySQL + Valkey via docker compose"
 	@echo "  db-down        Stop MySQL + Valkey"
 	@echo "  db-logs        Tail MySQL logs"
@@ -99,6 +100,9 @@ run:
 
 worker:
 	$(CELERY) -A wg_manager.celery_app worker --loglevel=info
+
+beat:
+	$(CELERY) -A wg_manager.celery_app beat --loglevel=info --schedule /tmp/wg-manager-celerybeat-schedule
 
 db-up:
 	docker compose up -d

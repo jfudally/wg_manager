@@ -346,6 +346,43 @@ class TestWorkerServiceShape:
 
 
 # ---------------------------------------------------------------------------
+# Beat (scheduler) service shape
+# ---------------------------------------------------------------------------
+
+
+class TestBeatServiceShape:
+    """Celery beat drives the host-cert rotation sweep.
+
+    Without it, ``KnownHostsCAPolicy``'s expiry enforcement would lock
+    wg-manager out of every host once its 24h host cert lapsed.
+    """
+
+    def test_beat_runs_celery_beat(self, services: dict) -> None:
+        cmd = services["beat"].get("command")
+        cmd_str = " ".join(map(str, cmd)) if isinstance(cmd, list) else str(cmd)
+        assert "wg_manager.celery_app" in cmd_str and " beat" in cmd_str, cmd
+        # The image's working dir isn't guaranteed writable; the
+        # schedule state file must live somewhere that is.
+        assert "--schedule" in cmd_str, cmd
+
+    def test_beat_shares_worker_environment(self, services: dict) -> None:
+        """Same env as the worker so both resolve identical Settings."""
+        assert _env(services["beat"]) == _env(services["worker"])
+
+    def test_beat_depends_on_broker(self, services: dict) -> None:
+        assert "valkey" in _depends_on_keys(services["beat"])
+
+    def test_exactly_one_beat(self, services: dict) -> None:
+        """Two schedulers would double-dispatch every sweep."""
+        beats = [
+            name
+            for name, svc in services.items()
+            if " beat" in " ".join(map(str, svc.get("command") or []))
+        ]
+        assert beats == ["beat"], beats
+
+
+# ---------------------------------------------------------------------------
 # Web (dashboard) service shape
 # ---------------------------------------------------------------------------
 

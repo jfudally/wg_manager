@@ -522,7 +522,8 @@ services:
       valkey:
         condition: service_healthy
     command: ["celery", "-A", "wg_manager.celery_app", "worker", "--loglevel=info"]
-    environment:
+    # Anchored so the `beat` service below resolves identical Settings.
+    environment: &worker-env
       DATABASE_URL: mysql+pymysql://${MYSQL_APP_USER:-wg}:${MYSQL_APP_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-wg_manager}
       CELERY_BROKER_URL: redis://:${VALKEY_PASSWORD}@valkey:6379/0
       CELERY_RESULT_BACKEND: redis://:${VALKEY_PASSWORD}@valkey:6379/0
@@ -546,11 +547,42 @@ services:
       # provisioning tasks see the operator's overrides.
       DEFAULT_SUBNET: ${DEFAULT_SUBNET:-10.9.0.0/24}
       DEFAULT_WG_PORT: ${DEFAULT_WG_PORT:-51820}
-    volumes:
+      # Host-cert auto-rotation (see the `beat` service). Validated at
+      # startup: ROTATION_INTERVAL < RENEW_BEFORE < SSH_HOST_CERT_TTL.
+      SSH_HOST_CERT_TTL_SECONDS: ${SSH_HOST_CERT_TTL_SECONDS:-86400}
+      SSH_HOST_CERT_RENEW_BEFORE_SECONDS: ${SSH_HOST_CERT_RENEW_BEFORE_SECONDS:-43200}
+      SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS: ${SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS:-3600}
+    volumes: &worker-volumes
       - ./tls:/app/tls:ro
       # Read-only — the entrypoint shim sources VAULT_TOKEN from this
       # file. bootstrap-substrate is the only writer.
       - ./vault-init.json:/app/vault-init.json:ro
+
+  # -------------------------------------------------------------------------
+  # NEW: Celery beat — the scheduler.
+  #
+  # Dispatches periodic tasks onto the broker for the worker to run.
+  # Today that's the host-cert rotation sweep: KnownHostsCAPolicy
+  # rejects expired host certs, so every hub / SSH client must be
+  # re-certified before its 24h cert lapses. Run EXACTLY ONE beat per
+  # deployment — a second one double-dispatches every sweep.
+  # Same image + env as the worker; the schedule state file lives in
+  # /tmp because the image's working dir isn't guaranteed writable.
+  # -------------------------------------------------------------------------
+  beat:
+    image: ${WG_MANAGER_IMAGE:-wg-manager:prod}
+    container_name: wg_manager_beat
+    restart: always
+    depends_on:
+      bootstrap-app:
+        condition: service_completed_successfully
+      valkey:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    command: ["celery", "-A", "wg_manager.celery_app", "beat", "--loglevel=info", "--schedule", "/tmp/celerybeat-schedule"]
+    environment: *worker-env
+    volumes: *worker-volumes
 
   # -------------------------------------------------------------------------
   # NEW: Next.js dashboard.
