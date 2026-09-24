@@ -10,6 +10,34 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Client host-cert tracking and rotation.** SSH-provisioned clients
+  now get the same host-cert lifecycle as hubs, closing the gap where a
+  client's cert expired after `SSH_HOST_CERT_TTL_SECONDS` (24h by
+  default) with no way to renew it short of re-running
+  `bootstrap-host`.
+
+  - **Alembic 0017** adds the six nullable `host_cert_*` columns to
+    `client` (same shape as 0006 on `server`).
+  - **`provision_client_task`** now installs + persists a fresh host
+    cert on every successful provision, matching `provision_server_task`.
+  - **`POST /clients/{id}/rotate-host-cert`** dispatches the new
+    `rotate_client_host_cert_task` (row-locked on `wgm:client:<id>`),
+    returning `202 {task_id, client}`. 404 for a missing client, 400
+    for a manual client, 409 when the SSH key row is gone. A failed
+    rotation leaves the client's status untouched.
+  - **`ClientRead`** exposes all six `host_cert_*` fields (serial,
+    principals, validity window, cert body, signing CA pubkey), matching
+    `ServerRead`.
+  - **Dashboard `/clients`** shows each SSH client's cert serial and
+    expiry, and adds a **Rotate cert** button. `HostCertSummary` moved
+    to `web/components/host-cert-summary.tsx` (shared with `/servers`)
+    and now shows sub-day expiries in hours instead of "0d". It also
+    parses the API's naive-UTC timestamps as UTC (via `parseApiDate`)
+    instead of local time, which had skewed the expiry hint by the
+    viewer's UTC offset — e.g. an expired cert read as valid in UTC−8.
+  - Tests: `tests/test_rotate_client_host_cert.py`,
+    `tests/test_alembic_0017.py`, `web/__tests__/clients-host-cert.test.tsx`.
+
 - **Register-client flow can now bootstrap the client in the same
   task**, matching the Register-server flow. Previously only
   `POST /servers` accepted the operator's OOB SSH key, so every

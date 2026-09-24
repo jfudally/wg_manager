@@ -18,6 +18,7 @@ import type {
   ClientDeleteResponse,
   ClientManualCreate,
   ClientManualRegisterResponse,
+  ClientHostCertRotateResponse,
   ClientRegisterResponse,
   ClientUpdate,
   CryptoStatus,
@@ -271,6 +272,17 @@ export const api = {
     request<ClientRegisterResponse>(`/clients/${id}/reprovision`, {
       method: "POST",
     }),
+  /**
+   * Re-mint and install an SSH client's host certificate. Returns 202
+   * with `{task_id, client}`; poll `taskStatus(task_id)` for the new
+   * serial / `valid_before`. `ApiError(400)` for manual clients (no SSH
+   * access), `ApiError(409)` when the client's SSH key row is gone.
+   */
+  rotateClientHostCert: (id: number) =>
+    request<ClientHostCertRotateResponse>(
+      `/clients/${id}/rotate-host-cert`,
+      { method: "POST" },
+    ),
   /** Partial-update a client. Only the supplied fields are PATCHed. */
   updateClient: (id: number, payload: ClientUpdate) =>
     request<Client>(`/clients/${id}`, { method: "PATCH", body: payload }),

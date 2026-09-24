@@ -28,6 +28,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/empty-state";
+import { HostCertSummary } from "@/components/host-cert-summary";
 import { TaskPoller } from "@/components/task-poller";
 import { formatDateTime } from "@/lib/utils";
 
@@ -246,6 +247,15 @@ function ClientTable({
       ),
   });
 
+  const rotateHostCert = useMutation({
+    mutationFn: (id: number) => api.rotateClientHostCert(id),
+    onSuccess: (data) =>
+      onTaskDispatched(
+        data.task_id,
+        `Rotate host cert for client #${data.client.id}`,
+      ),
+  });
+
   // Errors from a previous DELETE attempt — surfaced inline beneath the
   // table so the operator can see which row failed and why.
   const [deleteError, setDeleteError] = useState<{
@@ -327,6 +337,7 @@ function ClientTable({
                 {c.hostname ?? (
                   <span className="text-muted-foreground">—</span>
                 )}
+                <HostCertSummary node={c} />
               </TableCell>
               <TableCell className="font-mono text-xs">#{c.server_id}</TableCell>
               <TableCell className="font-mono text-xs">{c.address}</TableCell>
@@ -350,14 +361,25 @@ function ClientTable({
                     Manual
                   </span>
                 ) : (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => reprovision.mutate(c.id)}
-                    disabled={reprovision.isPending}
-                  >
-                    Reprovision
-                  </Button>
+                  <>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => reprovision.mutate(c.id)}
+                      disabled={reprovision.isPending}
+                    >
+                      Reprovision
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => rotateHostCert.mutate(c.id)}
+                      disabled={rotateHostCert.isPending}
+                      title="Re-mint the client's SSH host cert before it expires"
+                    >
+                      Rotate cert
+                    </Button>
+                  </>
                 )}
                 <Button
                   variant="ghost"
@@ -385,6 +407,11 @@ function ClientTable({
       {reprovision.isError ? (
         <Alert variant="error">
           {(reprovision.error as Error).message}
+        </Alert>
+      ) : null}
+      {rotateHostCert.isError ? (
+        <Alert variant="error">
+          {(rotateHostCert.error as Error).message}
         </Alert>
       ) : null}
       {deleteError ? (

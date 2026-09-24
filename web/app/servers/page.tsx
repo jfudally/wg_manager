@@ -27,8 +27,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { EmptyState } from "@/components/empty-state";
+import { HostCertSummary } from "@/components/host-cert-summary";
 import { TaskPoller } from "@/components/task-poller";
-import { cn, formatDateTime } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
 
 /**
  * Servers page. Each row exposes the three operations the API supports
@@ -279,7 +280,7 @@ function ServerTable({
               <TableCell className="font-mono text-xs">{s.id}</TableCell>
               <TableCell className="font-medium">
                 {s.hostname}
-                <HostCertSummary server={s} />
+                <HostCertSummary node={s} />
               </TableCell>
               <TableCell className="text-xs">
                 {s.endpoint_host}:{s.endpoint_port}
@@ -833,42 +834,5 @@ function EditServerForm({
         </form>
       </CardContent>
     </Card>
-  );
-}
-
-/**
- * Phase 2c CP3.4 — compact host-cert summary rendered under the
- * server hostname. Shows nothing when the row has no host cert minted
- * (legacy mode, or a pre-CP3 row that hasn't been re-provisioned).
- *
- * The rendered line is intentionally muted so operators reading the
- * table for routine work can skim past it; the "expires Xd" badge
- * goes amber inside 30 days and red once expired so a row about to
- * lose host-cert auth grabs attention.
- */
-function HostCertSummary({ server }: { server: Server }) {
-  if (!server.host_cert_serial || !server.host_cert_valid_before) {
-    return null;
-  }
-  const expires = new Date(server.host_cert_valid_before);
-  const now = Date.now();
-  const daysLeft = Math.floor(
-    (expires.getTime() - now) / (1000 * 60 * 60 * 24),
-  );
-  const expired = daysLeft < 0;
-  const warning = daysLeft < 30 && !expired;
-  return (
-    <div className="text-xs font-normal text-muted-foreground">
-      cert <span className="font-mono">#{server.host_cert_serial}</span>{" "}
-      ·{" "}
-      <span
-        className={cn(
-          expired && "font-medium text-destructive",
-          warning && "font-medium text-amber-600 dark:text-amber-400",
-        )}
-      >
-        {expired ? "expired" : `expires in ${daysLeft}d`}
-      </span>
-    </div>
   );
 }
