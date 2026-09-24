@@ -184,9 +184,12 @@ Notes:
 - `run` inherits the api service's env (`VAULT_ADDR=http://vault:8200`,
   `VAULT_TOKEN=…`, the four backend pins) so the CLI hits Vault on
   the docker network without any extra wiring.
-- Optional flags: `--principal <name>` (when the cert's host
-  principal differs from the SSH dial-name — typically internal
-  DNS vs public IP), `--ssh-key-passphrase <pass>` (or set
+- Optional flags: `--principal <name>` (adds an alias principal
+  alongside `--hostname`, e.g. internal DNS when you dial a public
+  IP — the cert always names the dial host, because
+  `KnownHostsCAPolicy` rejects a host cert that wasn't issued for the
+  host being dialed; register the row with the same `--hostname`),
+  `--ssh-key-passphrase <pass>` (or set
   `WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE`), `--ssh-port 22`,
   `--ttl-seconds 86400`, `--connect-timeout 15`.
 

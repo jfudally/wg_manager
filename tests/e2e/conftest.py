@@ -435,7 +435,11 @@ def installed_host_cert(
     """
     cert = vault_ssh_ca.mint_host_cert(
         public_key_openssh=sshd_container.host_pubkey_openssh,
-        principals=[sshd_container.hostname_principal],
+        # KnownHostsCAPolicy requires the dialed name (E2E_HOST) to be a
+        # principal — same as production, where the cert always names
+        # the row's hostname. The synthetic DNS name rides along as an
+        # alias, mirroring `bootstrap-host --principal`.
+        principals=[sshd_container.host, sshd_container.hostname_principal],
         ttl_seconds=300,
     )
     sshd_container.write_host_cert(cert.cert_pem)

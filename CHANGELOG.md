@@ -10,6 +10,22 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Security
 
+- **`KnownHostsCAPolicy` now checks the host cert was issued for the
+  host being dialed.** It previously accepted any cert signed by our CA,
+  so any managed host (e.g. a compromised client) could impersonate any
+  other — a hub included — under a DNS/ARP spoof. The dialed name must
+  now match one of the cert's principals (case-insensitive, trailing
+  dot ignored, paramiko's `[host]:port` form handled); wildcard certs
+  with no principals are refused. To avoid locking out legitimate
+  hosts: `SSHRunner` also accepts the principals recorded on the row's
+  last-issued cert (`host_cert_principals`), so a row renamed via
+  `PATCH` stays reachable until its next provision/rotation re-issues
+  the cert; and `bootstrap-host --principal X` now *adds* `X` as an
+  alias next to `--hostname` instead of replacing it. Hosts whose cert
+  names something other than the dial name and that wg-manager hasn't
+  re-certified since (e.g. bootstrapped with `--principal` but never
+  provisioned) need `bootstrap-host` re-run.
+
 - **`KnownHostsCAPolicy` now enforces the host cert's validity
   window.** It previously checked only the signing CA, on the mistaken
   assumption that sshd enforces the TTL (host-cert validity is checked

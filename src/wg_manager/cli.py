@@ -2398,8 +2398,9 @@ def bootstrap_host_cmd(
         "--hostname",
         "-H",
         help=(
-            "SSH-dial-name / IP of the target host. Also the cert "
-            "principal when --principal is not supplied."
+            "SSH-dial-name / IP of the target host. Always a cert "
+            "principal: wg-manager verifies the host cert names the "
+            "host it dials."
         ),
     ),
     ssh_key: Path = typer.Option(
@@ -2445,10 +2446,9 @@ def bootstrap_host_cmd(
         "--principal",
         "-p",
         help=(
-            "Cert principal baked into the new host cert. Defaults "
-            "to --hostname; pass a different value when the SSH "
-            "dial-name and the cert principal differ (e.g. public "
-            "IP vs internal DNS)."
+            "Extra principal (alias) added to the host cert alongside "
+            "--hostname, e.g. internal DNS when you dial a public IP. "
+            "Register the row with the same --hostname you pass here."
         ),
     ),
     ttl_seconds: int | None = typer.Option(

@@ -109,6 +109,9 @@ class FakeSSHRunner:
     # the runner then returns an empty stdout, which mirrors the real
     # not-yet-provisioned shape.
     SUPPRESS_HOST_PUBKEY: set[str] = set()
+    # Every construction records (host, accepted_principals) so tests can
+    # pin that tasks forward a row's previously issued cert principals.
+    ACCEPTED_PRINCIPALS: list[tuple[str, tuple[str, ...]]] = []
 
     def __init__(
         self,
@@ -121,6 +124,7 @@ class FakeSSHRunner:
         cert_pem: str | None = None,
         ca_public_key: str | None = None,
         connect_timeout: float = 15.0,
+        accepted_principals: tuple[str, ...] | list[str] = (),
     ) -> None:
         self.host = host
         self.port = port
@@ -132,6 +136,7 @@ class FakeSSHRunner:
         self.connect_timeout = connect_timeout
         FakeSSHRunner.KEYS_USED.append((host, pkey_pem, passphrase))
         FakeSSHRunner.CERTS_USED.append((host, cert_pem, ca_public_key, username))
+        FakeSSHRunner.ACCEPTED_PRINCIPALS.append((host, tuple(accepted_principals)))
 
     def __enter__(self) -> FakeSSHRunner:
         exc = FakeSSHRunner.RAISE_ON_ENTER.get(self.host)
@@ -282,6 +287,7 @@ def client(
     FakeSSHRunner.RAISE_ON_ENTER = {}
     FakeSSHRunner.KEYS_USED = []
     FakeSSHRunner.CERTS_USED = []
+    FakeSSHRunner.ACCEPTED_PRINCIPALS = []
     FakeSSHRunner.SUPPRESS_HOST_PUBKEY = set()
 
     # Swap SSHRunner as used inside the Celery tasks (import-time binding).
