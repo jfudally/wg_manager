@@ -111,6 +111,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Fixed
 
+- **`ServerRead` now returns the `host_cert_*` fields.** The six
+  Phase 2c CP3.1 columns were persisted on every provision/rotation but
+  never declared on the response schema, so `GET /servers`,
+  `GET /servers/{id}` and the rotate/register envelopes silently
+  dropped them and the dashboard's cert-expiry line never rendered
+  against a real API. Regression tests in `tests/test_rotate_host_cert.py`.
+
 - **`scripts/bootstrap_mysql_tls_files.py` now emits PKCS#8 EC keys.**
   Vault's PKI backend returns EC private keys wrapped in SEC1
   (``-----BEGIN EC PRIVATE KEY-----``), which MySQL 8.4 rejects at

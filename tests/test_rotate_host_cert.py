@@ -180,3 +180,50 @@ class TestRotateHostCertTask:
             # New cert is at least as far out as the old one (TTL
             # didn't shrink mid-test).
             assert row.host_cert_valid_before >= first_valid_before
+
+
+class TestServerReadExposesHostCert:
+    """``ServerRead`` must surface the ``host_cert_*`` columns.
+
+    Regression: the columns were persisted on every provision/rotation
+    but ``ServerRead`` never declared them, so the API silently dropped
+    them and the dashboard's cert-expiry line (``HostCertSummary``) could
+    never render against a real backend — its component test only
+    passed on stubbed data. The fields match the dashboard's ``Server``
+    type contract in ``web/lib/types.ts``. Cert body and CA pubkey are
+    public material, not secrets.
+    """
+
+    _FIELDS = (
+        "host_cert_serial",
+        "host_cert_principals",
+        "host_cert_valid_after",
+        "host_cert_valid_before",
+        "host_cert_pem",
+        "host_cert_ca_public_key",
+    )
+
+    def test_get_and_list_return_host_cert_fields(self, client: TestClient) -> None:
+        host = "read-hub.example.com"
+        server_id = _register_server(client, host)
+
+        one = client.get(f"/servers/{server_id}").json()
+        listed = next(s for s in client.get("/servers").json() if s["id"] == server_id)
+        for body in (one, listed):
+            for field in self._FIELDS:
+                assert body.get(field), f"{field} missing/empty in {sorted(body)}"
+            assert isinstance(body["host_cert_serial"], int)
+            assert body["host_cert_principals"] == host
+            assert body["host_cert_pem"].startswith("ssh-ed25519-cert-v01@openssh.com ")
+            assert body["host_cert_ca_public_key"].startswith("ssh-")
+
+    def test_rotate_response_carries_previous_cert(self, client: TestClient) -> None:
+        """The 202 envelope shows the pre-rotation cert, as documented."""
+        server_id = _register_server(client, "rot-read.example.com")
+        before = client.get(f"/servers/{server_id}").json()["host_cert_serial"]
+
+        resp = client.post(f"/servers/{server_id}/rotate-host-cert")
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["server"]["host_cert_serial"] == before
+        # Eager Celery already rotated; a fresh read shows the new cert.
+        assert client.get(f"/servers/{server_id}").json()["host_cert_serial"] != before
