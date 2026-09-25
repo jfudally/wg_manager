@@ -29,7 +29,6 @@ from typer.testing import CliRunner
 
 from wg_manager import cli
 
-
 # Secrets we plant in the test rows. Each is a unique, recognisable
 # string so a leak is unambiguous in the failure message.
 _PEM_BODY = "SCRUB-CANARY-PEM-BODY-DO-NOT-LEAK"

@@ -72,10 +72,9 @@ class TestEveryShippedTaskIsRegistered:
     )
 
     def test_every_task_name_present(self) -> None:
-        from wg_manager.celery_app import celery_app
-
         # Force the tasks module to import + register.
         import wg_manager.tasks  # noqa: F401
+        from wg_manager.celery_app import celery_app
 
         registered = set(celery_app.tasks.keys())
         missing = self._EXPECTED_TASK_NAMES - registered

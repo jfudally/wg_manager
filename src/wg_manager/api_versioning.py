@@ -21,7 +21,7 @@ than scattering header-writing logic across every router.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Any, Iterable
+from typing import Any
 
 from fastapi import FastAPI
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -31,7 +31,6 @@ from starlette.types import ASGIApp
 
 from wg_manager.audit import emit as _emit_audit
 from wg_manager.config import Settings
-
 
 # Paths that are operational/observability infrastructure rather
 # than user-facing API surface — we don't want to stamp

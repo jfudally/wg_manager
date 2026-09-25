@@ -40,8 +40,6 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.conftest import FakeSSHRunner, promote_all_keys_to_ca
-from wg_manager.models import NodeStatus, Server
-
 
 _SAMPLE_PEM = (
     "-----BEGIN OPENSSH PRIVATE KEY-----\n"

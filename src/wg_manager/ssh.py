@@ -39,7 +39,6 @@ from cryptography.hazmat.primitives.serialization import (
     load_ssh_public_identity,
 )
 
-
 # Paramiko 4.0.0's stock ``Transport._preferred_keys`` lists only the
 # bare host-key algorithms (``ssh-ed25519``, ``rsa-sha2-512``, …). During
 # the SSH KEX, sshd intersects its server-side list with the client's

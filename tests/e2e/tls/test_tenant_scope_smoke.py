@@ -32,10 +32,9 @@ from pathlib import Path
 
 import httpx
 import pytest
-from sqlmodel import Session, SQLModel, create_engine, select
+from sqlmodel import Session, create_engine, select
 
 from tests.e2e.tls.conftest import LiveAPIEnv
-
 
 pytestmark = pytest.mark.e2e_tls
 
@@ -78,8 +77,8 @@ def _seed_multi_tenant(env: LiveAPIEnv) -> dict[str, int]:
         OperatorRole,
         OperatorStatus,
         OperatorTenant,
-        SSHKey,
         Server,
+        SSHKey,
         Tenant,
     )
 

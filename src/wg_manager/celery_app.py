@@ -12,7 +12,6 @@ from celery import Celery
 
 from wg_manager.config import settings
 
-
 celery_app = Celery(
     "wg_manager",
     broker=settings.celery_broker_url,

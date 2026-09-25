@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from wg_manager.vault_audit import (
     DEFAULT_AUDIT_DEVICE_PATH,
     DEFAULT_LOG_FILE_PATH,

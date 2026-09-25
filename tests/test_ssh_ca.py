@@ -50,7 +50,6 @@ from wg_manager.ssh_ca import (
     make_ssh_ca_backend,
 )
 
-
 # ---------------------------------------------------------------------------
 # Vault availability probe (copy of test_crypto.py pattern; intentional dup —
 # we don't want a test-helpers import graph for two callers).

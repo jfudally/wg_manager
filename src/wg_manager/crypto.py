@@ -51,7 +51,6 @@ from hvac.exceptions import VaultError as HvacVaultError
 
 from wg_manager.config import Settings
 
-
 # ---------------------------------------------------------------------------
 # Errors
 # ---------------------------------------------------------------------------

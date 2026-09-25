@@ -14,7 +14,6 @@ until the Celery task reaches a terminal state.
 from __future__ import annotations
 
 import json
-import os
 import time
 from datetime import datetime
 from enum import Enum
@@ -716,7 +715,7 @@ def db_backup(
     """
     from sqlmodel import Session, select
 
-    from wg_manager.models import Client, SSHKey, Server
+    from wg_manager.models import Client, Server, SSHKey
 
     engine = _get_engine(database_url)
     table_map: dict[str, type] = {
@@ -802,7 +801,7 @@ def db_restore(
     """
     from sqlmodel import Session, select
 
-    from wg_manager.models import Client, NodeStatus, SSHKey, Server
+    from wg_manager.models import Client, NodeStatus, Server, SSHKey
 
     raw_text = input_file.read_text()
     try:
@@ -1415,7 +1414,8 @@ def certs_revoke(
     exits non-zero with the serial named in the error so a typo is
     easy to spot.
     """
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
 
     from sqlmodel import Session
 
@@ -1469,7 +1469,7 @@ def _renew_row(
     full triple, :class:`RuntimeError` is raised so the operator gets
     a clear message instead of partial files.
     """
-    from wg_manager.models import Certificate, CertificateType
+    from wg_manager.models import Certificate
 
     cert_path = out_cert or (
         Path(row.out_cert_path) if row.out_cert_path else None
@@ -1646,7 +1646,8 @@ def certs_renew(
     is the knob operators tune to trade rotation churn for headroom
     before expiry.
     """
-    from datetime import datetime as _dt, timezone as _tz
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
 
     from sqlmodel import Session
 

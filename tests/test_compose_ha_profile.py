@@ -17,7 +17,6 @@ unprofiles the data tier trips a clear test failure before merge.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from pathlib import Path
 
 import pytest

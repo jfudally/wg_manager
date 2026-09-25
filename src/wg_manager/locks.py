@@ -40,7 +40,6 @@ from typing import Iterator
 from sqlalchemy import text
 from sqlmodel import Session
 
-
 # Conservative default — wait at most this long for another worker
 # to finish. In practice the tasks are short (seconds), so a few
 # seconds of patience absorbs the common "two workers picked up

@@ -35,8 +35,8 @@ from wg_manager.models import (
     Client,
     DiscoveredPeer,
     NodeStatus,
-    SSHKey,
     Server,
+    SSHKey,
 )
 from wg_manager.ssh import SSHCommandError, SSHConnectionError, SSHRunner
 from wg_manager.ssh_ca import HostCert, SSHCAError, make_ssh_ca_backend

@@ -40,7 +40,6 @@ from wg_manager.host_ssh import (
 from wg_manager.models import Server
 from wg_manager.ssh_ca import HostCert, LocalDevSSHCA
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------

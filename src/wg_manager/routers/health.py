@@ -36,7 +36,6 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
 
-
 # Path constants exported so :class:`MTLSAuthMiddleware.is_health_path`
 # can match without importing the router (which would pull FastAPI
 # into the auth path).

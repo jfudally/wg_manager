@@ -32,9 +32,9 @@ doesn't lock the operator out of their own API.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable
+from typing import Any
 
 from cryptography import x509
 from fastapi import HTTPException, Request, status
@@ -45,7 +45,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp
 
 from wg_manager import db as db_module
-from wg_manager.audit import audit_logger, emit as _emit_audit
+from wg_manager.audit import emit as _emit_audit
 from wg_manager.config import Settings
 from wg_manager.models import (
     Certificate,

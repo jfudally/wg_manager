@@ -398,7 +398,7 @@ class TestWebServiceShape:
         image_ref = str(svc.get("image", "")).lower()
         has_image = "wg-manager" in image_ref or "wg_manager" in image_ref
         assert has_build or has_image, (
-            f"web service must either build web/Dockerfile or pull a "
+            "web service must either build web/Dockerfile or pull a "
             "published wg-manager-web image."
         )
 

@@ -36,8 +36,7 @@ from cryptography import x509
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
-from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
-from hvac.exceptions import InvalidRequest as HvacInvalidRequest
+from cryptography.x509.oid import ExtendedKeyUsageOID
 
 from wg_manager.config import Settings
 from wg_manager.pki import (
@@ -48,7 +47,6 @@ from wg_manager.pki import (
     VaultPKI,
     make_pki_backend,
 )
-
 
 # ---------------------------------------------------------------------------
 # Vault availability probe (mirrors tests/test_ssh_ca.py)

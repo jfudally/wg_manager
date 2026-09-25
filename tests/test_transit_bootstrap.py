@@ -19,8 +19,6 @@ end-to-end smoke (curl ``/v1/crypto/status`` returns 200, not 500).
 
 from __future__ import annotations
 
-import os
-import stat
 from pathlib import Path
 
 import pytest

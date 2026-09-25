@@ -31,26 +31,17 @@ helper across ``/servers`` and ``/clients``.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
-
-import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from wg_manager import db as db_module
-from wg_manager.auth import CertSubject
 from wg_manager.main import app
 from wg_manager.models import (
-    Operator,
     OperatorRole,
-    OperatorStatus,
-    OperatorTenant,
     SSHKey,
     Tenant,
 )
 from wg_manager.tenant_scope import TenantScope, get_tenant_scope
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -283,7 +274,6 @@ class TestServersCreateTenantResolution:
     def _ssh_key(self, name: str) -> int:
         """Register an SSH key in the default tenant (super-admin
         path so the cycle 5 resolver doesn't intercept)."""
-        from wg_manager.models import SSHKey
 
         with Session(db_module.engine) as session:
             row = SSHKey(name=name, tenant_id=1)

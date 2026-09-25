@@ -56,7 +56,6 @@ from typing import Any
 import pytest
 from sqlmodel import Session, select
 
-
 # ---------------------------------------------------------------------------
 # canonical_json_hash
 # ---------------------------------------------------------------------------

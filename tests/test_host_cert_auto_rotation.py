@@ -23,7 +23,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from wg_manager.models import Client, NodeStatus, SSHKey, Server
+from wg_manager.models import Client, NodeStatus, Server, SSHKey
 
 
 def _utc(hours_from_now: float) -> datetime:

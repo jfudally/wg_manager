@@ -50,7 +50,6 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "0012_add_certificate_out_paths"
 down_revision: Union[str, None] = "0011_add_certificate_table"
 branch_labels: Union[str, Sequence[str], None] = None

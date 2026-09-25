@@ -31,7 +31,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # /healthz — process liveness
 # ---------------------------------------------------------------------------

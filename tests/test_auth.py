@@ -38,18 +38,16 @@ shape it will see in production rather than a mocked stand-in.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-
 from fastapi import Depends, FastAPI, Request
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 from starlette.types import ASGIApp, Receive, Scope, Send
-
-import json
 
 from wg_manager.auth import (
     AuthError,

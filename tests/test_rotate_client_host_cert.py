@@ -31,7 +31,6 @@ from sqlmodel import Session
 from tests.conftest import FakeSSHRunner
 from wg_manager.models import Client, NodeStatus
 
-
 _CLIENT_HOST = "spoke.example.com"
 
 

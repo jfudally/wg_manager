@@ -29,15 +29,11 @@ re-use the same helper and pick up the same behaviour.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from wg_manager import db as db_module
-from wg_manager.auth import CertSubject
 from wg_manager.main import app
 from wg_manager.models import (
     Operator,
@@ -54,7 +50,6 @@ from wg_manager.tenant_scope import (
     require_tenant_role,
     scope_filter,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

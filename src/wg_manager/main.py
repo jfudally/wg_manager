@@ -15,7 +15,6 @@ from wg_manager.api_versioning import DeprecationMiddleware, build_v1_openapi
 from wg_manager.auth import MTLSAuthMiddleware
 from wg_manager.config import Settings, settings
 from wg_manager.metrics import MetricsMiddleware, metrics_response
-from wg_manager.tracing import setup_tracing
 from wg_manager.routers import (
     audit,
     certs,
@@ -27,6 +26,7 @@ from wg_manager.routers import (
     tasks,
     tenants,
 )
+from wg_manager.tracing import setup_tracing
 
 # uvicorn 0.44 doesn't implement the ASGI-TLS extension natively
 # (encode/uvicorn#1530). Patch it at import time so the auth middleware

@@ -24,7 +24,6 @@ from wg_manager.models import DiscoveredPeer, NodeStatus, Server
 from wg_manager.ssh import SSHConnectionError
 from wg_manager.tasks import (
     discover_peers_task,
-    provision_client_task,
     provision_server_task,
 )
 

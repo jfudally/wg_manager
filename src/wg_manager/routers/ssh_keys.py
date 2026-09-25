@@ -24,7 +24,7 @@ from sqlmodel import Session, select
 
 from wg_manager import audit
 from wg_manager.db import get_session
-from wg_manager.models import Client, OperatorRole, SSHKey, Server
+from wg_manager.models import Client, OperatorRole, Server, SSHKey
 from wg_manager.schemas import SSHKeyCreate, SSHKeyRead, SSHKeyUpdate
 from wg_manager.tenant_scope import (
     ScopeDep,

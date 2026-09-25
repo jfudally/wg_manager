@@ -22,7 +22,6 @@ import pytest
 from wg_manager.config import Settings
 from wg_manager.db import _build_engine, _resolve_mysql_ssl
 
-
 # ---------------------------------------------------------------------------
 # _resolve_mysql_ssl — the pure helper that maps Settings → connect args
 # ---------------------------------------------------------------------------

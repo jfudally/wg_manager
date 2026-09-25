@@ -80,7 +80,7 @@ def main() -> int:
         print(f"ERROR: bootstrap failed: {exc}", file=sys.stderr)
         return 1
 
-    print(f"[OK] PKI configured")
+    print("[OK] PKI configured")
     print(f"     root mount:         {settings.pki_vault_root_mount}")
     print(f"     intermediate mount: {settings.pki_vault_int_mount}")
     print(f"     server role:        {settings.pki_vault_server_role}")

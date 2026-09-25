@@ -49,14 +49,13 @@ import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from wg_manager.bootstrap_ssh import BootstrapSSHRunner, bootstrap_host
-from wg_manager.ssh import SSHConnectionError, SSHRunner
-from wg_manager.ssh_ca import VaultSSHCA
-
 from tests.e2e.conftest import (
     E2E_CONTAINER,
     E2EEnv,
 )
+from wg_manager.bootstrap_ssh import BootstrapSSHRunner, bootstrap_host
+from wg_manager.ssh import SSHConnectionError, SSHRunner
+from wg_manager.ssh_ca import VaultSSHCA
 
 
 def _docker(*args: str, input_text: str | None = None) -> subprocess.CompletedProcess[str]:

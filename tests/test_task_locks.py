@@ -32,7 +32,6 @@ from sqlmodel import Session
 
 from tests.conftest import FakeSSHRunner
 
-
 _SAMPLE_PEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKEBODY\n-----END OPENSSH PRIVATE KEY-----\n"
 _SAMPLE_PEM_B64 = base64.b64encode(_SAMPLE_PEM.encode("utf-8")).decode("ascii")
 
@@ -218,7 +217,7 @@ class TestEachTaskSkipsOnContention:
         # Seed a row directly (bypass the POST which would itself
         # fire the task). Then drive provision_server_task with a
         # contended lock.
-        from wg_manager.models import NodeStatus, SSHKey, Server
+        from wg_manager.models import NodeStatus, Server, SSHKey
 
         with Session(engine) as s:
             key = SSHKey(name="lab", tenant_id=1)
@@ -264,7 +263,7 @@ class TestEachTaskSkipsOnContention:
         engine: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from wg_manager.models import NodeStatus, SSHKey, Server
+        from wg_manager.models import NodeStatus, Server, SSHKey
 
         with Session(engine) as s:
             key = SSHKey(name="lab", tenant_id=1)
@@ -301,7 +300,7 @@ class TestEachTaskSkipsOnContention:
         engine: Any,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        from wg_manager.models import NodeStatus, SSHKey, Server
+        from wg_manager.models import NodeStatus, Server, SSHKey
 
         with Session(engine) as s:
             key = SSHKey(name="lab", tenant_id=1)
@@ -340,9 +339,11 @@ class TestEachTaskSkipsOnContention:
     ) -> None:
         from wg_manager.models import (
             Client as ClientRow,
+        )
+        from wg_manager.models import (
             NodeStatus,
-            SSHKey,
             Server,
+            SSHKey,
         )
 
         with Session(engine) as s:

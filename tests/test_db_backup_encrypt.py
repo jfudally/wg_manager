@@ -43,8 +43,7 @@ from typer.testing import CliRunner
 
 from wg_manager import cli
 from wg_manager import db as db_module
-from wg_manager.models import NodeStatus, SSHKey, Server
-
+from wg_manager.models import NodeStatus, Server, SSHKey
 
 # ---------------------------------------------------------------------------
 # Fixtures

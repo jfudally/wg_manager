@@ -54,7 +54,6 @@ from sqlmodel import Session, select
 from wg_manager import db as db_module
 from wg_manager.models import AuditEvent, OperatorRole
 
-
 _SAMPLE_PEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKEBODY\n-----END OPENSSH PRIVATE KEY-----\n"
 _SAMPLE_PEM_B64 = base64.b64encode(_SAMPLE_PEM.encode("utf-8")).decode("ascii")
 

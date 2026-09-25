@@ -20,10 +20,9 @@ from __future__ import annotations
 
 import pytest
 
+from tests.e2e.conftest import E2EEnv
 from wg_manager.ssh import SSHConnectionError, SSHRunner
 from wg_manager.ssh_ca import LocalDevSSHCA, VaultSSHCA
-
-from tests.e2e.conftest import E2EEnv
 
 
 def test_client_rejects_host_cert_from_attacker_ca(
