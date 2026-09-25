@@ -67,6 +67,18 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   intentional single-quoted text) now carry targeted `disable` comments
   explaining why.
 
+- **Host migration runbook and tooling.** New runbook
+  [`docs/runbooks/host-migration.md`](docs/runbooks/host-migration.md)
+  plus `scripts/migrate_host.sh`, wired up as `make host-export o=DIR`,
+  `make host-import i=DIR` and `make db-counts`. Export makes a cold,
+  checksummed copy of the stopped prod stack: the MySQL, Vault-storage
+  and Vault-audit volumes plus `.env.prod`, `vault-init.json`, `tls/`
+  and `backups/`, with numeric ownership preserved. It also records the
+  git commit, compose project and data-tier image digests. Import
+  refuses to run against a running stack, a bad checksum, a different
+  commit or project name, or existing volumes or files. `db-counts`
+  prints exact per-table row counts for a before/after diff.
+
 - **Ruff lint gate.** New `lint` job in CI runs `make lint`
   (`ruff check`), with `make fmt` to apply safe auto-fixes. Ruff is
   pinned to 0.16.9 in the `dev` extra; `[tool.ruff]` in

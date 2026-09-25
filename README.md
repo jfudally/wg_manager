@@ -189,6 +189,7 @@ The release page also attaches `sbom-api.cdx.json` +
 | Incident response — key compromise | [`docs/runbooks/key-compromise.md`](docs/runbooks/key-compromise.md) |
 | Incident response — Vault down | [`docs/runbooks/vault-down.md`](docs/runbooks/vault-down.md) |
 | Backup + restore drill | [`docs/runbooks/backup-restore.md`](docs/runbooks/backup-restore.md) |
+| Migrate the prod stack to a new host | [`docs/runbooks/host-migration.md`](docs/runbooks/host-migration.md) |
 | Observability: metrics + Grafana dashboard | [`docs/observability.md`](docs/observability.md) |
 
 ## Development

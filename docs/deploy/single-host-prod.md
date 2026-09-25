@@ -401,9 +401,18 @@ make db-backup o=backups/wg-$(date +%F).json    # Phase 2e CP3 — encrypted DB 
 make backup-vault                                # Phase 2e CP5 — Vault raft snapshot (no-op in dev mode)
 ```
 
-Encrypted DB dumps go in `backups/`; the Vault snapshot target is a
-no-op against dev mode (there's no raft store to snapshot) and
-becomes useful when the Phase 2e Vault production cycle lands.
+Encrypted DB dumps go in `backups/`. `make backup-vault` doesn't work
+against this stack: its Vault uses `storage "file"`, which has no raft
+snapshots. To capture Vault, stop the stack and copy the
+`wg_manager_vault_data` volume together with `vault-init.json`.
+`make host-export` does exactly that.
+
+### Moving to a new host
+
+Follow [`docs/runbooks/host-migration.md`](../runbooks/host-migration.md).
+`make host-export` on the stopped old host, `make host-import` on the
+new one, and `make db-counts` before and after to prove no rows were
+lost.
 
 ## Upgrade path to HA
 

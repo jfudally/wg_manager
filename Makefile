@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -62,6 +62,9 @@ help:
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
 	@echo "  certs-rotate   Re-mint MySQL + API + operator CLI certs and bounce mysql/api/worker/web"
 	@echo "  certs-rotate-if-due  Run certs-rotate only if a TLS leaf is past half its lifetime (for a timer)"
+	@echo "  host-export o=DIR  Bundle the STOPPED prod stack's volumes + secrets for a host move (docs/runbooks/host-migration.md)"
+	@echo "  host-import i=DIR  Restore a host-export bundle onto this host (refuses to overwrite existing state)"
+	@echo "  db-counts      Print exact per-table row counts from the prod MySQL (diff before/after a host move)"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
 	@echo "  npm-audit      Run npm audit --omit=dev against the dashboard deps"
@@ -225,6 +228,21 @@ certs-rotate:
 # Exits non-zero, without rotating, if the check itself fails.
 certs-rotate-if-due:
 	@PROD_COMPOSE="$(PROD_COMPOSE)" MAKE="$(MAKE)" scripts/certs_rotate_if_due.sh
+
+# ---------------------------------------------------------------------------
+# Host migration — cold copy of the prod stack to a new box.
+# See docs/runbooks/host-migration.md for the full procedure.
+# ---------------------------------------------------------------------------
+host-export:
+	@if [ -z "$(o)" ]; then echo "usage: make host-export o=DIR"; exit 2; fi
+	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/migrate_host.sh export "$(o)"
+
+host-import:
+	@if [ -z "$(i)" ]; then echo "usage: make host-import i=DIR"; exit 2; fi
+	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/migrate_host.sh import "$(i)"
+
+db-counts:
+	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/migrate_host.sh counts
 
 migrate:
 	$(ALEMBIC) upgrade head
