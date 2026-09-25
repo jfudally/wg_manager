@@ -60,6 +60,11 @@ dev = [
     # exactly: a ruff minor release can add rules or change fixes, and the
     # gate should only move when this pin does.
     "ruff==0.16.9",
+    # Shell linter for ``make shellcheck`` and the CI shellcheck job. The
+    # wheel ships the upstream static binary, so it installs through uv
+    # like everything else instead of via apt (whose version drifts with
+    # the runner image). Pinned exactly for the same reason as ruff.
+    "shellcheck-py==0.11.0.1",
 ]
 
 [build-system]

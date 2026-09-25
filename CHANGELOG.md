@@ -59,6 +59,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **shellcheck CI gate.** `make shellcheck` runs shellcheck over every
+  tracked `*.sh` file, and a new `Lint (shellcheck)` job in `ci.yml` runs
+  it on every push and PR. shellcheck is pinned in the dev extra
+  (`shellcheck-py==0.11.0.1`), the same way as ruff. `.shellcheckrc` lets
+  it follow `source` directives. The three existing findings (all
+  intentional single-quoted text) now carry targeted `disable` comments
+  explaining why.
+
 - **Ruff lint gate.** New `lint` job in CI runs `make lint`
   (`ruff check`), with `make fmt` to apply safe auto-fixes. Ruff is
   pinned to 0.16.9 in the `dev` extra; `[tool.ruff]` in

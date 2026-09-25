@@ -247,6 +247,7 @@ sys.stdout.write(addr.split("/")[0])
   # instead of the config (wg-quick then failed with "Line unrecognized").
   # Keep these two channels separate: script via argv, config via stdin.
   local remote_script
+  # shellcheck disable=SC2016  # expanded by the remote bash, not locally
   remote_script='
 set -euo pipefail
 iface="$1"

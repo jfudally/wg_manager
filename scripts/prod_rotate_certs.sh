@@ -85,4 +85,5 @@ chown -R 1001:1001 "${TLS_DIR}"
 echo "==> Widening *.key modes to 0644 so non-1001 container UIDs can read ..."
 find "${TLS_DIR}" -type f -name "*.key" -exec chmod 0644 {} \;
 
+# shellcheck disable=SC2016  # the backticks are literal text, not a command
 echo '==> Rotation complete. `make certs-rotate` will now restart the runtime tier.'
