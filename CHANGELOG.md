@@ -8,54 +8,9 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
-- **Provisioning no longer fails on hosts that have a WireGuard
-  `privatekey` but no `publickey`.** `_ensure_keypair` skipped key
-  generation whenever `/etc/wireguard/privatekey` existed, then read
-  `/etc/wireguard/publickey`, so a host with a hand-rolled or partial
-  WireGuard setup failed with `cat: /etc/wireguard/publickey: No such
-  file or directory`. The public key is now always derived from the
-  private key (`wg pubkey < privatekey`) and rewritten to `publickey`,
-  which also corrects a stale `publickey` that no longer matched the
-  private key. Existing private keys are still never overwritten, and
-  new ones are created under `umask 077`.
-
-### Security
-
-- **`KnownHostsCAPolicy` now checks the host cert was issued for the
-  host being dialed.** It previously accepted any cert signed by our CA,
-  so any managed host (e.g. a compromised client) could impersonate any
-  other — a hub included — under a DNS/ARP spoof. The dialed name must
-  now match one of the cert's principals (case-insensitive, trailing
-  dot ignored, paramiko's `[host]:port` form handled); wildcard certs
-  with no principals are refused. To avoid locking out legitimate
-  hosts: `SSHRunner` also accepts the principals recorded on the row's
-  last-issued cert (`host_cert_principals`), so a row renamed via
-  `PATCH` stays reachable until its next provision/rotation re-issues
-  the cert; and `bootstrap-host --principal X` now *adds* `X` as an
-  alias next to `--hostname` instead of replacing it. Hosts whose cert
-  names something other than the dial name and that wg-manager hasn't
-  re-certified since (e.g. bootstrapped with `--principal` but never
-  provisioned) need `bootstrap-host` re-run.
-
-- **`KnownHostsCAPolicy` now enforces the host cert's validity
-  window.** It previously checked only the signing CA, on the mistaken
-  assumption that sshd enforces the TTL (host-cert validity is checked
-  by the connecting client). wg-manager therefore accepted expired and
-  not-yet-valid CA-signed host certs indefinitely. Semantics match
-  OpenSSH: valid iff `valid_after <= now < valid_before`; the "forever"
-  sentinel is honoured. The untrusted-CA check still runs first so a
-  forged cert is never reported as merely expired.
-  ⚠️ **Upgrade:** rotate every server and client host cert *before*
-  deploying — see "Automatic host-cert renewal" in
-  `docs/deploy/single-host-prod.md`.
-
-- **Patched dependency advisories that failed `pip-audit` / `npm audit`.**
-  Python: anyio 4.14.2 (CVE-2026-63374, CVE-2026-64847), click 8.5.0
-  (PYSEC-2026-2132), cryptography 50.0.1 (PYSEC-2026-3552). Dashboard
-  (lockfile only): next 16.3.6, postcss 8.5.23, sharp 0.35.4, nanoid
-  3.3.19, baseline-browser-mapping 2.11.26.
+## [v0.6.0] - 2026-09-25
 
 ### Added
 
@@ -177,6 +132,17 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Fixed
 
+- **Provisioning no longer fails on hosts that have a WireGuard
+  `privatekey` but no `publickey`.** `_ensure_keypair` skipped key
+  generation whenever `/etc/wireguard/privatekey` existed, then read
+  `/etc/wireguard/publickey`, so a host with a hand-rolled or partial
+  WireGuard setup failed with `cat: /etc/wireguard/publickey: No such
+  file or directory`. The public key is now always derived from the
+  private key (`wg pubkey < privatekey`) and rewritten to `publickey`,
+  which also corrects a stale `publickey` that no longer matched the
+  private key. Existing private keys are still never overwritten, and
+  new ones are created under `umask 077`.
+
 - **`wg-manager certs renew --due` no longer re-renews certs it
   already renewed.** Renewal keeps the source audit row live as the
   rotation trail, and the walker kept treating it as due, so every
@@ -221,6 +187,42 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   failed whenever *any* unmerged branch held a finding. The scan (CI
   and `make gitleaks`) now passes `--log-opts=HEAD`, covering only the
   checked-out commit's full ancestry — main plus the PR's commits.
+
+### Security
+
+- **`KnownHostsCAPolicy` now checks the host cert was issued for the
+  host being dialed.** It previously accepted any cert signed by our CA,
+  so any managed host (e.g. a compromised client) could impersonate any
+  other — a hub included — under a DNS/ARP spoof. The dialed name must
+  now match one of the cert's principals (case-insensitive, trailing
+  dot ignored, paramiko's `[host]:port` form handled); wildcard certs
+  with no principals are refused. To avoid locking out legitimate
+  hosts: `SSHRunner` also accepts the principals recorded on the row's
+  last-issued cert (`host_cert_principals`), so a row renamed via
+  `PATCH` stays reachable until its next provision/rotation re-issues
+  the cert; and `bootstrap-host --principal X` now *adds* `X` as an
+  alias next to `--hostname` instead of replacing it. Hosts whose cert
+  names something other than the dial name and that wg-manager hasn't
+  re-certified since (e.g. bootstrapped with `--principal` but never
+  provisioned) need `bootstrap-host` re-run.
+
+- **`KnownHostsCAPolicy` now enforces the host cert's validity
+  window.** It previously checked only the signing CA, on the mistaken
+  assumption that sshd enforces the TTL (host-cert validity is checked
+  by the connecting client). wg-manager therefore accepted expired and
+  not-yet-valid CA-signed host certs indefinitely. Semantics match
+  OpenSSH: valid iff `valid_after <= now < valid_before`; the "forever"
+  sentinel is honoured. The untrusted-CA check still runs first so a
+  forged cert is never reported as merely expired.
+  ⚠️ **Upgrade:** rotate every server and client host cert *before*
+  deploying — see "Automatic host-cert renewal" in
+  `docs/deploy/single-host-prod.md`.
+
+- **Patched dependency advisories that failed `pip-audit` / `npm audit`.**
+  Python: anyio 4.14.2 (CVE-2026-63374, CVE-2026-64847), click 8.5.0
+  (PYSEC-2026-2132), cryptography 50.0.1 (PYSEC-2026-3552). Dashboard
+  (lockfile only): next 16.3.6, postcss 8.5.23, sharp 0.35.4, nanoid
+  3.3.19, baseline-browser-mapping 2.11.26.
 
 ## [v0.5.0] - 2026-06-24
 
