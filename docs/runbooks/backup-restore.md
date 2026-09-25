@@ -26,6 +26,16 @@ Companion docs:
 - [`docs/runbooks/key-compromise.md`](key-compromise.md) — if you
   are restoring after a leaked-backup scenario, read the
   Verification section there before turning the new deployment on.
+- [`docs/runbooks/host-migration.md`](host-migration.md) — moving
+  the stack to a new machine. Use that runbook, not this one:
+  it copies the stopped volumes byte-for-byte.
+
+> **Single-host Compose stack (`make prod-up`):** its Vault uses
+> `storage "file"`, not raft, so the `vault operator raft snapshot`
+> commands below don't work against it. Back up that Vault by copying
+> the stopped `wg_manager_vault_data` volume (`make host-export` does
+> this, see [`host-migration.md`](host-migration.md)), together with
+> `vault-init.json`.
 
 ---
 
