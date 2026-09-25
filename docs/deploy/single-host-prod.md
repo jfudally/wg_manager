@@ -380,6 +380,17 @@ The box rebooting brings the stack back up unattended provided:
 | **Single Celery worker** | Throughput ceiling at one worker's CPU. | Scale the worker service horizontally — Phase 3d cycle 3's per-row advisory locks make it safe. |
 | **`/healthz` + `/readyz` require a client cert despite the Phase 3d cycle 1 doc claim of mTLS bypass** | LB probes must carry a client cert; the in-container Compose healthcheck does so via the operator client cert. | Code-side cycle (planned) flips uvicorn from `ssl.CERT_REQUIRED` to `ssl.CERT_OPTIONAL` so the app-layer `MTLSAuthMiddleware` exemption actually fires. Until then: every probe carries `--cert/--key`. |
 
+### TLS cert rotation
+
+The TLS leaves in `tls/` are issued for 30 days (MySQL server +
+client, API server) or 365 days (operator CLI), and the containers
+only load them at startup. `make certs-rotate` re-mints all of them and
+restarts the stack. To automate it, point an hourly systemd timer at
+`make certs-rotate-if-due`, which only rotates once a leaf has used
+half its lifetime. The unit files are in
+[`systemd-timer.md`](systemd-timer.md#docker-compose-prod-stack-make-prod-up).
+Without the timer, nothing rotates these certs.
+
 ### Backups
 
 The Phase 2e backup tooling covers the two pieces of state that

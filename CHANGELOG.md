@@ -67,6 +67,15 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   (mostly import ordering and unused imports). pyupgrade, pylint and
   `ruff format` are not enforced yet.
 
+- **`make certs-rotate-if-due`** for automatic TLS rotation on the
+  Compose prod stack. `scripts/certs_due.py` checks the leaves
+  `make certs-rotate` rewrites (MySQL server/client, API server,
+  operator CLI) and runs `make certs-rotate` once one has used 50% of
+  its lifetime. If the check itself fails, it exits non-zero without
+  rotating. Meant to run hourly from a host systemd timer; the units
+  are in `docs/deploy/systemd-timer.md`. Previously nothing rotated
+  these certs automatically on the Compose stack.
+
 - **Automatic host-cert renewal via Celery beat.** New
   `rotate_expiring_host_certs_task` fans out
   `rotate_host_cert_task` / `rotate_client_host_cert_task` for every

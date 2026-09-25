@@ -117,8 +117,10 @@ deploy today:
    already ships the `require_secure_transport=ON` my.cnf drop-in;
    the engine has to hand pymysql the matching client cert for the
    handshake to complete.
-3. **Wire up `wg-manager certs renew --due` on a systemd timer**
-   (see [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)).
+3. **Put cert rotation on a systemd timer**: `make certs-rotate-if-due`
+   on the Docker Compose prod stack, or `wg-manager certs renew --due`
+   on a bare-metal install (see
+   [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md)).
    The 30-day defaults on `api` / `mysql` / `mysql-client` leaves
    little headroom if rotation is manual.
 4. Restrict the MySQL user to the smallest grant set that still works

@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -59,6 +59,7 @@ help:
 	@echo "                 Idempotently enable the Vault Transit engine + master key (Phase 2b)"
 	@echo "  mysql-tls-issue  Mint the MySQL server cert + CA bundle into tls/mysql/"
 	@echo "  certs-rotate   Re-mint MySQL + API + operator CLI certs and bounce mysql/api/worker/web"
+	@echo "  certs-rotate-if-due  Run certs-rotate only if a TLS leaf is past half its lifetime (for a timer)"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
 	@echo "  npm-audit      Run npm audit --omit=dev against the dashboard deps"
@@ -213,6 +214,11 @@ certs-rotate:
 	$(PROD_COMPOSE) run --rm --entrypoint /usr/local/bin/entrypoint-wg-manager.sh bootstrap-app /app/scripts/prod_rotate_certs.sh
 	@echo "==> Restarting mysql, api, worker, web to load fresh certs..."
 	$(PROD_COMPOSE) restart mysql api worker web
+
+# Hourly from a host systemd timer (docs/deploy/systemd-timer.md).
+# Exits non-zero, without rotating, if the check itself fails.
+certs-rotate-if-due:
+	@PROD_COMPOSE="$(PROD_COMPOSE)" MAKE="$(MAKE)" scripts/certs_rotate_if_due.sh
 
 migrate:
 	$(ALEMBIC) upgrade head
