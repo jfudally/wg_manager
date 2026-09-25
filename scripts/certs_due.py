@@ -55,7 +55,8 @@ log = logging.getLogger("certs_due")
 def _is_ca(cert: x509.Certificate) -> bool:
     """Return ``True`` when ``cert`` carries ``BasicConstraints: CA:TRUE``."""
     try:
-        return bool(cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca)
+        ext = cert.extensions.get_extension_for_class(x509.BasicConstraints)
+        return bool(ext.value.ca)
     except x509.ExtensionNotFound:
         return False
 
@@ -79,7 +80,8 @@ def check_file(path: Path, threshold_pct: float, now: datetime) -> bool:
     :raises OSError: ``path`` can't be read.
     :raises ValueError: ``path`` has no parseable PEM cert, or no leaf.
     """
-    leaves = [c for c in x509.load_pem_x509_certificates(path.read_bytes()) if not _is_ca(c)]
+    certs = x509.load_pem_x509_certificates(path.read_bytes())
+    leaves = [c for c in certs if not _is_ca(c)]
     if not leaves:
         raise ValueError("no leaf certificate in file (only CA certs)")
     due = False
@@ -101,7 +103,12 @@ def check_file(path: Path, threshold_pct: float, now: datetime) -> bool:
 def main(argv: list[str] | None = None) -> int:
     """Check the given (or default) cert files; return an ``EXIT_*`` code."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("files", nargs="*", type=Path, help="PEM files (default: the certs-rotate leaves)")
+    parser.add_argument(
+        "files",
+        nargs="*",
+        type=Path,
+        help="PEM files (default: the certs-rotate leaves)",
+    )
     parser.add_argument("--tls-dir", type=Path, default=Path("/app/tls"))
     parser.add_argument("--threshold-pct", type=float, default=50.0)
     args = parser.parse_args(argv)

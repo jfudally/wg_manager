@@ -158,8 +158,13 @@ def _run_wrapper(tmp_path: Path, check_exit: int) -> tuple[int, str]:
     compose = _fake_bin(tmp_path, "compose", f"exit {check_exit}")
     make = _fake_bin(tmp_path, "make", "exit 0")
     env = {**os.environ, "PROD_COMPOSE": str(compose), "MAKE": str(make)}
+    # check=False: callers assert on the wrapper's exit code themselves.
     proc = subprocess.run(
-        ["bash", str(WRAPPER_SCRIPT)], env=env, capture_output=True, text=True
+        ["bash", str(WRAPPER_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
     )
     log = tmp_path / "calls.log"
     return proc.returncode, log.read_text() if log.exists() else ""
@@ -190,7 +195,9 @@ class TestMakefile:
     def test_target_declared_phony_and_in_help(self) -> None:
         body = (REPO_ROOT / "Makefile").read_text()
         assert "\ncerts-rotate-if-due:" in body
-        phony = " ".join(l for l in body.splitlines() if l.startswith(".PHONY:"))
+        phony = " ".join(
+            line for line in body.splitlines() if line.startswith(".PHONY:")
+        )
         assert "certs-rotate-if-due" in phony.split()
         assert '@echo "  certs-rotate-if-due' in body
 

@@ -936,7 +936,9 @@ class TestRenewDueMode:
         once a newer row owns the same ``out_cert_path``. Otherwise
         every run re-mints the same cert again, forever."""
         stale_id = _issue_via_cli(runner, tmp_path, name_prefix="stale")
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
 
         with Session(db_module.engine) as session:
             stale = session.get(Certificate, stale_id)
