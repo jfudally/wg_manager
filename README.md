@@ -198,6 +198,7 @@ make test            # fast hermetic suite (in-memory SQLite, no docker)
 make test-e2e        # dockerised sshd suite (needs vault-up + e2e-up)
 make test-e2e-tls    # live uvicorn + mTLS acceptance suite
 make lint            # ruff check (the CI lint gate; rules in pyproject.toml)
+make shellcheck      # shellcheck every tracked *.sh (CI gate; config in .shellcheckrc)
 make fmt             # apply ruff's safe auto-fixes
 make security        # gitleaks + bandit + pip-audit + npm audit + semgrep
 make lockfiles       # uv + npm lockfile parity check

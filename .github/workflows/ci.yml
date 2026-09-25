@@ -70,6 +70,30 @@ jobs:
       - name: Ruff
         run: make lint
 
+  # Shell-script lint gate. Same shape as the ruff job: ``make shellcheck``
+  # is the shared entrypoint and shellcheck is pinned in the dev extra.
+  shellcheck:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Sync dependencies (incl. dev)
+        run: uv sync --extra dev --frozen
+
+      - name: shellcheck
+        run: make shellcheck
+
   dashboard:
     name: Dashboard (tsc + vitest)
     runs-on: ubuntu-latest

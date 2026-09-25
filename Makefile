@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -6,6 +6,7 @@ UVICORN := .venv/bin/uvicorn
 ALEMBIC := .venv/bin/alembic
 CELERY := .venv/bin/celery
 RUFF := .venv/bin/ruff
+SHELLCHECK := .venv/bin/shellcheck
 
 HOST ?= 127.0.0.1
 PORT ?= 8000
@@ -17,6 +18,7 @@ help:
 	@echo "  test-e2e       Run the Phase 2c CP5 e2e suite against docker sshd + Vault"
 	@echo "  test-e2e-tls   Run the Phase 2d CP5 mTLS acceptance suite (live uvicorn + LocalDevPKI)"
 	@echo "  lint           Run ruff (check only; rules in pyproject.toml [tool.ruff])"
+	@echo "  shellcheck     Run shellcheck over every tracked *.sh file"
 	@echo "  fmt            Apply ruff's safe auto-fixes (import order, unused imports, ...)"
 	@echo "  e2e-up         Build + start the e2e sshd container (host port 2222)"
 	@echo "  e2e-down       Stop the e2e sshd container and drop its volume"
@@ -88,6 +90,10 @@ test:
 # Lint gate — CI's lint job runs exactly this.
 lint:
 	$(RUFF) check .
+
+# Every tracked *.sh, so a new script is linted without editing this target.
+shellcheck:
+	git ls-files -z '*.sh' | xargs -0 $(SHELLCHECK)
 
 # Not `ruff format`: the codebase isn't formatter-clean yet (see the
 # [tool.ruff.lint] comment in pyproject.toml).

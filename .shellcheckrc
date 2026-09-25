@@ -1,0 +1,6 @@
+# shellcheck config, read by `make shellcheck`, CI and editor integrations.
+# Follow `source` directives (-x) and resolve them relative to the sourcing
+# script, so e.g. prod_bootstrap_substrate.sh is checked together with the
+# vault_init_unseal.sh it sources.
+external-sources=true
+source-path=SCRIPTDIR
