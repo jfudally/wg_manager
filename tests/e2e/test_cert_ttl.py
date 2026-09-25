@@ -20,10 +20,9 @@ import time
 
 import pytest
 
+from tests.e2e.conftest import E2EEnv
 from wg_manager.ssh import SSHConnectionError, SSHRunner
 from wg_manager.ssh_ca import VaultSSHCA
-
-from tests.e2e.conftest import E2EEnv
 
 
 def test_cert_rejected_after_ttl_expiry(

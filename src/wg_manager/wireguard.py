@@ -24,7 +24,7 @@ ListenPort = {listen_port}
 PrivateKey = $(cat /etc/wireguard/privatekey)
 PostUp = iptables -A FORWARD -i {interface} -j ACCEPT; iptables -A FORWARD -o {interface} -j ACCEPT; iptables -t nat -A POSTROUTING -s {subnet} -o eth0 -j MASQUERADE
 PostDown = iptables -D FORWARD -i {interface} -j ACCEPT; iptables -D FORWARD -o {interface} -j ACCEPT; iptables -t nat -D POSTROUTING -s {subnet} -o eth0 -j MASQUERADE
-"""
+"""  # noqa: E501 — literal wg-quick PostUp/PostDown lines
 
 _SERVER_PEER_TEMPLATE = """
 [Peer]
@@ -447,7 +447,13 @@ def parse_wg_dump(dump: str) -> tuple[InterfaceInfo, list[PeerInfo]]:
     interface = InterfaceInfo(
         public_key=pub,
         listen_port=int(listen_port),
-        fwmark=None if fwmark == "off" else int(fwmark, 16) if fwmark.startswith("0x") else int(fwmark),
+        fwmark=(
+            None
+            if fwmark == "off"
+            else int(fwmark, 16)
+            if fwmark.startswith("0x")
+            else int(fwmark)
+        ),
     )
 
     peers: list[PeerInfo] = []

@@ -45,7 +45,6 @@ import pytest
 
 from tests.e2e.tls.conftest import LiveAPIEnv
 
-
 # Short enough that the suite stays fast, long enough that the
 # mint-+-on-disk-write window is robust on a slow CI runner.
 # ``ttl_seconds=2`` means the cert is alive long enough for

@@ -12,7 +12,6 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "0003_manual_client"
 down_revision: Union[str, None] = "0002_discovered_peer"
 branch_labels: Union[str, Sequence[str], None] = None

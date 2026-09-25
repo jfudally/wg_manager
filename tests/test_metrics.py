@@ -33,7 +33,6 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Module surface — every metric the dashboard + alerting recipes reference
 # ---------------------------------------------------------------------------

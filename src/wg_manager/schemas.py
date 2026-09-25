@@ -16,7 +16,6 @@ from wg_manager.models import (
     SSHKeyMode,
 )
 
-
 # Smallest prefix length that still leaves usable host space for a server
 # (``.1``) plus at least one client. ``IPv4Network("10.0.0.0/30").hosts()``
 # yields exactly two addresses; ``/31`` and ``/32`` would yield zero or one

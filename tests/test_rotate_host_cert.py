@@ -22,14 +22,12 @@ behaviour.
 
 from __future__ import annotations
 
-
 import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
 from tests.conftest import FakeSSHRunner, promote_all_keys_to_ca
 from wg_manager.models import Server
-
 
 _HOST_PUBKEY = (
     "ssh-ed25519 "

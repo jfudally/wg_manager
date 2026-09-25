@@ -54,7 +54,6 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "0009_drop_client_private_key_ct"
 down_revision: Union[str, None] = "0008_drop_sshkey_ciphertext"
 branch_labels: Union[str, Sequence[str], None] = None

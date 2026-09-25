@@ -11,7 +11,6 @@ from sqlmodel import Session
 from tests.conftest import FakeSSHRunner
 from wg_manager.models import NodeStatus, Server
 
-
 _SAMPLE_PEM = "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKEBODY\n-----END OPENSSH PRIVATE KEY-----\n"
 _SAMPLE_PEM_B64 = base64.b64encode(_SAMPLE_PEM.encode("utf-8")).decode("ascii")
 

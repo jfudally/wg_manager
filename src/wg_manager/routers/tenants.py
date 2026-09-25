@@ -47,15 +47,14 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlmodel import Session, select
 
-from wg_manager.auth import require_subject
 from wg_manager.db import get_session
+from wg_manager.ipam import pools_overlap
 from wg_manager.models import (
     Operator,
     OperatorRole,
     OperatorTenant,
     Tenant,
 )
-from wg_manager.ipam import pools_overlap
 from wg_manager.schemas import (
     OperatorTenantAttachRequest,
     OperatorTenantRead,

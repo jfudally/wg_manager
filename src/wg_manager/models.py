@@ -5,8 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
 
-from sqlalchemy import BigInteger, Column, Index, UniqueConstraint
-from sqlalchemy import Text  # re-exported for the manual-client column below
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Index,
+    Text,  # re-exported for the manual-client column below
+    UniqueConstraint,
+)
 from sqlmodel import Field, SQLModel
 
 

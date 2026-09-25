@@ -9,7 +9,6 @@ a network socket.
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -19,7 +18,6 @@ from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
 from wg_manager import cli
-
 
 _SAMPLE_PEM = (
     "-----BEGIN OPENSSH PRIVATE KEY-----\nFAKEBODY\n-----END OPENSSH PRIVATE KEY-----\n"
@@ -505,7 +503,7 @@ class TestDBBackupRestore:
         from sqlmodel import Session, select
 
         from wg_manager import db as db_module_ref
-        from wg_manager.models import Client, SSHKey, Server
+        from wg_manager.models import Client, Server, SSHKey
 
         monkeypatch.setattr(cli, "_get_engine", lambda url=None: db_module_ref.engine)
 

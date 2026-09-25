@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Dual-mount: every router answers at both prefixes
 # ---------------------------------------------------------------------------
@@ -150,7 +149,7 @@ class TestLegacyAuditLine:
         caplog: object,
     ) -> None:
         import logging
-        import pytest
+
 
         c = caplog  # type: pytest.LogCaptureFixture  # noqa: F841
 

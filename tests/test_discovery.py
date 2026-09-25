@@ -80,7 +80,10 @@ class TestParseWgDump:
         assert beta.persistent_keepalive is None
 
     def test_ignores_blank_lines(self) -> None:
-        dump = "\n\nSRV_PRIV\tSRV_PUB\t51820\toff\n\nP\t(none)\t(none)\t10.0.0.2/32\t0\t0\t0\toff\n\n"
+        dump = (
+            "\n\nSRV_PRIV\tSRV_PUB\t51820\toff\n\n"
+            "P\t(none)\t(none)\t10.0.0.2/32\t0\t0\t0\toff\n\n"
+        )
         ifc, peers = parse_wg_dump(dump)
         assert ifc.public_key == "SRV_PUB"
         assert len(peers) == 1

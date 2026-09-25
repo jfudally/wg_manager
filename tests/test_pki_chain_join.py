@@ -31,14 +31,12 @@ from __future__ import annotations
 
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
 from cryptography import x509
 
 from wg_manager.pki import LocalDevPKI, _join_pems
-
 
 # ---------------------------------------------------------------------------
 # Helper unit tests — exercise the bug shape directly.

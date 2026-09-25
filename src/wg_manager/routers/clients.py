@@ -12,8 +12,8 @@ from sqlmodel import Session, select
 from wg_manager import audit
 from wg_manager.db import get_session
 from wg_manager.ipam import IPPoolExhausted, allocate_client_ip
+from wg_manager.models import Client, NodeStatus, OperatorRole, Server, SSHKey
 from wg_manager.routers._bootstrap import encrypt_bootstrap_kwargs
-from wg_manager.models import Client, NodeStatus, SSHKey, Server
 from wg_manager.schemas import (
     ClientCreate,
     ClientDeleteResponse,
@@ -24,7 +24,6 @@ from wg_manager.schemas import (
     ClientRegisterResponse,
     ClientUpdate,
 )
-from wg_manager.models import OperatorRole
 from wg_manager.tasks import (
     provision_client_task,
     reconfigure_server_task,

@@ -31,7 +31,6 @@ from tests.conftest import FakeSSHRunner
 from tests.test_tasks_provision_bootstrap import _RecordingBootstrapRunner
 from wg_manager.models import Client, NodeStatus
 
-
 _PLAINTEXT_PEM = (
     "-----BEGIN OPENSSH PRIVATE KEY-----\n"
     "CLIENTBOOTSTRAP\n"

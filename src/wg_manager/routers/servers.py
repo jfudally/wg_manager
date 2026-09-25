@@ -12,21 +12,15 @@ from wg_manager import audit
 from wg_manager.config import settings
 from wg_manager.db import get_session
 from wg_manager.ipam import subnet_in_pool
-from wg_manager.routers._bootstrap import encrypt_bootstrap_kwargs
-from wg_manager.tenant_scope import (
-    ScopeDep,
-    require_tenant_role,
-    resolve_create_tenant,
-    scope_filter,
-)
 from wg_manager.models import (
     Client,
     DiscoveredPeer,
     NodeStatus,
-    SSHKey,
+    OperatorRole,
     Server,
-    Tenant,
+    SSHKey,
 )
+from wg_manager.routers._bootstrap import encrypt_bootstrap_kwargs
 from wg_manager.schemas import (
     DiscoverAllResponse,
     DiscoveredPeerRead,
@@ -43,7 +37,12 @@ from wg_manager.tasks import (
     provision_server_task,
     rotate_host_cert_task,
 )
-from wg_manager.models import OperatorRole
+from wg_manager.tenant_scope import (
+    ScopeDep,
+    require_tenant_role,
+    resolve_create_tenant,
+    scope_filter,
+)
 
 router = APIRouter(prefix="/servers", tags=["servers"])
 

@@ -36,7 +36,6 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "0004_encryption_at_rest"
 down_revision: Union[str, None] = "0003_manual_client"
 branch_labels: Union[str, Sequence[str], None] = None

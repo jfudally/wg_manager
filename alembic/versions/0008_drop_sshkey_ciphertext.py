@@ -67,7 +67,6 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "0008_drop_sshkey_ciphertext"
 down_revision: Union[str, None] = "0007_sshkey_mode"
 branch_labels: Union[str, Sequence[str], None] = None

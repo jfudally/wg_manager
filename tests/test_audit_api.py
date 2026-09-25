@@ -43,7 +43,7 @@ from typing import Any, Iterable
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from wg_manager import db as db_module
 from wg_manager.auth import CertSubject, require_subject
@@ -54,7 +54,6 @@ from wg_manager.models import (
     OperatorRole,
     OperatorStatus,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers

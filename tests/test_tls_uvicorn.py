@@ -32,7 +32,6 @@ from wg_manager._tls_uvicorn import (
 from wg_manager.auth import parse_subject_from_pem
 from wg_manager.pki import LocalDevPKI
 
-
 # ---------------------------------------------------------------------------
 # Fakes
 # ---------------------------------------------------------------------------

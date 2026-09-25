@@ -51,7 +51,6 @@ from sqlmodel import Session, SQLModel
 
 from wg_manager.models import SSHKey, SSHKeyMode
 
-
 # ---------------------------------------------------------------------------
 # Model-level: enum shape + field defaults
 # ---------------------------------------------------------------------------

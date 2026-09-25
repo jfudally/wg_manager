@@ -17,10 +17,9 @@ from __future__ import annotations
 
 import pytest
 
+from tests.e2e.conftest import E2E_OTHER_PRINCIPAL, E2EEnv
 from wg_manager.ssh import SSHConnectionError, SSHRunner
 from wg_manager.ssh_ca import VaultSSHCA
-
-from tests.e2e.conftest import E2E_OTHER_PRINCIPAL, E2EEnv
 
 
 def test_sshd_rejects_cert_with_wrong_principal(

@@ -30,7 +30,7 @@ Contract pinned here:
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable
+from typing import Any
 
 import pytest
 from cryptography import x509
@@ -47,7 +47,6 @@ from wg_manager.models import (
     CertificateType,
     Operator,
     OperatorRole,
-    OperatorStatus,
     Tenant,
 )
 

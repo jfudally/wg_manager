@@ -36,7 +36,6 @@ from sqlmodel import Session, SQLModel
 
 from wg_manager.models import NodeStatus, Server
 
-
 # Names of every host-cert column the CP3 migration adds. Centralised so
 # every assertion below references the same list — flipping a name here
 # breaks every test, which is the point.

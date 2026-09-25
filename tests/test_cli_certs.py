@@ -845,7 +845,9 @@ class TestRenewSingleId:
         either source, the operator is told what's missing."""
         # Insert a row that mimics an API-issued cert (no out_paths).
         with Session(db_module.engine) as session:
-            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+            from datetime import datetime as _dt
+            from datetime import timedelta as _td
+            from datetime import timezone as _tz
 
             now = _dt.now(_tz.utc).replace(microsecond=0)
             row = Certificate(
@@ -894,7 +896,9 @@ class TestRenewDueMode:
         # in the past so even a 50% threshold marks it as due.
         fresh_id = _issue_via_cli(runner, tmp_path, name_prefix="fresh")
         stale_id = _issue_via_cli(runner, tmp_path, name_prefix="stale")
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
 
         with Session(db_module.engine) as session:
             stale = session.get(Certificate, stale_id)
@@ -928,7 +932,9 @@ class TestRenewDueMode:
         tmp_path: Path,
     ) -> None:
         stale_id = _issue_via_cli(runner, tmp_path, name_prefix="stale")
-        from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
 
         with Session(db_module.engine) as session:
             stale = session.get(Certificate, stale_id)

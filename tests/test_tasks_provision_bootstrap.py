@@ -23,7 +23,6 @@ break the merged flow or re-introduce the two-action requirement.
 from __future__ import annotations
 
 from typing import Any
-from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,7 +31,6 @@ from sqlmodel import Session
 from tests.conftest import FakeSSHRunner
 from wg_manager.crypto import make_backend
 from wg_manager.models import NodeStatus, Server
-
 
 # Real ed25519 host pubkey so the LocalDevSSHCA actually mints a
 # parseable host cert against it.
