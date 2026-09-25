@@ -148,6 +148,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Fixed
 
+- **`wg-manager certs renew --due` no longer re-renews certs it
+  already renewed.** Renewal keeps the source audit row live as the
+  rotation trail, and the walker kept treating it as due, so every
+  run (hourly, on the documented systemd timer) minted another leaf
+  for each previously renewed cert and the registry grew without
+  bound. The walker now skips rows superseded by a newer row with the
+  same `out_cert_path`, which makes it idempotent as documented.
+
 - **`ServerRead` now returns the `host_cert_*` fields.** The six
   Phase 2c CP3.1 columns were persisted on every provision/rotation but
   never declared on the response schema, so `GET /servers`,

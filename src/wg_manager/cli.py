@@ -1548,6 +1548,29 @@ def _as_utc(dt: Any) -> Any:
     return dt
 
 
+def _drop_superseded(rows: list[Any]) -> list[Any]:
+    """Return ``rows`` minus any row a newer row has replaced on disk.
+
+    Renewal records a new audit row but leaves the source row live
+    (it's the rotation trail), so both point at the same
+    ``out_cert_path``. Only the newest row (highest id) per path
+    describes the file actually on disk; the older ones must not be
+    renewed again, or every ``--due`` run re-mints them. Rows with no
+    stored path can't be superseded and are kept as-is.
+    """
+    newest_by_path: dict[str, int] = {}
+    for r in rows:
+        if r.out_cert_path:
+            newest_by_path[r.out_cert_path] = max(
+                newest_by_path.get(r.out_cert_path, 0), r.id or 0
+            )
+    return [
+        r
+        for r in rows
+        if not r.out_cert_path or r.id == newest_by_path[r.out_cert_path]
+    ]
+
+
 def _row_is_due(row: Any, threshold_pct: float, now: Any) -> bool:
     """Return ``True`` when ``row`` has burned more than the threshold
     percentage of its issued lifetime.
@@ -1725,7 +1748,9 @@ def certs_renew(
             )
         )
         due_rows = [
-            r for r in rows if _row_is_due(r, threshold_pct, now)
+            r
+            for r in _drop_superseded(rows)
+            if _row_is_due(r, threshold_pct, now)
         ]
         if not due_rows:
             typer.echo(
