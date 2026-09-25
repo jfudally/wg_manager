@@ -134,7 +134,9 @@ def _vault_reachable() -> bool:
         return False
 
 
-def _docker_exec(container: str, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _docker_exec(
+    container: str, *args: str, check: bool = True
+) -> subprocess.CompletedProcess[str]:
     """Run ``docker exec <container> <args...>`` and return the completed process.
 
     Centralised so failure modes (docker not on PATH, container not

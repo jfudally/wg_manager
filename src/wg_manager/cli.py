@@ -14,6 +14,7 @@ until the Celery task reaches a terminal state.
 from __future__ import annotations
 
 import json
+import re as _tenant_re
 import time
 from datetime import datetime
 from enum import Enum
@@ -1700,7 +1701,7 @@ def certs_renew(
                 )
             except RuntimeError as exc:
                 typer.secho(str(exc), fg=typer.colors.RED, err=True)
-                raise typer.Exit(code=1)
+                raise typer.Exit(code=1) from exc
             typer.echo(
                 f"renewed certificate id={cert_id} -> new id={new_row.id} "
                 f"serial={new_row.serial}"
@@ -1961,9 +1962,6 @@ def operators_list(
 # canonical install / disaster-recovery path.
 
 
-import re as _tenant_re
-
-
 def _slugify(name: str) -> str:
     """Lowercase + collapse non-alphanumeric runs to single hyphens.
 
@@ -2031,7 +2029,7 @@ def tenants_create(
                 fg=typer.colors.RED,
                 err=True,
             )
-            raise typer.Exit(code=1)
+            raise typer.Exit(code=1) from exc
     engine = _get_engine(database_url)
     with Session(engine) as session:
         existing = session.exec(

@@ -196,10 +196,16 @@ class TestKeyCompromiseCoverage:
         assert "pki" in body_lower
 
     def test_covers_operator_or_service_cert(self, body_lower: str) -> None:
-        assert "operator cert" in body_lower or "service cert" in body_lower or "client cert" in body_lower
+        assert any(
+            term in body_lower
+            for term in ("operator cert", "service cert", "client cert")
+        )
 
     def test_covers_manual_client_wireguard_keys(self, body_lower: str) -> None:
-        assert "wireguard" in body_lower or "manual client" in body_lower or "manual-client" in body_lower
+        assert any(
+            term in body_lower
+            for term in ("wireguard", "manual client", "manual-client")
+        )
 
 
 # ---------------------------------------------------------------------------
