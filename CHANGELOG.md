@@ -59,6 +59,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Ruff lint gate.** New `lint` job in CI runs `make lint`
+  (`ruff check`), with `make fmt` to apply safe auto-fixes. Ruff is
+  pinned to 0.16.9 in the `dev` extra; `[tool.ruff]` in
+  `pyproject.toml` selects pycodestyle, pyflakes, isort and bugbear at
+  100 columns. The codebase was brought clean in the same change
+  (mostly import ordering and unused imports). pyupgrade, pylint and
+  `ruff format` are not enforced yet.
+
 - **Automatic host-cert renewal via Celery beat.** New
   `rotate_expiring_host_certs_task` fans out
   `rotate_host_cert_task` / `rotate_client_host_cert_task` for every

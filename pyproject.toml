@@ -56,6 +56,10 @@ dev = [
     # mounts. PyYAML is the de-facto stdlib YAML parser for Python; it
     # only needs to be present at test-time.
     "pyyaml>=6.0",
+    # Linter for ``make lint`` / ``make fmt`` and the CI lint job. Pinned
+    # exactly: a ruff minor release can add rules or change fixes, and the
+    # gate should only move when this pin does.
+    "ruff==0.16.9",
 ]
 
 [build-system]
@@ -81,6 +85,30 @@ packages = ["src/wg_manager"]
 # catches genuine ``AutoAddPolicy`` regressions. The two known-safe
 # sites carry per-line ``# nosec B507`` with a rationale.
 skips = ["B601"]
+
+[tool.ruff]
+# ``make lint`` and the CI lint job read this section.
+target-version = "py313"
+line-length = 100
+src = ["src"]
+extend-exclude = ["web"]
+
+[tool.ruff.lint]
+# Baseline gate: pycodestyle errors/warnings, pyflakes, import order,
+# bugbear. Deliberately NOT yet enabled (each is its own follow-up so
+# the diff stays reviewable): UP (pyupgrade, ~190 mechanical rewrites,
+# and the repo's ``timezone.utc`` idiom would churn), S (bandit already
+# gates security in CI), PL (pylint). ``ruff format`` is not enforced
+# either — adopting it would reformat ~140 files in one go.
+select = ["E", "W", "F", "I", "B"]
+ignore = [
+    # function-call-in-default-argument: FastAPI ``Depends(...)`` and
+    # typer ``Option(...)`` defaults are the frameworks' intended API.
+    "B008",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["wg_manager"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
