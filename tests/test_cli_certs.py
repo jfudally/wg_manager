@@ -925,6 +925,39 @@ class TestRenewDueMode:
         stale_after = next(r for r in rows if r.id == stale_id)
         assert renewed[0].out_cert_path == stale_after.out_cert_path
 
+    def test_renew_due_second_run_does_not_rerenew_superseded_row(
+        self,
+        runner: CliRunner,
+        certs_env: None,  # noqa: ARG002
+        tmp_path: Path,
+    ) -> None:
+        """Regression: renewal leaves the source row live (it's the
+        rotation trail), so the walker must treat a row as superseded
+        once a newer row owns the same ``out_cert_path``. Otherwise
+        every run re-mints the same cert again, forever."""
+        stale_id = _issue_via_cli(runner, tmp_path, name_prefix="stale")
+        from datetime import datetime as _dt
+        from datetime import timedelta as _td
+        from datetime import timezone as _tz
+
+        with Session(db_module.engine) as session:
+            stale = session.get(Certificate, stale_id)
+            assert stale is not None
+            stale.not_before = _dt.now(_tz.utc) - _td(days=25)
+            stale.not_after = _dt.now(_tz.utc) + _td(days=5)
+            session.add(stale)
+            session.commit()
+
+        first = _invoke(runner, "certs", "renew", "--due")
+        assert first.exit_code == 0, first.output
+        assert len(_cert_rows()) == 2  # stale + its renewal
+
+        second = _invoke(runner, "certs", "renew", "--due")
+        assert second.exit_code == 0, second.output
+        # Nothing new: the stale row is superseded, the renewal is fresh.
+        assert len(_cert_rows()) == 2
+        assert "no certs past" in second.output
+
     def test_renew_due_dry_run_makes_no_changes(
         self,
         runner: CliRunner,

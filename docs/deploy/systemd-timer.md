@@ -9,6 +9,77 @@ default. Rotating before half of the issued lifetime is gone gives
 plenty of headroom to debug a failed renewal before the cert
 expires.
 
+## Docker Compose prod stack (`make prod-up`)
+
+The sections below describe a bare-metal install (a venv under
+``/opt/wg-manager``). On the single-host Compose stack, use
+``make certs-rotate-if-due`` instead. The ``--due`` walker doesn't
+suit that stack: ``worker`` mounts ``./tls`` read-only, the MySQL
+certs have no audit row, and nothing would restart the containers
+that load the certs.
+
+``make certs-rotate-if-due`` runs ``scripts/certs_due.py`` in a
+throwaway ``bootstrap-app`` container. The script checks the four
+leaves ``make certs-rotate`` rewrites (``tls/mysql/server.crt``,
+``tls/mysql/client.crt``, ``tls/server.crt``, ``tls/client.crt``).
+If any has used 50% or more of its lifetime, the target runs
+``make certs-rotate``, which re-mints all of them and restarts
+mysql / api / worker / web. Otherwise it does nothing. If the check
+itself fails (a missing or unreadable cert, or compose errors), it
+exits non-zero **without** rotating, so the unit shows ``failed``.
+
+**`/etc/systemd/system/wg-manager-certs-rotate.service`**
+
+```ini
+[Unit]
+Description=wg-manager — rotate prod TLS certs if due
+Documentation=https://github.com/your-org/wg-manager/blob/main/docs/deploy/systemd-timer.md
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The repo checkout holding .env.prod, tls/ and vault-init.json.
+WorkingDirectory=/opt/wg-manager
+# Any user that can run docker compose against this stack.
+User=root
+ExecStart=/usr/bin/make certs-rotate-if-due
+StandardOutput=journal
+StandardError=journal
+```
+
+**`/etc/systemd/system/wg-manager-certs-rotate.timer`**
+
+```ini
+[Unit]
+Description=wg-manager — hourly TLS cert rotation check
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+Unit=wg-manager-certs-rotate.service
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wg-manager-certs-rotate.timer
+sudo systemctl start wg-manager-certs-rotate.service   # first run by hand
+sudo journalctl -u wg-manager-certs-rotate.service -n 30
+```
+
+Each run logs one ``ok`` or ``DUE`` line per cert, with the
+percentage of its lifetime used and its expiry. A rotation restarts
+the runtime tier (a few seconds of API downtime) about every 15 days,
+set by the 30-day MySQL / API leaves. ``make certs-rotate`` re-mints
+all four together, so the 365-day operator CLI cert is replaced on the
+same schedule; copy the new ``tls/client.*`` to anywhere you use it
+outside the stack. Alert on the unit entering ``failed``
+state: that's the only case where nothing gets rotated.
+
 ## What gets renewed
 
 ``wg-manager certs renew --due`` walks the ``certificate`` audit
