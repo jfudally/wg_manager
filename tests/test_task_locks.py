@@ -11,7 +11,8 @@ For each of the four mutating Celery tasks (``provision_server``,
    (another worker holds it), the task returns
    ``{"status": "skipped", "reason": "concurrent_run", ...}``
    without making any side-effecting calls — no SSH session, no DB
-   row flip, no audit emission.
+   row flip, no audit emission. The exception is ``reconfigure_server``,
+   which retries instead, because skipping it can lose an update.
 
 Tests monkey-patch ``task_row_lock`` per-case rather than spinning
 two parallel sessions, because the SQLite test engine has no
@@ -294,7 +295,7 @@ class TestEachTaskSkipsOnContention:
         assert result.get("status") == "skipped"
         assert FakeSSHRunner.COMMANDS == []
 
-    def test_reconfigure_server_skipped_on_contention(
+    def test_reconfigure_server_retries_on_contention(
         self,
         client: TestClient,
         engine: Any,
@@ -322,13 +323,19 @@ class TestEachTaskSkipsOnContention:
             s.refresh(server)
             server_id = int(server.id or 0)
 
+        # Unlike the other tasks, reconfigure must NOT skip: the lock
+        # holder may have read the client list before this task's
+        # change committed, so skipping loses the update (Phase 3f
+        # hardening; see tests/test_reconfigure_coalescing.py).
+        from celery.exceptions import Retry
+
         FakeSSHRunner.COMMANDS.clear()
         with _patch_lock_contended(monkeypatch):
             from wg_manager.tasks import reconfigure_server_task
 
-            result = reconfigure_server_task(server_id)
+            with pytest.raises(Retry):
+                reconfigure_server_task(server_id)
 
-        assert result.get("status") == "skipped"
         assert FakeSSHRunner.COMMANDS == []
 
     def test_provision_client_skipped_on_contention(

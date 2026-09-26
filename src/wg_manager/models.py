@@ -314,6 +314,17 @@ class Server(SQLModel, table=True):
     host_cert_ca_public_key: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
+    # Hub reconfigure generations (Alembic 0019). ``requested`` is
+    # bumped by :func:`wg_manager.tasks.request_reconfigure` whenever the
+    # hub's peer list must catch up. ``applied`` is the highest requested
+    # generation whose client list has been written to the hub. Lets
+    # ``reconfigure_server_task`` coalesce bursts without losing updates.
+    reconfig_requested_gen: int = Field(
+        default=0, sa_column_kwargs={"server_default": "0"}
+    )
+    reconfig_applied_gen: int = Field(
+        default=0, sa_column_kwargs={"server_default": "0"}
+    )
 
 
 class Client(SQLModel, table=True):

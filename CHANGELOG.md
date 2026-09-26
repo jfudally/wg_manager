@@ -39,6 +39,23 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   - See `docs/operator-guide.md`, "Zero-touch enrollment", and threats
     T-13 to T-16 in `docs/THREAT_MODEL.md`.
 
+### Fixed
+
+- **Hub reconfigures no longer lose peers under concurrency.**
+  `reconfigure_server_task` used to *skip* when another reconfigure
+  held the hub's lock. The lock holder could have read the client list
+  before the triggering change committed, so that peer (a new
+  enrollment, manual client or deleted client) stayed out of sync on
+  the hub until some unrelated later reconfigure. Now:
+  - it retries on contention (every 10 s, up to 30 times) instead of
+    skipping;
+  - every dispatch goes through `request_reconfigure()`, which bumps
+    a new `server.reconfig_requested_gen` counter (Alembic 0019);
+  - a run records the generation it applied, and queued runs already
+    covered by it return `coalesced` without touching the hub. A
+    burst of N changes now costs about one `wg-quick` restart instead
+    of N.
+
 ## [v0.6.1] - 2026-09-26
 
 ### Fixed
