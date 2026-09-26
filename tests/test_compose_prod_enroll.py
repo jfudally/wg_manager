@@ -89,3 +89,12 @@ def test_env_example_documents_opt_in() -> None:
     body = (REPO_ROOT / ".env.prod.example").read_text()
     assert "COMPOSE_PROFILES=enroll" in body
     assert "WG_MANAGER_ENROLL_BIND_PORT" in body
+
+
+def test_rate_limits_are_tunable_from_env(enroll: dict) -> None:
+    env = _env(enroll)
+    assert env["ENROLL_RATE_LIMIT_BACKEND"] == "redis"
+    assert env["ENROLL_RATE_LIMIT_REQUESTS"] == "${ENROLL_RATE_LIMIT_REQUESTS:-120}"
+    assert env["ENROLL_FAILURE_LIMIT"] == "${ENROLL_FAILURE_LIMIT:-10}"
+    assert env["ENROLL_RATE_LIMIT_WINDOW_SECONDS"] == "${ENROLL_RATE_LIMIT_WINDOW_SECONDS:-60}"
+    assert env["ENROLL_FAILURE_WINDOW_SECONDS"] == "${ENROLL_FAILURE_WINDOW_SECONDS:-600}"

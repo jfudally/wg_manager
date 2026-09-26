@@ -15,6 +15,15 @@ class Settings(BaseSettings):
     :cvar enroll_bind_host: Address the Phase 3f enrollment listener
         binds to (localhost by default).
     :cvar enroll_bind_port: TCP port of the enrollment listener.
+    :cvar enroll_rate_limit_backend: ``redis`` (shared, production) or
+        ``memory`` (single process; tests / dev).
+    :cvar enroll_rate_limit_redis_url: Valkey/Redis URL for the limiter;
+        defaults to ``celery_broker_url``.
+    :cvar enroll_rate_limit_requests: Enroll requests allowed per source
+        IP per ``enroll_rate_limit_window_seconds``. 0 disables.
+    :cvar enroll_failure_limit: Failed enroll attempts (401 / 422) per
+        source IP per ``enroll_failure_window_seconds`` before that IP is
+        locked out for the rest of the window. 0 disables.
     :cvar default_subnet: CIDR used when a ``POST /servers`` payload omits
         the ``subnet`` field. Validated at construction time so a broken
         ``.env`` value fails on app startup rather than at the first
@@ -65,6 +74,16 @@ class Settings(BaseSettings):
     # while the mTLS operator API stays locked down.
     enroll_bind_host: str = "127.0.0.1"
     enroll_bind_port: int = 8001
+    # Phase 3f hardening: per-source-IP limits on POST /v1/enroll (see
+    # wg_manager.ratelimit). The request cap is loose because a whole
+    # autoscaling group often shares one NAT address; the failure cap
+    # (bad token / bad body) is the strict one. 0 disables a limit.
+    enroll_rate_limit_backend: str = "redis"
+    enroll_rate_limit_redis_url: str | None = None  # default: celery_broker_url
+    enroll_rate_limit_requests: int = 120
+    enroll_rate_limit_window_seconds: int = 60
+    enroll_failure_limit: int = 10
+    enroll_failure_window_seconds: int = 600
     default_subnet: str = "10.9.0.0/24"
     default_wg_port: int = 51820
     celery_broker_url: str = "redis://localhost:6379/0"

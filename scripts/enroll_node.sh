@@ -11,7 +11,7 @@
 #   2. Calls POST /v1/enroll on the wg_manager enrollment listener with a
 #      single-use token, sending only the two PUBLIC keys and its
 #      hostname. It retries while the control plane answers 5xx (hub
-#      still coming up, CA briefly unavailable).
+#      still coming up, CA briefly unavailable) or 429 (rate limited).
 #   3. Installs what comes back: wg0.conf (no private key inside), the
 #      SSH user CA, the signed host cert, and the same sshd drop-in the
 #      provisioning worker installs.
@@ -29,7 +29,7 @@
 #   WGM_CA_BUNDLE_FILE   Or: path to that PEM.                             [**]
 #   WGM_INTERFACE        WireGuard interface name. (default: wg0)
 #   WGM_HOSTNAME         Name to report. (default: short hostname, lowercased)
-#   WGM_MAX_ATTEMPTS     Enrollment attempts on 5xx / network errors. (default: 30)
+#   WGM_MAX_ATTEMPTS     Enrollment attempts on 429 / 5xx / network errors. (default: 30)
 #   WGM_RETRY_DELAY      Seconds between attempts. (default: 10)
 #   WGM_SKIP_PACKAGES    1 = don't install wireguard-tools.
 #   WGM_ROOT             Filesystem prefix. Test hook only; leave unset.
@@ -173,7 +173,9 @@ while :; do
 
   case "$code" in
     201) break ;;
-    000|5??)
+    # 429: per-IP rate limit (a whole fleet behind one NAT address can
+    # trip it). 5xx / 000: control plane or network not ready yet.
+    000|429|5??)
       if (( attempt >= MAX_ATTEMPTS )); then
         die 1 "enrollment failed after ${attempt} attempts (last HTTP ${code})"
       fi

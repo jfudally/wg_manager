@@ -619,6 +619,14 @@ services:
       TLS_KEY_PEM: /app/tls/server.key
       ENROLL_BIND_HOST: 0.0.0.0
       ENROLL_BIND_PORT: "8001"
+      # Per-source-IP limits (counters in Valkey, shared by replicas).
+      # The request cap is loose because a NAT'd fleet shares one IP; the
+      # failure cap (bad token / bad body) locks an IP out. 0 disables.
+      ENROLL_RATE_LIMIT_BACKEND: redis
+      ENROLL_RATE_LIMIT_REQUESTS: ${ENROLL_RATE_LIMIT_REQUESTS:-120}
+      ENROLL_RATE_LIMIT_WINDOW_SECONDS: ${ENROLL_RATE_LIMIT_WINDOW_SECONDS:-60}
+      ENROLL_FAILURE_LIMIT: ${ENROLL_FAILURE_LIMIT:-10}
+      ENROLL_FAILURE_WINDOW_SECONDS: ${ENROLL_FAILURE_WINDOW_SECONDS:-600}
     volumes: *worker-volumes
     ports:
       - "${WG_MANAGER_ENROLL_BIND_ADDR:-0.0.0.0}:${WG_MANAGER_ENROLL_BIND_PORT:-8443}:8001"

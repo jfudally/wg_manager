@@ -269,6 +269,14 @@ class TestFailures:
         assert r.returncode == 0, r.stderr
         assert _log(env, "curl.count").strip() == "3"
 
+    def test_retries_rate_limited_429(self, env: dict[str, str]) -> None:
+        """A NAT'd fleet enrolling at once can trip the per-IP request cap.
+        That's transient, so it must back off and retry, not abort."""
+        env["FAKE_HTTP_CODES"] = "429 429 201"
+        r = _run(env)
+        assert r.returncode == 0, r.stderr
+        assert _log(env, "curl.count").strip() == "3"
+
     def test_4xx_is_fatal_without_retry(self, env: dict[str, str]) -> None:
         env["FAKE_HTTP_CODES"] = "401"
         r = _run(env)
