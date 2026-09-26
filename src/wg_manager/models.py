@@ -870,6 +870,10 @@ class EnrollmentToken(SQLModel, table=True):
     :ivar revoked_at: When an admin revoked the token (UTC); ``None``
         while it's not revoked. Added in Alembic 0021.
     :ivar revoked_by_cn: CN of the revoking operator.
+    :ivar allowed_cidrs: Networks the token may be redeemed from, as
+        canonical comma-separated CIDRs; ``None`` means anywhere. Read it
+        through :func:`wg_manager.enrollment.allowed_networks`. Added in
+        Alembic 0021.
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -886,6 +890,9 @@ class EnrollmentToken(SQLModel, table=True):
     created_at: datetime = Field(default_factory=_utcnow)
     revoked_at: datetime | None = Field(default=None)
     revoked_by_cn: str | None = Field(default=None, max_length=255)
+    # 16 CIDRs at most (schema-enforced); the longest IPv6 CIDR is 43
+    # characters, so 1024 leaves room.
+    allowed_cidrs: str | None = Field(default=None, max_length=1024)
 
     def __repr__(self) -> str:
         # token_hash deliberately omitted: it's the lookup key and has
