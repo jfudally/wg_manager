@@ -13,7 +13,7 @@ PORT ?= 8000
 
 help:
 	@echo "Targets:"
-	@echo "  install        Install project + dev dependencies into .venv"
+	@echo "  install        Create .venv and install project + dev deps (uv.lock pins via uv)"
 	@echo "  test           Run pytest (fast suite — e2e bucket excluded by default)"
 	@echo "  test-e2e       Run the Phase 2c CP5 e2e suite against docker sshd + Vault"
 	@echo "  test-e2e-tls   Run the Phase 2d CP5 mTLS acceptance suite (live uvicorn + LocalDevPKI)"
@@ -77,13 +77,17 @@ help:
 	@echo "  node-bootstrap VPN-first node enrollment — see scripts/wg_bootstrap.sh --help"
 	@echo "  clean          Remove caches and build artifacts"
 
+# Works on a fresh clone: both paths create .venv when it's missing.
+# With uv this is the same command CI runs (the pinned versions in
+# uv.lock). Without uv, pip resolves from pyproject.toml's ranges, so
+# versions can drift from the lockfile; install uv for a reproducible env.
 install:
 	@if command -v uv >/dev/null 2>&1; then \
-		echo "Using uv to install dependencies"; \
-		uv pip install -e ".[dev]"; \
+		echo "Using uv to sync .venv with uv.lock"; \
+		uv sync --extra dev --frozen; \
 	else \
-		echo "uv not found, bootstrapping pip via ensurepip"; \
-		$(PYTHON) -m ensurepip --upgrade; \
+		echo "uv not found, falling back to python3 -m venv + pip (versions not locked)"; \
+		[ -x $(PYTHON) ] || python3 -m venv .venv; \
 		$(PYTHON) -m pip install -e ".[dev]"; \
 	fi
 
