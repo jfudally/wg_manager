@@ -347,58 +347,64 @@ function ClientTable({
               <TableCell className="text-xs text-muted-foreground">
                 {formatDateTime(c.created_at)}
               </TableCell>
-              <TableCell className="flex justify-end gap-2">
-                {c.is_manual ? (
-                  // Manual rows: no SSH credentials (so Reprovision
-                  // can't reach the device) and the wg0.conf body is
-                  // not retrievable any more — it was delivered once
-                  // at registration. The only recovery action is
-                  // Delete + register a fresh manual client.
-                  <span
-                    className="text-xs text-muted-foreground"
-                    title="Manual clients receive their wg0.conf once at registration. Delete and re-register to mint a new keypair."
+              <TableCell className="text-right">
+                {/* Flex lives on an inner div, not the <td>: a flex <td>
+                    stops being a table cell, and unwrappable buttons
+                    pushed the table past the page width (horizontal
+                    scrollbar). flex-wrap lets the column shrink. */}
+                <div className="flex flex-wrap justify-end gap-2">
+                  {c.is_manual ? (
+                    // Manual rows: no SSH credentials (so Reprovision
+                    // can't reach the device) and the wg0.conf body is
+                    // not retrievable any more — it was delivered once
+                    // at registration. The only recovery action is
+                    // Delete + register a fresh manual client.
+                    <span
+                      className="text-xs text-muted-foreground"
+                      title="Manual clients receive their wg0.conf once at registration. Delete and re-register to mint a new keypair."
+                    >
+                      Manual
+                    </span>
+                  ) : (
+                    <>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => reprovision.mutate(c.id)}
+                        disabled={reprovision.isPending}
+                      >
+                        Reprovision
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => rotateHostCert.mutate(c.id)}
+                        disabled={rotateHostCert.isPending}
+                        title="Re-mint the client's SSH host cert before it expires"
+                      >
+                        Rotate cert
+                      </Button>
+                    </>
+                  )}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onEdit(c)}
                   >
-                    Manual
-                  </span>
-                ) : (
-                  <>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => reprovision.mutate(c.id)}
-                      disabled={reprovision.isPending}
-                    >
-                      Reprovision
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => rotateHostCert.mutate(c.id)}
-                      disabled={rotateHostCert.isPending}
-                      title="Re-mint the client's SSH host cert before it expires"
-                    >
-                      Rotate cert
-                    </Button>
-                  </>
-                )}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onEdit(c)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => requestDelete(c)}
-                  disabled={
-                    deleteMutation.isPending &&
-                    deleteMutation.variables === c.id
-                  }
-                >
-                  Delete
-                </Button>
+                    Edit
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => requestDelete(c)}
+                    disabled={
+                      deleteMutation.isPending &&
+                      deleteMutation.variables === c.id
+                    }
+                  >
+                    Delete
+                  </Button>
+                </div>
               </TableCell>
             </TableRow>
           ))}

@@ -292,50 +292,55 @@ function ServerTable({
               <TableCell className="text-xs text-muted-foreground">
                 {formatDateTime(s.created_at)}
               </TableCell>
-              <TableCell className="flex justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => discover.mutate(s.id)}
-                  disabled={discover.isPending}
-                >
-                  Discover
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => reprovision.mutate(s.id)}
-                  disabled={reprovision.isPending}
-                >
-                  Reprovision
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => rotateHostCert.mutate(s.id)}
-                  disabled={rotateHostCert.isPending}
-                  title="Re-mint and install this server's SSH host cert from the Vault SSH CA"
-                >
-                  Rotate cert
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onEdit(s)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => requestDelete(s)}
-                  disabled={
-                    deleteMutation.isPending &&
-                    deleteMutation.variables?.id === s.id
-                  }
-                >
-                  Delete
-                </Button>
+              <TableCell className="text-right">
+                {/* Flex on an inner div, not the <td>: a flex <td> stops
+                    being a table cell, and flex-wrap lets the column
+                    shrink instead of widening the table. */}
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => discover.mutate(s.id)}
+                    disabled={discover.isPending}
+                  >
+                    Discover
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => reprovision.mutate(s.id)}
+                    disabled={reprovision.isPending}
+                  >
+                    Reprovision
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => rotateHostCert.mutate(s.id)}
+                    disabled={rotateHostCert.isPending}
+                    title="Re-mint and install this server's SSH host cert from the Vault SSH CA"
+                  >
+                    Rotate cert
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onEdit(s)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => requestDelete(s)}
+                    disabled={
+                      deleteMutation.isPending &&
+                      deleteMutation.variables?.id === s.id
+                    }
+                  >
+                    Delete
+                  </Button>
+                </div>
               </TableCell>
             </TableRow>
           ))}
