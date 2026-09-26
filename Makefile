@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -24,6 +24,7 @@ help:
 	@echo "  e2e-down       Stop the e2e sshd container and drop its volume"
 	@echo "  e2e-logs       Tail the e2e sshd container logs"
 	@echo "  run            Start the FastAPI app with uvicorn (HOST=$(HOST) PORT=$(PORT))"
+	@echo "  run-enroll     Start the Phase 3f enrollment listener (server-auth TLS, ENROLL_BIND_PORT, default 8001)"
 	@echo "  worker         Start a Celery worker for the provisioning queue"
 	@echo "  beat           Start Celery beat (schedules the host-cert rotation sweep)"
 	@echo "  db-up          Start MySQL + Valkey via docker compose"
@@ -119,6 +120,11 @@ run:
 		exit 2; \
 	fi
 	BIND_HOST=$(HOST) BIND_PORT=$(PORT) $(PYTHON) -m wg_manager
+
+# Phase 3f spike: the cert-optional enrollment port. Reuses
+# TLS_CERT_PEM / TLS_KEY_PEM; the runner refuses to start without them.
+run-enroll:
+	$(PYTHON) -m wg_manager.enroll_listener
 
 worker:
 	$(CELERY) -A wg_manager.celery_app worker --loglevel=info
