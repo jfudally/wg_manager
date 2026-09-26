@@ -68,6 +68,7 @@ class TestEveryShippedTaskIsRegistered:
             "wg_manager.tasks.provision_client",
             "wg_manager.tasks.discover_peers",
             "wg_manager.tasks.discover_all_peers",
+            "wg_manager.tasks.sweep_enrollment_tokens",
         }
     )
 
@@ -101,6 +102,7 @@ class TestIdempotencyContractInDocstrings:
             "provision_client_task",
             "discover_peers_task",
             "discover_all_peers_task",
+            "sweep_enrollment_tokens_task",
         ],
     )
     def test_task_docstring_carries_phase_3d_verdict(

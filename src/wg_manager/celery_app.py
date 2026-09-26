@@ -46,6 +46,12 @@ celery_app.conf.update(
             "task": "wg_manager.tasks.rotate_expiring_host_certs",
             "schedule": float(settings.ssh_host_cert_rotation_interval_seconds),
         },
+        # Delete enrollment tokens long past expiry / revocation. See
+        # sweep_enrollment_tokens_task.
+        "sweep-enrollment-tokens": {
+            "task": "wg_manager.tasks.sweep_enrollment_tokens",
+            "schedule": float(settings.enroll_token_sweep_interval_seconds),
+        },
     },
 )
 

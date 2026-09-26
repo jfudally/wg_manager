@@ -1274,3 +1274,39 @@ def discover_all_peers_task(self) -> dict[str, Any]:
     }
 
 
+
+
+@celery_app.task(name="wg_manager.tasks.sweep_enrollment_tokens", bind=True)
+def sweep_enrollment_tokens_task(self) -> dict[str, Any]:
+    """Delete enrollment tokens that have been dead longer than the retention.
+
+    Run by Celery beat every ``ENROLL_TOKEN_SWEEP_INTERVAL_SECONDS`` (see
+    ``beat_schedule`` in :mod:`wg_manager.celery_app`). A token is dead
+    once it has expired or been revoked; it's deleted once it has been
+    dead for ``ENROLL_TOKEN_RETENTION_SECONDS``, so recently dead tokens
+    stay visible in ``GET /v1/enrollment-tokens``. The rows hold only a
+    hash, so this is housekeeping rather than secret hygiene; the
+    ``enrollment_token.*`` and ``client.enroll`` audit rows keep the
+    history.
+
+    Phase 3d cycle 2 idempotency: **NATURALLY_IDEMPOTENT**. A dead
+    token can't become live again, so a duplicate or overlapping sweep
+    just deletes nothing the second time.
+
+    :return: ``{"deleted": [ids]}``.
+    """
+    from wg_manager.db import engine
+    from wg_manager.enrollment import delete_dead_tokens
+
+    settings = Settings()
+    with Session(engine) as session:
+        deleted = delete_dead_tokens(
+            session, retention_seconds=settings.enroll_token_retention_seconds
+        )
+        session.commit()
+    logger.info(
+        "enrollment-token sweep: deleted %d token(s) dead for over %d s",
+        len(deleted),
+        settings.enroll_token_retention_seconds,
+    )
+    return {"deleted": deleted}

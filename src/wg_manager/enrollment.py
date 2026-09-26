@@ -19,7 +19,7 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import ColumnElement, and_, update
+from sqlalchemy import ColumnElement, and_, delete, or_, update
 from sqlmodel import Session, col, select
 
 from wg_manager.models import EnrollmentToken, EnrollmentTokenStatus, Server, SSHKey
@@ -216,3 +216,39 @@ def consume_token(session: Session, row: EnrollmentToken) -> bool:
         .values(use_count=EnrollmentToken.use_count + 1)
     )
     return bool(result.rowcount == 1)
+
+
+def delete_dead_tokens(
+    session: Session, *, retention_seconds: int, now: datetime | None = None
+) -> list[int]:
+    """Delete tokens that expired or were revoked over ``retention_seconds`` ago.
+
+    Live tokens are never touched, however old, and neither are
+    exhausted ones that haven't expired yet: they expire within the
+    7-day maximum TTL and are swept after that. Once a token is dead it
+    stays dead, so selecting the ids and then deleting by the same
+    predicate can't remove a row that became live in between. Doesn't
+    commit.
+
+    :param session: Active session (transaction owned by the caller).
+    :param retention_seconds: Grace period after death.
+    :param now: Override for tests; defaults to the current UTC time.
+    :return: Ids of the deleted rows, ascending.
+    """
+    now = now or datetime.now(timezone.utc)
+    # Stored naive UTC (see as_utc), so compare naive.
+    cutoff = (now - timedelta(seconds=retention_seconds)).replace(tzinfo=None)
+    dead = or_(
+        col(EnrollmentToken.expires_at) < cutoff,
+        col(EnrollmentToken.revoked_at) < cutoff,
+    )
+    ids = sorted(
+        int(i)
+        for i in session.exec(select(EnrollmentToken.id).where(dead)).all()
+        if i is not None
+    )
+    if ids:
+        session.exec(  # type: ignore[call-overload]
+            delete(EnrollmentToken).where(col(EnrollmentToken.id).in_(ids))
+        )
+    return ids

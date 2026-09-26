@@ -287,6 +287,10 @@ Run exactly one `beat` per deployment. A host that stays unreachable
 through the whole renew window will expire — watch the worker logs for
 `host-cert rotation failed` and re-run `bootstrap-host` for it.
 
+`beat` also runs the enrollment-token sweeper hourly. It deletes
+tokens that expired or were revoked over a week ago (see the operator
+guide, "List and revoke tokens").
+
 **Upgrading from a version without the validity check:** older
 versions silently accepted expired host certs, so hubs and clients
 that haven't been provisioned in the last day are probably already

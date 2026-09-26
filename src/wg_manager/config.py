@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     :cvar enroll_failure_limit: Failed enroll attempts (401 / 422) per
         source IP per ``enroll_failure_window_seconds`` before that IP is
         locked out for the rest of the window. 0 disables.
+    :cvar enroll_token_retention_seconds: How long an expired or revoked
+        enrollment token is kept (and listed) before the sweeper deletes
+        it. 0 deletes on the next sweep.
+    :cvar enroll_token_sweep_interval_seconds: How often Celery beat runs
+        the enrollment-token sweeper.
     :cvar default_subnet: CIDR used when a ``POST /servers`` payload omits
         the ``subnet`` field. Validated at construction time so a broken
         ``.env`` value fails on app startup rather than at the first
@@ -84,6 +89,12 @@ class Settings(BaseSettings):
     enroll_rate_limit_window_seconds: int = 60
     enroll_failure_limit: int = 10
     enroll_failure_window_seconds: int = 600
+    # Dead (expired / revoked) enrollment tokens are deleted by a beat
+    # sweep once they've been dead this long. The grace period keeps
+    # recent ones in GET /v1/enrollment-tokens; the audit table keeps
+    # the full history regardless.
+    enroll_token_retention_seconds: int = Field(default=7 * 86400, ge=0)
+    enroll_token_sweep_interval_seconds: int = Field(default=3600, gt=0)
     default_subnet: str = "10.9.0.0/24"
     default_wg_port: int = 51820
     celery_broker_url: str = "redis://localhost:6379/0"
