@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from wg_manager.models import (
     CertificateType,
+    EnrollmentTokenStatus,
     NodeStatus,
     OperatorRole,
     OperatorStatus,
@@ -969,6 +970,38 @@ class EnrollmentTokenCreateResponse(BaseModel):
     tenant_id: int | None
     max_uses: int
     expires_at: datetime
+
+
+class EnrollmentTokenRead(BaseModel):
+    """One row of ``GET /enrollment-tokens`` and the revoke response.
+
+    Never includes the token or its hash: the plaintext was shown once
+    at mint time, and the hash is the redemption lookup key.
+
+    :ivar status: Derived state (see
+        :func:`wg_manager.enrollment.token_status`).
+    :ivar revoked_at: When it was revoked, or ``None``.
+    :ivar revoked_by_cn: Who revoked it.
+
+    The other fields mirror :class:`wg_manager.models.EnrollmentToken`.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    tenant_id: int | None
+    server_id: int
+    ssh_key_id: int
+    ssh_username: str
+    name_prefix: str
+    max_uses: int
+    use_count: int
+    expires_at: datetime
+    created_by_cn: str | None
+    created_at: datetime
+    revoked_at: datetime | None
+    revoked_by_cn: str | None
+    status: EnrollmentTokenStatus
 
 
 # Hostname a host reports about itself. It only names the client row
