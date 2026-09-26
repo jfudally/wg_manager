@@ -80,7 +80,7 @@ Phase 3 (multi-tenant, HA, public API versioning, Helm/Terraform).
 ```bash
 make db-up                    # MySQL + Valkey via docker compose
 make vault-up                 # dev Vault on :8200
-make install                  # editable install + dev deps
+make install                  # creates .venv; uv sync from uv.lock (+ dev deps)
 cp .env.example .env
 make migrate                  # apply Alembic migrations
 make ssh-ca-bootstrap         # configure Vault SSH CA
