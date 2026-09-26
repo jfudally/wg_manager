@@ -756,3 +756,61 @@ class AuditEvent(SQLModel, table=True):
         )
 
     __str__ = __repr__
+
+
+class EnrollmentToken(SQLModel, table=True):
+    """A token a fresh host redeems to join the fleet (Phase 3f).
+
+    An admin mints the token over the mTLS API and places the
+    plaintext in the new host's userdata. The host presents it to
+    ``POST /v1/enroll`` on the enrollment listener. Only the SHA-256
+    of the plaintext is stored (:attr:`token_hash`), so the table is
+    safe to ship in backups. Tokens are 256-bit random values, so a
+    fast hash is enough; there's no password to stretch.
+
+    Everything that decides *what the host becomes* is fixed here at
+    mint time: the hub, the tenant, and the SSH identity the worker
+    uses to manage it later. The host only supplies its own public
+    keys and hostname.
+
+    :ivar tenant_id: Tenant the enrolled client lands in. Copied from
+        the hub at mint time.
+    :ivar server_id: Hub the enrolled host peers with.
+    :ivar ssh_key_id: :class:`SSHKey` label (Vault SSH role) the
+        worker uses for the enrolled client.
+    :ivar ssh_username: Remote account the worker's user cert is
+        issued for.
+    :ivar name_prefix: Client rows are named ``<prefix>-<hostname>``.
+    :ivar token_hash: SHA-256 hex of the plaintext token; unique.
+    :ivar max_uses: Number of hosts the token may enroll.
+    :ivar use_count: Successful redemptions so far.
+    :ivar expires_at: Hard expiry (UTC). SQLite hands this back naive;
+        compare through :func:`wg_manager.enrollment.as_utc`.
+    :ivar created_by_cn: CN of the minting operator (``None`` in the
+        ``TLS_REQUIRED=false`` dev posture).
+    :ivar created_at: Mint time (UTC).
+    """
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: int | None = Field(default=None, foreign_key="tenant.id", index=True)
+    server_id: int = Field(foreign_key="server.id", index=True)
+    ssh_key_id: int = Field(foreign_key="sshkey.id")
+    ssh_username: str = Field(max_length=64)
+    name_prefix: str = Field(default="node", max_length=32)
+    token_hash: str = Field(unique=True, index=True, max_length=64)
+    max_uses: int = Field(default=1)
+    use_count: int = Field(default=0)
+    expires_at: datetime
+    created_by_cn: str | None = Field(default=None, max_length=255)
+    created_at: datetime = Field(default_factory=_utcnow)
+
+    def __repr__(self) -> str:
+        # token_hash deliberately omitted: it's the lookup key and has
+        # no business in logs.
+        return (
+            f"EnrollmentToken(id={self.id!r}, server_id={self.server_id!r}, "
+            f"use_count={self.use_count!r}/{self.max_uses!r}, "
+            f"expires_at={self.expires_at!r})"
+        )
+
+    __str__ = __repr__
