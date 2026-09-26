@@ -39,6 +39,16 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   - See `docs/operator-guide.md`, "Zero-touch enrollment", and threats
     T-13 to T-16 in `docs/THREAT_MODEL.md`.
 
+- **Rate limiting on `POST /v1/enroll`.** Limits are per source IP,
+  with counters in Valkey (`wg_manager.ratelimit`):
+  - 120 requests/min;
+  - 10 failed attempts (401/422) per 10 min, which then locks that IP
+    out, even for a valid token.
+
+  Blocked calls get 429 + `Retry-After`. Enrollment fails closed with
+  503 if Valkey is unreachable, and `enroll_node.sh` retries both. The
+  limits are tunable via `ENROLL_RATE_LIMIT_*` / `ENROLL_FAILURE_*`.
+
 ### Fixed
 
 - **Hub reconfigures no longer lose peers under concurrency.**

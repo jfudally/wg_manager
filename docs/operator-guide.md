@@ -400,6 +400,38 @@ A bad, expired or used-up token always gets the same `401`. The real
 reason goes to the audit log as `enroll.reject`, which is worth
 alerting on.
 
+### Rate limits
+
+`POST /v1/enroll` is limited per source IP, with counters in Valkey
+shared by every enroll replica:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ENROLL_RATE_LIMIT_REQUESTS` / `_WINDOW_SECONDS` | 120 / 60 | All enroll requests from one IP. |
+| `ENROLL_FAILURE_LIMIT` / `ENROLL_FAILURE_WINDOW_SECONDS` | 10 / 600 | Failed attempts (bad token = 401, bad body = 422) before that IP is locked out for the rest of the window, **even with a valid token**. |
+
+Set a limit to `0` to disable it. Blocked calls get `429` with
+`Retry-After`, and `enroll_node.sh` backs off and retries. If Valkey
+is unreachable, enrollment fails closed with `503`, which the script
+also retries. Each trip writes one `enroll.rate_limited` line to the
+audit log.
+
+Things to know:
+
+- **Fleets behind NAT share an IP.** An autoscaling group in a private
+  subnet usually reaches the internet through one NAT address. Raise
+  `ENROLL_RATE_LIMIT_REQUESTS` if large groups enroll at once. It only
+  slows them down; they retry.
+- **One broken host can lock out its neighbours.** A host behind the
+  same NAT that keeps sending a bad token counts toward the shared
+  failure bucket. Check `enroll.reject` in the audit log for the
+  reason.
+- **Proxies hide client IPs.** The limit keys on the TCP peer. Behind
+  the HA nginx L4 proxy, or Docker's userland proxy, every caller looks
+  like the proxy and shares one bucket. Publish the enroll port
+  directly, with iptables DNAT (Docker's default for IPv4), until
+  PROXY protocol support lands.
+
 ### Treat userdata as readable
 
 Anyone who can read the instance's metadata can read the token.
