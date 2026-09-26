@@ -21,6 +21,17 @@
 #                           docs/deploy/systemd-timer.md), so this
 #                           firing means the timer skipped
 #
+# A second group, wg-manager.enrollment (Phase 3f), watches the
+# zero-touch enrollment listener's counters:
+#
+#   * WgEnrollTokenGuessing — many unknown-token rejections: someone
+#                             is guessing, or a fleet has a stale token
+#   * WgEnrollDeadTokens    — hosts presenting expired / used-up
+#                             tokens: boots slower than the TTL, or an
+#                             autoscaling group larger than max_uses
+#   * WgEnrollMetricsDown   — the counters can't be read, so the two
+#                             alerts above can't fire
+#
 # Tune ``for:`` durations to your deployment's pain tolerance. The
 # defaults are conservative: short enough to catch incidents,
 # long enough that a transient blip doesn't page on-call.
@@ -110,3 +121,68 @@ groups:
             ``wg-manager certs issue --out-cert/...`` to opt into
             automated renewal.
           runbook: docs/deploy/systemd-timer.md
+
+  - name: wg-manager.enrollment
+    interval: 30s
+    rules:
+      - alert: WgEnrollTokenGuessing
+        # Unknown tokens are what a guesser produces (a real token is
+        # 256 bits, so guessing won't succeed, but it's worth knowing).
+        # The per-IP lockout stops one source after 10 in 10 min, so
+        # more than 20 across the fleet means several sources, or a
+        # fleet whose userdata carries a token that was never minted.
+        expr: sum(increase(wg_manager_enroll_rejects_total{reason="unknown_token"}[10m])) > 20
+        for: 5m
+        labels:
+          severity: warning
+          component: enroll
+        annotations:
+          summary: "Enrollment: {{ $value | humanize }} unknown-token rejections in 10m"
+          description: |
+            POST /v1/enroll rejected more than 20 unknown tokens in the
+            last 10 minutes. Check the `enroll.reject` audit lines
+            (reason=unknown_token) for the peers. Many peers: someone
+            is probing the enroll port; consider restricting it at the
+            firewall / LB. One NAT address: likely your own hosts with
+            a mistyped or never-minted token in their userdata.
+          runbook: docs/operator-guide.md#enrollment-metrics-and-alerts
+
+      - alert: WgEnrollDeadTokens
+        # A host presented a real token that has expired or has no uses
+        # left. That's almost never an attack: a boot took longer than
+        # ttl_seconds, or more instances launched than max_uses.
+        expr: sum by (reason) (increase(wg_manager_enroll_rejects_total{reason=~"expired|exhausted"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: enroll
+        annotations:
+          summary: "Enrollment: hosts presenting {{ $labels.reason }} tokens"
+          description: |
+            At least one host failed to enroll in the last 15 minutes
+            with an {{ $labels.reason }} token, so it booted but isn't
+            on the VPN. expired: raise ttl_seconds or mint closer to
+            launch. exhausted: the group launched more instances than
+            max_uses. Mint a new token and re-run the userdata, or
+            replace the instance.
+          runbook: docs/operator-guide.md#enrollment-metrics-and-alerts
+
+      - alert: WgEnrollMetricsDown
+        # The operator API couldn't read the enrollment counters from
+        # Valkey. Enrollment itself is probably failing too (the rate
+        # limiter uses the same store and fails closed).
+        expr: wg_manager_enroll_metrics_up == 0
+        for: 10m
+        labels:
+          severity: warning
+          component: enroll
+        annotations:
+          summary: "Enrollment metrics unreadable for 10m"
+          description: |
+            wg_manager_enroll_metrics_up has been 0 for 10 minutes: the
+            API can't read the enrollment counters from Valkey, so the
+            other enrollment alerts can't fire. Enrollment requests are
+            likely getting 503 too, because the rate limiter shares the
+            store and fails closed. Check Valkey and the API's
+            connection to it.
+          runbook: docs/operator-guide.md#enrollment-metrics-and-alerts

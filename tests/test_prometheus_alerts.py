@@ -105,3 +105,57 @@ class TestEveryAlertHasRequiredFields:
                     assert annots.get("summary"), (
                         f"alert {rule['alert']!r} has no annotations.summary"
                     )
+
+
+class TestEnrollAlerts:
+    """Phase 3f hardening: alerts on the enrollment listener's counters."""
+
+    ENROLL_ALERTS = ("WgEnrollTokenGuessing", "WgEnrollDeadTokens", "WgEnrollMetricsDown")
+
+    @pytest.fixture(scope="class")
+    def rules(self, alerts: dict) -> dict[str, dict]:
+        return {
+            r["alert"]: r
+            for g in alerts["groups"]
+            for r in g["rules"]
+            if r.get("alert") in self.ENROLL_ALERTS
+        }
+
+    def test_present(self, rules: dict[str, dict]) -> None:
+        assert set(rules) == set(self.ENROLL_ALERTS)
+
+    def test_guessing_watches_unknown_tokens(self, rules: dict[str, dict]) -> None:
+        expr = rules["WgEnrollTokenGuessing"]["expr"]
+        assert "wg_manager_enroll_rejects_total" in expr
+        assert 'reason="unknown_token"' in expr
+
+    def test_dead_tokens_watches_expired_and_exhausted(self, rules: dict[str, dict]) -> None:
+        expr = rules["WgEnrollDeadTokens"]["expr"]
+        assert "wg_manager_enroll_rejects_total" in expr
+        assert "expired" in expr and "exhausted" in expr
+
+    def test_metrics_down_watches_up_gauge(self, rules: dict[str, dict]) -> None:
+        assert "wg_manager_enroll_metrics_up" in rules["WgEnrollMetricsDown"]["expr"]
+
+    def test_metric_names_match_what_the_collector_emits(
+        self, rules: dict[str, dict]
+    ) -> None:
+        """Catch a typo'd metric name, which would make an alert never fire."""
+        import re
+
+        from prometheus_client import CollectorRegistry, generate_latest
+
+        from wg_manager.enroll_metrics import MemoryEnrollMetrics
+        from wg_manager.metrics import EnrollMetricsCollector
+
+        store = MemoryEnrollMetrics()
+        store.record_reject("unknown_token")
+        store.record_response(401)
+        store.record_rate_limited("failures")
+        reg = CollectorRegistry()
+        reg.register(EnrollMetricsCollector(lambda: store))
+        body = generate_latest(reg).decode()
+        emitted = set(re.findall(r"^(wg_manager_\w+?)(?:\{| )", body, re.M))
+        for name, rule in rules.items():
+            for metric in re.findall(r"wg_manager_\w+", rule["expr"]):
+                assert metric in emitted, (name, metric)
