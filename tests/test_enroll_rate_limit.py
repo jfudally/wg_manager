@@ -126,8 +126,10 @@ class TestFailureBucket:
 
     def test_validation_errors_count_as_failures(self, make_client, hub: int) -> None:
         tc = make_client(enroll_failure_limit=2)
+        token = _mint(hub)
         for _ in range(2):
-            assert tc.post(ENROLL_PATH, json={"junk": 1}).status_code == 422
+            resp = tc.post(ENROLL_PATH, json={"junk": 1}, headers=_auth(token))
+            assert resp.status_code == 422
         assert tc.post(ENROLL_PATH, json=_body(), headers=_auth(_mint(hub))).status_code == 429
 
     def test_successes_do_not_count(self, make_client, hub: int) -> None:

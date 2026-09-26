@@ -290,6 +290,52 @@ class TestValidation:
         assert resp.status_code == 422, over
         assert _token_row().use_count == 0
 
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"json": {"junk": 1}},                        # wrong shape
+            {"json": _body(hostname="UPPER")},            # bad field
+            {"content": b"{not json"},                    # unparseable
+            {},                                           # no body at all
+        ],
+    )
+    @pytest.mark.parametrize(
+        "headers", [{}, {"Authorization": "Bearer wgmenr_nope"}]
+    )
+    def test_auth_runs_before_validation(
+        self,
+        enroll: TestClient,
+        hub: int,
+        kwargs: dict[str, Any],
+        headers: dict[str, str],
+    ) -> None:
+        """An unauthenticated caller can't probe the schema via 422s.
+
+        Whatever the body, a missing or unknown token gets the same 401
+        as a well-formed request would.
+        """
+        baseline = enroll.post(ENROLL_PATH, json=_body(), headers=headers)
+        resp = enroll.post(ENROLL_PATH, headers=headers, **kwargs)
+        assert resp.status_code == 401
+        assert resp.text == baseline.text
+        assert resp.headers.get("www-authenticate") == "Bearer"
+
+    def test_used_up_token_with_bad_body_is_401(
+        self, enroll: TestClient, hub: int
+    ) -> None:
+        token = _mint(hub)
+        assert enroll.post(ENROLL_PATH, json=_body(), headers=_auth(token)).status_code == 201
+        resp = enroll.post(ENROLL_PATH, json={"junk": 1}, headers=_auth(token))
+        assert resp.status_code == 401
+
+    def test_malformed_json_with_valid_token_is_422(
+        self, enroll: TestClient, hub: int
+    ) -> None:
+        token = _mint(hub)
+        resp = enroll.post(ENROLL_PATH, content=b"{not json", headers=_auth(token))
+        assert resp.status_code == 422
+        assert _token_row().use_count == 0
+
     def test_rejects_non_ed25519_host_key(self, enroll: TestClient, hub: int) -> None:
         """sshd is configured with the ed25519 host cert path only."""
         rsa = generate_private_key(public_exponent=65537, key_size=2048)
