@@ -396,7 +396,9 @@ In one transaction, serialised per hub:
 If anything fails after the token is consumed, the whole transaction
 rolls back and the use is returned.
 
-A bad, expired or used-up token always gets the same `401`. The real
+A bad, expired or used-up token always gets the same `401`. The token
+is checked before the body, so a caller without a live token never sees
+a `422`. The real
 reason goes to the audit log as `enroll.reject`, which is worth
 alerting on.
 
@@ -408,7 +410,7 @@ shared by every enroll replica:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `ENROLL_RATE_LIMIT_REQUESTS` / `_WINDOW_SECONDS` | 120 / 60 | All enroll requests from one IP. |
-| `ENROLL_FAILURE_LIMIT` / `ENROLL_FAILURE_WINDOW_SECONDS` | 10 / 600 | Failed attempts (bad token = 401, bad body = 422) before that IP is locked out for the rest of the window, **even with a valid token**. |
+| `ENROLL_FAILURE_LIMIT` / `ENROLL_FAILURE_WINDOW_SECONDS` | 10 / 600 | Failed attempts (bad token = 401, bad body with a live token = 422) before that IP is locked out for the rest of the window, **even with a valid token**. |
 
 Set a limit to `0` to disable it. Blocked calls get `429` with
 `Retry-After`, and `enroll_node.sh` backs off and retries. If Valkey
