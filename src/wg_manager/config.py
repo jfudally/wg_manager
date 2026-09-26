@@ -48,6 +48,11 @@ class Settings(BaseSettings):
     :cvar enroll_proxy_trusted_cidrs: Comma-separated networks allowed to
         connect when ``enroll_proxy_protocol`` is on (the proxies).
         Required in that mode; other peers are dropped.
+    :cvar enroll_token_retention_seconds: How long an expired or revoked
+        enrollment token is kept (and listed) before the sweeper deletes
+        it. 0 deletes on the next sweep.
+    :cvar enroll_token_sweep_interval_seconds: How often Celery beat runs
+        the enrollment-token sweeper.
     :cvar default_subnet: CIDR used when a ``POST /servers`` payload omits
         the ``subnet`` field. Validated at construction time so a broken
         ``.env`` value fails on app startup rather than at the first
@@ -114,6 +119,13 @@ class Settings(BaseSettings):
     # caller from forging one.
     enroll_proxy_protocol: bool = False
     enroll_proxy_trusted_cidrs: str = ""
+
+    # Dead (expired / revoked) enrollment tokens are deleted by a beat
+    # sweep once they've been dead this long. The grace period keeps
+    # recent ones in GET /v1/enrollment-tokens; the audit table keeps
+    # the full history regardless.
+    enroll_token_retention_seconds: int = Field(default=7 * 86400, ge=0)
+    enroll_token_sweep_interval_seconds: int = Field(default=3600, gt=0)
     default_subnet: str = "10.9.0.0/24"
     default_wg_port: int = 51820
     celery_broker_url: str = "redis://localhost:6379/0"
