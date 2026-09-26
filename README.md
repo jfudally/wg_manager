@@ -166,7 +166,7 @@ The release page also attaches `sbom-api.cdx.json` +
 | Hub + spoke provisioning over SSH | `wg-manager servers register` / `clients register` |
 | Manual clients for phones / IoT (server-side keygen, render `wg0.conf` once) | `wg-manager clients add-manual` |
 | VPN-first node enrollment, then Cinc over the tunnel | `scripts/wg_bootstrap.sh all …` |
-| Zero-touch enrollment from userdata (single-use tokens, separate cert-optional listener) | `POST /v1/enrollment-tokens` + `scripts/enroll_node.sh` |
+| Zero-touch enrollment from userdata (single-use tokens, separate cert-optional listener) | `POST /v1/enrollment-tokens` (mint), `GET` (list), `POST …/{id}/revoke` + `scripts/enroll_node.sh` |
 | Peer discovery (`wg show … dump` parser) | `POST /servers/{id}/discover` |
 | SSH config export of every managed client | `wg-manager clients ssh-config` |
 | Async provisioning with Celery | `GET /tasks/{task_id}` |
