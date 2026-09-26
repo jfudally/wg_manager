@@ -10,6 +10,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Enrollment tokens can be bound to source networks.** Mint with
+  `allowed_cidrs` (1 to 16 networks; Alembic 0022) and the token is only
+  redeemable from those addresses. Any other source gets the uniform
+  401, and the token isn't used up. The binding is shown in
+  `GET /v1/enrollment-tokens` and recorded in the mint audit event.
+
 - **Expired-token sweeper.** A new Celery beat task,
   `wg_manager.tasks.sweep_enrollment_tokens`, deletes enrollment tokens
   that expired or were revoked more than `ENROLL_TOKEN_RETENTION_SECONDS`

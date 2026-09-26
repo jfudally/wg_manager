@@ -2387,7 +2387,16 @@ from the operator's first SSH connection as the root of trust.
         has no PROXY support, so this is a uvicorn `http=` protocol
         class. Covered over real sockets on asyncio and uvloop,
         including a header coalesced with the ClientHello.
-  - [ ] Token binding: optional expected source CIDR / instance ID.
+  - [x] **Token source binding** (2026-09-26, Alembic 0022). An optional
+        `allowed_cidrs` (1 to 16 networks) on mint. It's checked with the
+        other token checks before the body, gets the uniform 401 with
+        reason `source_not_allowed`, and fails closed on an unparseable
+        peer. It's only meaningful where the listener sees real client IPs
+        (direct, or `ENROLL_PROXY_PROTOCOL` behind an LB).
+        **Instance-ID binding is intentionally not done here:** without
+        attestation the host would just *claim* an ID, and anyone who can
+        read the userdata (IMDS, console) can read the instance ID too.
+        Proving instance identity is the attestation item under Phase 3.
   - [x] **HA enroll port** (2026-09-26). A second `stream {}` server
         in `docker/nginx/wg-manager.conf` (8444, `proxy_protocol on;`)
         in front of new `enroll1` / `enroll2` services in the dev `ha`
