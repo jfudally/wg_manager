@@ -38,7 +38,7 @@ from wg_manager.models import Client, EnrollmentToken, NodeStatus, Server
 from wg_manager.routers import health
 from wg_manager.schemas import EnrollRequest, EnrollResponse
 from wg_manager.ssh_ca import HostCert, SSHCAError, make_ssh_ca_backend
-from wg_manager.tasks import _persist_host_cert, reconfigure_server_task
+from wg_manager.tasks import _persist_host_cert, request_reconfigure
 from wg_manager.wireguard import render_enrolled_client_config
 
 logger = logging.getLogger(__name__)
@@ -176,7 +176,7 @@ def enroll(
             raise
         session.refresh(client)
 
-    task = reconfigure_server_task.delay(server_id)
+    task = request_reconfigure(server_id)
     return EnrollResponse(
         client_id=int(client.id or 0),
         name=client.name,

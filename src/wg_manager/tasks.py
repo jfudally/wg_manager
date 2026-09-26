@@ -743,72 +743,167 @@ def rotate_expiring_host_certs_task(self) -> dict[str, Any]:
     return {**dispatched, "failed": failed}
 
 
-@celery_app.task(name="wg_manager.tasks.reconfigure_server", bind=True)
-def reconfigure_server_task(self, server_id: int) -> dict[str, Any]:
-    """Regenerate the server's ``wg0.conf`` from DB state and restart the interface.
+# How a reconfigure that finds the hub lock held backs off. 30 x 10 s
+# covers five minutes of continuous contention, far longer than any
+# healthy SSH reconfigure, before the task fails loudly.
+RECONFIGURE_RETRY_SECONDS = 10
+RECONFIGURE_MAX_RETRIES = 30
 
-    This is the fast path: no package install, no keygen. It is dispatched
-    automatically after a successful client provision so new peers are
-    picked up without a full re-provision of the hub.
 
-    Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK** (cycle 3
-    upgraded from BENIGN_OVERWRITE). Acquires
-    :func:`wg_manager.locks.task_row_lock` on ``wgm:server:<id>``
-    so concurrent reconfigures on the same server can't cause an
-    interface flap. Renders the same ``wg0.conf`` from the current
-    DB state and restarts ``wg-quick``.
+def request_reconfigure(server_id: int) -> Any:
+    """Ask for the hub's peer list to catch up with the DB, then dispatch.
 
-    :param server_id: Primary key of the :class:`Server` row to reconfigure.
-    :type server_id: int
-    :return: Summary of the reconfigure result.
-    :rtype: dict[str, Any]
-    :raises ValueError: If the server or its SSH key cannot be loaded.
+    **The only sanctioned way to dispatch** :func:`reconfigure_server_task`.
+    Call it *after* committing the change the hub must learn about. It
+    bumps ``server.reconfig_requested_gen`` in its own transaction and
+    queues the task with that generation, which lets the task:
+
+    * skip work a newer run already covered (coalescing), and
+    * never mark a generation applied unless its client list was read
+      after the change that requested it.
+
+    The bump is a single ``UPDATE … SET gen = gen + 1``, so concurrent
+    callers each get a distinct increment.
+
+    :param server_id: Hub to reconfigure.
+    :return: The Celery ``AsyncResult`` of the queued task.
+    :raises ValueError: If the server doesn't exist.
     """
+    from sqlalchemy import update
+
     from wg_manager.db import engine
 
     with Session(engine) as session:
-        # Phase 3d cycle 3 — advisory lock on the server row.
-        with task_row_lock(session, "server", server_id) as acquired:
+        bumped = session.exec(  # type: ignore[call-overload]
+            update(Server)
+            .where(Server.id == server_id)
+            .values(reconfig_requested_gen=Server.reconfig_requested_gen + 1)
+        )
+        if bumped.rowcount != 1:
+            session.rollback()
+            raise ValueError(f"Server {server_id} not found")
+        session.commit()
+        generation = session.exec(
+            select(Server.reconfig_requested_gen).where(Server.id == server_id)
+        ).one()
+    return reconfigure_server_task.apply_async(
+        args=(server_id,), kwargs={"generation": int(generation)}
+    )
+
+
+@celery_app.task(
+    name="wg_manager.tasks.reconfigure_server",
+    bind=True,
+    max_retries=RECONFIGURE_MAX_RETRIES,
+)
+def reconfigure_server_task(
+    self, server_id: int, generation: int | None = None
+) -> dict[str, Any]:
+    """Regenerate the server's ``wg0.conf`` from DB state and restart the interface.
+
+    This is the fast path: no package install, no keygen. Dispatch it
+    through :func:`request_reconfigure`, never ``.delay()`` directly.
+
+    Phase 3d cycle 2 idempotency: **GUARDED_BY_ROW_LOCK**, and since
+    Phase 3f hardening also **GENERATION_COALESCED**. It holds
+    :func:`wg_manager.locks.task_row_lock` on ``wgm:server:<id>`` so
+    concurrent reconfigures can't flap the interface, and re-running it
+    renders the same ``wg0.conf`` from DB state.
+
+    Concurrency (see Alembic 0019 for the full story):
+
+    * **Lock contention retries.** It used to skip, which lost updates:
+      the lock holder may have read the client list before this task's
+      change was committed. Now it retries every
+      :data:`RECONFIGURE_RETRY_SECONDS`, up to
+      :data:`RECONFIGURE_MAX_RETRIES` times, then fails.
+    * **Coalescing.** If ``server.reconfig_applied_gen`` already covers
+      ``generation``, a newer run already wrote a client list that
+      includes this change, so the task returns ``coalesced`` with no
+      SSH session and no interface restart.
+    * **Ordering.** Inside the lock, ``reconfig_requested_gen`` is read
+      *before* the client list, from a session opened after the lock
+      was acquired. That guarantees every generation up to the one read
+      is reflected in the list, so it's safe to mark it applied once the
+      hub has the config.
+
+    :param server_id: Primary key of the :class:`Server` row to reconfigure.
+    :param generation: Requested generation this run must cover. ``None``
+        (messages queued before Alembic 0019) always applies.
+    :return: ``{"status": "applied", ...}`` or ``{"status": "coalesced", ...}``.
+    :raises ValueError: If the server or its SSH key cannot be loaded.
+    :raises celery.exceptions.Retry: When the hub lock is held.
+    """
+    from sqlalchemy import update
+
+    from wg_manager.db import engine
+
+    with Session(engine) as lock_session:
+        with task_row_lock(lock_session, "server", server_id) as acquired:
             if not acquired:
-                return {
-                    "status": "skipped",
-                    "reason": "concurrent_run",
-                    "server_id": server_id,
-                }
-            server = session.get(Server, server_id)
-            if server is None:
-                raise ValueError(f"Server {server_id} not found")
-            ssh_key = session.get(SSHKey, server.ssh_key_id)
-            if ssh_key is None:
-                raise ValueError(f"SSH key {server.ssh_key_id} not found")
+                raise self.retry(countdown=RECONFIGURE_RETRY_SECONDS)
 
-            clients = _ready_clients_for(session, server_id)
+            # Fresh session opened after the lock is held, so its reads
+            # can't come from a snapshot taken while we were waiting.
+            with Session(engine) as session:
+                server = session.get(Server, server_id)
+                if server is None:
+                    raise ValueError(f"Server {server_id} not found")
+                if (
+                    generation is not None
+                    and server.reconfig_applied_gen >= generation
+                ):
+                    return {
+                        "status": "coalesced",
+                        "server_id": server_id,
+                        "generation": generation,
+                        "applied_generation": server.reconfig_applied_gen,
+                    }
+                ssh_key = session.get(SSHKey, server.ssh_key_id)
+                if ssh_key is None:
+                    raise ValueError(f"SSH key {server.ssh_key_id} not found")
 
-            try:
-                with _open_runner(
-                    host=server.hostname,
-                    known_principals=server.host_cert_principals,
-                    port=server.ssh_port,
-                    username=server.ssh_username,
-                    ssh_key=ssh_key,
-                ) as runner:
-                    reconfigure_server(runner, server, clients)
-            except _SSH_EXPECTED_ERRORS as exc:
-                logger.error(
-                    "server %s reconfigure failed for %s: %s",
-                    server_id,
-                    server.hostname,
-                    exc,
+                # Order matters: target first, then the clients it covers.
+                target = server.reconfig_requested_gen
+                clients = _ready_clients_for(session, server_id)
+
+                try:
+                    with _open_runner(
+                        host=server.hostname,
+                        known_principals=server.host_cert_principals,
+                        port=server.ssh_port,
+                        username=server.ssh_username,
+                        ssh_key=ssh_key,
+                    ) as runner:
+                        reconfigure_server(runner, server, clients)
+                except _SSH_EXPECTED_ERRORS as exc:
+                    logger.error(
+                        "server %s reconfigure failed for %s: %s",
+                        server_id,
+                        server.hostname,
+                        exc,
+                    )
+                    raise _fail_clean(
+                        f"server {server_id} ({server.hostname}) reconfigure failed: {exc}"
+                    ) from None
+
+                # Only ever moves forward: a guarded UPDATE, so a slower
+                # run can't roll back a newer run's applied generation.
+                session.exec(  # type: ignore[call-overload]
+                    update(Server)
+                    .where(Server.id == server_id)
+                    .where(Server.reconfig_applied_gen < target)
+                    .values(reconfig_applied_gen=target)
                 )
-                raise _fail_clean(
-                    f"server {server_id} ({server.hostname}) reconfigure failed: {exc}"
-                ) from None
+                session.commit()
 
-            return {
-                "server_id": server_id,
-                "peer_count": len(clients),
-                "peers": [c.name for c in clients],
-            }
+                return {
+                    "status": "applied",
+                    "server_id": server_id,
+                    "generation": target,
+                    "peer_count": len(clients),
+                    "peers": [c.name for c in clients],
+                }
 
 
 @celery_app.task(name="wg_manager.tasks.provision_client", bind=True)
@@ -943,7 +1038,7 @@ def provision_client_task(
 
     # Dispatch the follow-up server reconfigure outside the session so the
     # hub task opens its own clean session / connection.
-    reconfigure_task = reconfigure_server_task.delay(server_id)
+    reconfigure_task = request_reconfigure(server_id)
     result["reconfigure_task_id"] = reconfigure_task.id
     return result
 

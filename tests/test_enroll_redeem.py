@@ -60,11 +60,11 @@ def dispatched(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     class _Result:
         id = "task-reconf"
 
-    def _delay(server_id: int) -> _Result:
+    def _request(server_id: int) -> _Result:
         calls.append(server_id)
         return _Result()
 
-    monkeypatch.setattr(enroll_app_module.reconfigure_server_task, "delay", _delay)
+    monkeypatch.setattr(enroll_app_module, "request_reconfigure", _request)
     return calls
 
 
