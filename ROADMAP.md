@@ -2283,4 +2283,16 @@ from the operator's first SSH connection as the root of trust.
         expiry and allowed networks, with an "Active only" filter and
         confirmed revoke. The mint form offers ready hubs only, and the
         new token is shown once with a copy button.
-  - [ ] Terraform module snippet that mints a token per instance.
+  - [x] **Terraform module** (2026-09-26):
+        `deploy/terraform/wg-manager-enrollment-token`
+        (`Mastercard/restapi` 2.x) plus an EC2 example. It mints on
+        create, revokes on destroy, and replaces on input change via
+        `replace_triggered_by`. It needed a new
+        `GET /v1/enrollment-tokens/{id}` for refresh. Verified end to
+        end against a live API: apply, no-op re-plan, replace, destroy,
+        and a swept row. That run found three issues, now pinned by
+        tests: `create_returns_object` is required; `force_new` is
+        suppressed by `ignore_all_server_changes`; and restapi 3.0.0
+        breaks on the 404 for a swept token. `make terraform-check`
+        runs fmt + validate. Autoscaling groups share one token per
+        launch template; attestation is the real fix.

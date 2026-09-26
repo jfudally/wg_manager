@@ -90,6 +90,19 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
     networks, one per line.
   - A new token is shown exactly once, with a copy button.
 
+- **`GET /v1/enrollment-tokens/{id}`.** Returns one token, in the same
+  shape as a list row and never with the token itself. Admin on the
+  token's tenant; 404 if unknown.
+- **Terraform module for enrollment tokens.**
+  `deploy/terraform/wg-manager-enrollment-token` uses the
+  `Mastercard/restapi` provider, pinned to 2.x:
+  - it mints on create, revokes on destroy, and replaces the token on
+    any input change;
+  - its token output is sensitive;
+  - `deploy/terraform/examples/aws-instance` is a complete example;
+  - `make terraform-check` runs `terraform fmt -check` and `validate`,
+    using Docker if Terraform isn't installed.
+
 ### Changed
 
 - **`POST /v1/enroll` checks the token before the body.** An

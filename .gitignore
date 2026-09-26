@@ -67,3 +67,12 @@ backups/
 # inventory, audit events, and a Vault audit log slice — never commit.
 evidence/
 vault-init.json
+
+# Terraform (deploy/terraform): provider downloads, local state and lock
+# files. The module is reusable, so it doesn't pin a lock file; its
+# version constraints are the contract.
+deploy/terraform/**/.terraform/
+deploy/terraform/**/.terraform.lock.hcl
+deploy/terraform/**/*.tfstate
+deploy/terraform/**/*.tfstate.*
+.terraform-plugin-cache/

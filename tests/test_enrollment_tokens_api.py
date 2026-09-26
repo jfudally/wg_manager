@@ -306,6 +306,50 @@ class TestList:
         assert client.get(URL).json() == []
 
 
+class TestGet:
+    """GET /enrollment-tokens/{id}: one token, same shape as the list.
+
+    Terraform's restapi provider re-reads each token by id on every
+    plan, so this has to be stable and must never include the token.
+    """
+
+    def test_returns_the_row_without_secrets(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        token_id = _mint_via_api(client, key_id, server_id, max_uses=2)
+        resp = client.get(f"{URL}/{token_id}")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["id"] == token_id
+        assert body["max_uses"] == 2
+        assert body["status"] == "active"
+        assert "token" not in body and "token_hash" not in body
+        assert body == client.get(URL).json()[0]
+
+    def test_reflects_revocation(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        token_id = _mint_via_api(client, key_id, server_id)
+        client.post(f"{URL}/{token_id}/revoke")
+        assert client.get(f"{URL}/{token_id}").json()["status"] == "revoked"
+
+    def test_unknown_404(self, client: TestClient) -> None:
+        assert client.get(f"{URL}/999").status_code == 404
+
+    def test_tenant_operator_forbidden(self, client: TestClient, scoped) -> None:
+        key_id, server_id = _seed()
+        token_id = _mint_via_api(client, key_id, server_id)
+        scoped(TenantScope(is_super_admin=False, tenant_ids=(1,),
+                           tenant_roles={1: OperatorRole.operator}))
+        assert client.get(f"{URL}/{token_id}").status_code == 403
+
+    def test_admin_of_other_tenant_forbidden(self, client: TestClient, scoped) -> None:
+        key_id, server_id = _seed(tenant_id=1)
+        _seed(tenant_id=2)
+        token_id = _mint_via_api(client, key_id, server_id)
+        scoped(TenantScope(is_super_admin=False, tenant_ids=(2,),
+                           tenant_roles={2: OperatorRole.admin}))
+        assert client.get(f"{URL}/{token_id}").status_code == 403
+
+
 class TestRevoke:
     def test_revokes_and_audits(self, client: TestClient) -> None:
         key_id, server_id = _seed()

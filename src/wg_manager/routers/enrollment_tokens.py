@@ -8,6 +8,8 @@ redeems it at ``POST /v1/enroll`` on the enrollment port.
 * ``POST /enrollment-tokens``: mint; returns the plaintext once.
 * ``GET /enrollment-tokens``: list, newest first, with a derived
   ``status``. Never returns the token or its hash.
+* ``GET /enrollment-tokens/{id}``: one token, same shape as a list row.
+  Terraform's restapi provider re-reads tokens with it.
 * ``POST /enrollment-tokens/{id}/revoke``: soft revoke; idempotent.
 
 Everything here is admin-only: a per-tenant admin on the token's (hub's)
@@ -167,6 +169,24 @@ def list_enrollment_tokens(
     if active:
         query = query.where(active_filter())
     return [_read(row) for row in session.exec(query).all()]
+
+
+@router.get("/{token_id}", response_model=EnrollmentTokenRead)
+def get_enrollment_token(
+    token_id: int,
+    session: _SessionDep,
+    scope: ScopeDep,
+) -> EnrollmentTokenRead:
+    """Return one enrollment token (never the token itself).
+
+    :raises HTTPException: 404 if the token doesn't exist; 403 unless
+        the caller is admin on its tenant.
+    """
+    row = session.get(EnrollmentToken, token_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Enrollment token not found")
+    require_tenant_role(scope, row.tenant_id, OperatorRole.admin)
+    return _read(row)
 
 
 @router.post("/{token_id}/revoke", response_model=EnrollmentTokenRead)
