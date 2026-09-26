@@ -235,13 +235,14 @@ make ha-logs                # tail all ha services
 make ha-down                # docker compose --profile ha down
 ```
 
-### Three reachable endpoints from the host
+### Reachable endpoints from the host
 
 | Endpoint | Routes to | Use when |
 |---|---|---|
 | `https://127.0.0.1:8443/healthz` | nginx LB → api1 OR api2 | Normal operator traffic |
 | `https://127.0.0.1:8001/healthz` | api1 directly | Debugging — bypasses the LB |
 | `https://127.0.0.1:8002/healthz` | api2 directly | Debugging — bypasses the LB |
+| `https://127.0.0.1:8444/healthz` | nginx LB → enroll1 OR enroll2 | Zero-touch enrollment (`POST /v1/enroll`) |
 
 All three require `--cacert tls/ca-bundle.crt`. The ha profile pins
 `TLS_REQUIRED=false` so client certs aren't enforced — that keeps
@@ -249,6 +250,30 @@ the demo runnable without minting the operator-cert pair the full
 mTLS dance needs. Flip the env to `true` in both `api1` and `api2`
 and pass `--cert tls/client.crt --key tls/client.key` to exercise
 the full mTLS path.
+
+### Enrollment through the LB
+
+The profile also runs two enrollment listeners, `enroll1` and `enroll2`,
+behind the LB's port 8444. It's the same L4 passthrough as the API port,
+with one addition: nginx sends a PROXY protocol header
+(`proxy_protocol on;`), and the listeners run with
+`ENROLL_PROXY_PROTOCOL=true`. Without it, every enrolling host would
+show up with nginx's address, and the per-IP rate limits would treat
+them as one caller, so a single bad actor could lock out every
+enrollment.
+
+The enroll replicas publish no host port: they only accept connections
+that carry a PROXY header from the trusted (compose-network) ranges,
+and a published port would let a local caller reach them through
+Docker's proxy from one of those ranges. They share rate-limit counters
+in Valkey. The operator port (8443) must never send PROXY headers,
+because the operator listener doesn't parse them. See the operator
+guide, "Behind a load balancer (PROXY protocol)", for production
+balancers.
+
+```bash
+curl --cacert tls/ca-bundle.crt https://127.0.0.1:8444/healthz
+```
 
 ### Failover smoke
 

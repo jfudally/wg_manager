@@ -15,13 +15,18 @@ them so the difference is explicit and testable:
   which mounts nothing but the enrollment route and health probes.
 
 Both return keyword arguments for :func:`uvicorn.run` /
-:class:`uvicorn.Config`.
+:class:`uvicorn.Config`. :func:`enroll_ssl_context` builds the same
+enrollment policy as an :class:`ssl.SSLContext`, for the PROXY protocol
+mode where the TLS handshake happens inside
+:mod:`wg_manager.proxy_protocol` rather than in uvicorn.
 """
 
 from __future__ import annotations
 
 import ssl
 from typing import Any
+
+from uvicorn.config import SSL_PROTOCOL_VERSION, create_ssl_context
 
 from wg_manager.config import Settings
 
@@ -64,3 +69,27 @@ def enroll_ssl_kwargs(settings: Settings) -> dict[str, Any]:
         "ssl_keyfile": settings.tls_key_pem,
         "ssl_cert_reqs": ssl.CERT_NONE,
     }
+
+
+def enroll_ssl_context(settings: Settings) -> ssl.SSLContext:
+    """Build the enrollment listener's TLS policy as an ``SSLContext``.
+
+    Same policy as :func:`enroll_ssl_kwargs`, built with uvicorn's own
+    helper and defaults (protocol, ciphers) so both modes negotiate
+    identically.
+
+    :param settings: Resolved settings; reads ``tls_cert_pem`` and
+        ``tls_key_pem``.
+    :return: A server context that requests no client cert and has no
+        CA loaded.
+    """
+    kwargs = enroll_ssl_kwargs(settings)
+    return create_ssl_context(
+        certfile=kwargs["ssl_certfile"],
+        keyfile=kwargs["ssl_keyfile"],
+        password=None,
+        ssl_version=SSL_PROTOCOL_VERSION,
+        cert_reqs=kwargs["ssl_cert_reqs"],
+        ca_certs=None,
+        ciphers="TLSv1",
+    )

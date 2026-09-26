@@ -48,6 +48,22 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   Blocked calls get 429 + `Retry-After`. Enrollment fails closed with
   503 if Valkey is unreachable, and `enroll_node.sh` retries both. The
   limits are tunable via `ENROLL_RATE_LIMIT_*` / `ENROLL_FAILURE_*`.
+- **PROXY protocol on the enrollment listener.** With
+  `ENROLL_PROXY_PROTOCOL=true` and `ENROLL_PROXY_TRUSTED_CIDRS`, the
+  listener behaves as follows:
+  - every connection must start with a PROXY v1 or v2 header from a
+    trusted network;
+  - the listener then does TLS itself and passes the header's client
+    address to the app (`wg_manager.proxy_protocol`);
+  - the rate limits and audit log see real client IPs behind an AWS
+    NLB, HAProxy or nginx `stream {}`.
+
+  Connections without a header, from untrusted peers, or that are too
+  slow to send the header are dropped. It's off by default, and both
+  settings are passed through to the prod `enroll` service.
+- **HA enrollment port.** `docker/nginx/wg-manager.conf` gains a
+  second `stream {}` server on 8444 with `proxy_protocol on;`, in front
+  of new `enroll1` / `enroll2` services in the dev `ha` compose profile.
 
 ### Changed
 
