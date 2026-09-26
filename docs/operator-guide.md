@@ -440,3 +440,29 @@ Anyone who can read the instance's metadata can read the token.
 That's why tokens are single-use by default, short-lived, and tied to
 one hub and one tenant. Keep `ttl_seconds` close to how long a boot
 takes, and keep `max_uses` at 1 unless you really need more.
+
+### List and revoke tokens
+
+Both are admin only, like minting. A tenant admin sees and revokes only
+their own tenant's tokens.
+
+```bash
+# Newest first. Filters: ?server_id=1, ?active=true (redeemable now).
+curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
+  https://wg.example.com/v1/enrollment-tokens
+
+# Revoke token 7. Safe to repeat.
+curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
+  -X POST https://wg.example.com/v1/enrollment-tokens/7/revoke
+```
+
+Each row has a `status`: `active`, `revoked`, `expired` or `exhausted`
+(all uses taken). The token itself and its hash are never returned.
+
+Revoke a token as soon as you suspect its userdata leaked, or when an
+autoscaling group with a multi-use token is retired. Revocation is
+immediate, including for a redemption already in progress. Redeeming
+a revoked token gets the same `401` as any other bad token, with
+`reason: revoked` in the `enroll.reject` audit line. Hosts that already
+enrolled with the token stay enrolled; delete their clients to remove
+them. Revocations are audited as `enrollment_token.revoke`.
