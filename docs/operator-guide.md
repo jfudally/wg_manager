@@ -353,6 +353,9 @@ curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
        "name_prefix": "web", "ttl_seconds": 3600, "max_uses": 1}'
 ```
 
+The dashboard's **Enrollment tokens** page does the same: mint (the
+token is shown once, with a copy button), list and revoke.
+
 Or with the CLI (it talks to the same API; `--ttl` takes seconds or
 `s`/`m`/`h`/`d`):
 

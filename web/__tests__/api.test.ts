@@ -483,3 +483,29 @@ describe("endpoint paths", () => {
     );
   });
 });
+
+describe("enrollment tokens", () => {
+  it("builds list query strings", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(makeResponse(200, []));
+    await api.listEnrollmentTokens();
+    await api.listEnrollmentTokens({ active: true, serverId: 7 });
+    const urls = fetchSpy.mock.calls.map(([u]) => String(u));
+    expect(urls[0]).toMatch(/\/enrollment-tokens$/);
+    expect(urls[1]).toMatch(/\/enrollment-tokens\?server_id=7&active=true$/);
+  });
+
+  it("POSTs mint and revoke", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(makeResponse(201, {}));
+    await api.createEnrollmentToken({
+      server_id: 1,
+      ssh_key_id: 2,
+      ssh_username: "wgmgr",
+    });
+    await api.revokeEnrollmentToken(9);
+    const [[mintUrl, mintInit], [revokeUrl, revokeInit]] = fetchSpy.mock.calls;
+    expect(String(mintUrl)).toMatch(/\/enrollment-tokens$/);
+    expect(mintInit?.method).toBe("POST");
+    expect(String(revokeUrl)).toMatch(/\/enrollment-tokens\/9\/revoke$/);
+    expect(revokeInit?.method).toBe("POST");
+  });
+});

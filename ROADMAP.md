@@ -2278,5 +2278,9 @@ from the operator's first SSH connection as the root of trust.
         `--token-only` for launch scripts), `list` (`--server-id`,
         `--active`), and `revoke`. These are thin wrappers over
         `/v1/enrollment-tokens`, so authz and audit stay in the API.
-  - [ ] Dashboard page for enrollment tokens.
+  - [x] **Dashboard page for enrollment tokens** (2026-09-26):
+        `/enrollment-tokens` lists tokens with their status, uses,
+        expiry and allowed networks, with an "Active only" filter and
+        confirmed revoke. The mint form offers ready hubs only, and the
+        new token is shown once with a copy button.
   - [ ] Terraform module snippet that mints a token per instance.
