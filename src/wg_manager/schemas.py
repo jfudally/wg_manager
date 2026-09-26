@@ -969,3 +969,101 @@ class EnrollmentTokenCreateResponse(BaseModel):
     tenant_id: int | None
     max_uses: int
     expires_at: datetime
+
+
+# Hostname a host reports about itself. It only names the client row
+# (``<prefix>-<hostname>``) and is never used as an SSH principal or a
+# dial target. Lowercase DNS shape, at most one label's worth (63).
+_ENROLL_HOSTNAME_PATTERN = (
+    r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$"
+)
+
+
+class EnrollRequest(BaseModel):
+    """Body of ``POST /v1/enroll`` (enrollment listener).
+
+    The token travels in ``Authorization: Bearer``, not here, so bodies
+    can be logged by proxies without leaking it.
+
+    :ivar hostname: The host's own name; used only to name the client
+        row.
+    :ivar wg_public_key: The host's WireGuard public key (base64, 32
+        bytes). The private key never leaves the host.
+    :ivar ssh_host_public_key: The host's ``ssh-ed25519`` host public
+        key in OpenSSH format. It's signed into a host cert so the
+        worker can later dial the host without TOFU. Normalised to
+        ``<type> <base64>`` (the comment is dropped).
+    """
+
+    hostname: str = Field(max_length=63, pattern=_ENROLL_HOSTNAME_PATTERN)
+    wg_public_key: str
+    ssh_host_public_key: str
+
+    @field_validator("wg_public_key")
+    @classmethod
+    def _wg_key_shape(cls, value: str) -> str:
+        """Require standard base64 that decodes to exactly 32 bytes."""
+        import base64
+        import binascii
+
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("wg_public_key must be base64") from exc
+        if len(raw) != 32:
+            raise ValueError("wg_public_key must decode to 32 bytes")
+        return value
+
+    @field_validator("ssh_host_public_key")
+    @classmethod
+    def _ssh_key_is_ed25519(cls, value: str) -> str:
+        """Require a parseable ed25519 OpenSSH public key; drop the comment."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+            Ed25519PublicKey,
+        )
+        from cryptography.hazmat.primitives.serialization import (
+            load_ssh_public_key,
+        )
+
+        parts = value.strip().split()
+        if len(parts) < 2:
+            raise ValueError("ssh_host_public_key must be '<type> <base64>'")
+        normalised = f"{parts[0]} {parts[1]}"
+        try:
+            key = load_ssh_public_key(normalised.encode("ascii"))
+        except (ValueError, UnicodeEncodeError) as exc:
+            raise ValueError("ssh_host_public_key is not a valid OpenSSH key") from exc
+        if not isinstance(key, Ed25519PublicKey):
+            raise ValueError("ssh_host_public_key must be ssh-ed25519")
+        return normalised
+
+
+class EnrollResponse(BaseModel):
+    """201 response for ``POST /v1/enroll``.
+
+    Everything the host needs to join the VPN and accept management:
+
+    :ivar client_id: The new client row's id.
+    :ivar name: The client row's name (``<prefix>-<hostname>``).
+    :ivar address: The host's VPN address (``a.b.c.d/32``).
+    :ivar wg_config: ``wg0.conf`` body. It contains **no private key**;
+        it loads the host's own key from ``/etc/wireguard/privatekey``
+        via ``PostUp``.
+    :ivar ssh_username: Account the worker will log in as. The host
+        must have it, with passwordless sudo.
+    :ivar user_ca_public_key: SSH user CA to trust (``TrustedUserCAKeys``).
+    :ivar host_certificate: Signed cert for the host's ed25519 key
+        (``HostCertificate``).
+    :ivar host_cert_principals: Principals in the host cert (the VPN IP).
+    :ivar task_id: Celery id of the hub reconfigure that admits the peer.
+    """
+
+    client_id: int
+    name: str
+    address: str
+    wg_config: str
+    ssh_username: str
+    user_ca_public_key: str
+    host_certificate: str
+    host_cert_principals: list[str]
+    task_id: str

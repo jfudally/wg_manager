@@ -18,7 +18,8 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlmodel import Session
+from sqlalchemy import update
+from sqlmodel import Session, select
 
 from wg_manager.models import EnrollmentToken, Server, SSHKey
 
@@ -108,3 +109,49 @@ def mint_token(
     session.add(row)
     session.flush()
     return row, token
+
+
+def find_token(session: Session, token: str) -> EnrollmentToken | None:
+    """Look up the row for plaintext ``token`` by its hash.
+
+    :param session: Active session.
+    :param token: Plaintext token from the ``Authorization`` header.
+    :return: The row, or ``None`` if no token hashes to it.
+    """
+    return session.exec(
+        select(EnrollmentToken).where(EnrollmentToken.token_hash == hash_token(token))
+    ).first()
+
+
+def is_expired(row: EnrollmentToken, now: datetime | None = None) -> bool:
+    """Return ``True`` once ``row`` is at or past its expiry.
+
+    :param row: Token row.
+    :param now: Override for tests; defaults to the current UTC time.
+    """
+    now = now or datetime.now(timezone.utc)
+    return as_utc(row.expires_at) <= now
+
+
+def consume_token(session: Session, row: EnrollmentToken) -> bool:
+    """Atomically take one use of ``row``; return ``False`` if none are left.
+
+    Runs a single guarded ``UPDATE … SET use_count = use_count + 1
+    WHERE id = :id AND use_count < max_uses`` and checks the rowcount.
+    That makes the check and the increment one statement, so two
+    concurrent redemptions of a single-use token can't both succeed on
+    any backend. The update joins the caller's transaction and is
+    undone if the caller rolls back, which is how a failed enrollment
+    gives its use back.
+
+    :param session: Active session (transaction owned by the caller).
+    :param row: The token row found by :func:`find_token`.
+    :return: ``True`` if a use was taken.
+    """
+    result = session.exec(  # type: ignore[call-overload]
+        update(EnrollmentToken)
+        .where(EnrollmentToken.id == row.id)
+        .where(EnrollmentToken.use_count < EnrollmentToken.max_uses)
+        .values(use_count=EnrollmentToken.use_count + 1)
+    )
+    return bool(result.rowcount == 1)

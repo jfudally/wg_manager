@@ -76,11 +76,10 @@ class TestEnrollAppSurface:
     def test_healthz_answers(self, enroll_client: TestClient) -> None:
         assert enroll_client.get("/v1/healthz").status_code == 200
 
-    def test_enroll_route_is_mounted_as_a_stub(
-        self, enroll_client: TestClient
-    ) -> None:
-        """The spike ships the route shape only; the MVP implements it."""
-        assert enroll_client.post(ENROLL_PATH, json={}).status_code == 501
+    def test_enroll_route_is_mounted(self, enroll_client: TestClient) -> None:
+        """Without a token the route answers 401, not 404."""
+        resp = enroll_client.post(ENROLL_PATH, json={})
+        assert resp.status_code in (401, 422)
 
     def test_operator_sample_set_is_non_trivial(self) -> None:
         """Guard: a broken sampler must not make the next test vacuous."""

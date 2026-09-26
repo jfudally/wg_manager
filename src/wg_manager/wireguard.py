@@ -64,6 +64,25 @@ PersistentKeepalive = 25
 """
 
 
+# Enrolled-host variant (Phase 3f). The host generated its own keypair
+# and keeps the private key in /etc/wireguard/privatekey, the same path
+# the SSH-provisioned flow uses, so a later reprovision picks it up. The
+# config carries no PrivateKey line: wg-quick brings the interface up
+# keyless and PostUp loads the key from the file. ``%i`` is wg-quick's
+# interface-name substitution.
+_ENROLLED_CLIENT_CONF_TEMPLATE = """\
+[Interface]
+Address = {address}
+PostUp = wg set %i private-key /etc/wireguard/privatekey
+
+[Peer]
+PublicKey = {server_pubkey}
+Endpoint = {endpoint_host}:{endpoint_port}
+AllowedIPs = {subnet}
+PersistentKeepalive = 25
+"""
+
+
 def generate_wireguard_keypair() -> tuple[str, str]:
     """Generate a fresh WireGuard X25519 keypair.
 
@@ -131,6 +150,27 @@ def render_manual_client_config(
         raise ValueError("manual client has no stored private key")
     return _MANUAL_CLIENT_CONF_TEMPLATE.format(
         private_key=private_key,
+        address=client.address,
+        server_pubkey=server.public_key,
+        endpoint_host=server.endpoint_host,
+        endpoint_port=server.endpoint_port,
+        subnet=server.subnet,
+    )
+
+
+def render_enrolled_client_config(client: Client, server: Server) -> str:
+    """Render ``wg0.conf`` for a host that enrolled itself (Phase 3f).
+
+    Unlike :func:`render_manual_client_config` this never contains a
+    private key: the enrolling host generated its own and only sent the
+    public half.
+
+    :param client: The enrolled :class:`Client` row (address set).
+    :param server: The hub it peers with.
+    :return: Config body with a ``PostUp`` line that loads
+        ``/etc/wireguard/privatekey``.
+    """
+    return _ENROLLED_CLIENT_CONF_TEMPLATE.format(
         address=client.address,
         server_pubkey=server.public_key,
         endpoint_host=server.endpoint_host,
