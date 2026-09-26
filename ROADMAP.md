@@ -2235,11 +2235,15 @@ from the operator's first SSH connection as the root of trust.
         locks the IP out). It returns 429 + `Retry-After`, fails closed
         with 503, and logs one `enroll.rate_limited` line per trip. The
         script retries 429.
-  - [ ] Failed-redeem **metrics** and alerts. Not straightforward: the
-        enroll listener is its own process, and serving `/metrics` on
-        its public port would expose it. Needs a loopback-only metrics
-        port or prometheus_client multiprocess mode. Until then, alert
-        on `enroll.reject` / `enroll.rate_limited` in the audit log.
+  - [x] **Failed-redeem metrics and alerts** (2026-09-26). The enroll
+        listener can't serve `/metrics` on its public port, so each
+        replica counts outcomes into one Valkey hash
+        (`wg_manager.enroll_metrics`), and the operator API's mTLS
+        `/metrics` reads it at scrape time: `enroll_responses_total`,
+        `enroll_rejects_total{reason}`, `enroll_rate_limited_total`,
+        and an `enroll_metrics_up` gauge. That keeps one scrape for
+        all replicas and adds no new port. There are three alerts:
+        token guessing, dead tokens, and metrics down.
   - [ ] **Real client IPs behind a proxy.** The limiter keys on the TCP
         peer. Behind the HA nginx `stream {}` passthrough, or Docker's
         userland proxy, every caller shows up as the proxy's address

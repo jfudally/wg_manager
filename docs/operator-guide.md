@@ -434,6 +434,37 @@ Things to know:
   directly, with iptables DNAT (Docker's default for IPv4), until
   PROXY protocol support lands.
 
+### Enrollment metrics and alerts
+
+The operator API's `/metrics` (mTLS, like every other operator route)
+includes counters for `POST /v1/enroll`, summed across every enroll
+replica through Valkey:
+
+| Metric | What it counts |
+| --- | --- |
+| `wg_manager_enroll_responses_total{status}` | Every enroll response. |
+| `wg_manager_enroll_rejects_total{reason}` | 401s by the real reason: `missing_token`, `unknown_token`, `expired`, `exhausted`. Callers only ever see the uniform 401. |
+| `wg_manager_enroll_rate_limited_total{bucket}` | 429s by bucket (`requests` / `failures`). Every blocked request counts, unlike the once-per-trip `enroll.rate_limited` audit line. |
+| `wg_manager_enroll_metrics_up` | 0 if the API couldn't read the counters from Valkey. |
+
+The enroll listener itself serves no `/metrics`: its port is public.
+
+`docs/observability/prometheus-alerts.yaml` has three alerts on these:
+
+- **`WgEnrollTokenGuessing`**: more than 20 unknown-token rejections
+  in 10 minutes. Look at the `enroll.reject` audit lines for the
+  peers. Many different peers means someone is probing the port,
+  so restrict it at the firewall or LB. A single NAT address usually
+  means your own hosts have a mistyped token, or one that was never
+  minted, in their userdata.
+- **`WgEnrollDeadTokens`**: a host presented an expired or used-up
+  token. It booted but isn't on the VPN. For `expired`, raise
+  `ttl_seconds` or mint closer to launch. For `exhausted`, the group
+  launched more instances than `max_uses`.
+- **`WgEnrollMetricsDown`**: the counters are unreadable, so the
+  alerts above can't fire. Enrollment is probably returning 503 too,
+  because the rate limiter uses the same Valkey and fails closed.
+
 ### Treat userdata as readable
 
 Anyone who can read the instance's metadata can read the token.

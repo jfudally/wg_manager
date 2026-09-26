@@ -27,6 +27,18 @@ configure a client cert the same way operators do.
 | `wg_manager_certs_issued_total` | Counter | `cert_type` |
 | `wg_manager_certs_renewed_total` | Counter | `cert_type` |
 | `wg_manager_certs_revoked_total` | Counter | `cert_type` |
+| `wg_manager_enroll_responses_total` | Counter | `status` |
+| `wg_manager_enroll_rejects_total` | Counter | `reason` |
+| `wg_manager_enroll_rate_limited_total` | Counter | `bucket` |
+| `wg_manager_enroll_metrics_up` | Gauge | — |
+
+The `wg_manager_enroll_*` families describe `POST /v1/enroll` on the
+separate enrollment listener. That listener can't serve `/metrics` on
+its public port, so each replica counts into Valkey and this endpoint
+reads the totals at scrape time: one scrape covers every enroll
+replica. `wg_manager_enroll_metrics_up` is 0 (and the counters are
+omitted) when Valkey can't be read. See the operator guide,
+"Enrollment metrics and alerts".
 
 The HTTP `path` label uses the FastAPI **route template** (e.g.
 `/clients/{client_id}`), not the raw URL — cardinality stays
@@ -261,7 +273,7 @@ the cycle 1 service-health dashboard.
 ## Alerting recipes (Phase 3a cycle 3)
 
 [`docs/observability/prometheus-alerts.yaml`](observability/prometheus-alerts.yaml)
-ships three alert rules covering the most operationally-meaningful
+ships six alert rules covering the most operationally-meaningful
 failure modes:
 
 | Alert | Trigger | Runbook |
@@ -269,6 +281,9 @@ failure modes:
 | `Wg5xxSurge` | 5xx fraction > 5% over 5m | [`observability.md#alerting-recipes`](#alerting-recipes) |
 | `WgVaultLatencyHigh` | Vault round-trip p95 > 2s for 5m | [`docs/runbooks/vault-down.md`](runbooks/vault-down.md) |
 | `WgCertExpiringSoon` | Non-revoked cert TTL < 7 days | [`docs/deploy/systemd-timer.md`](deploy/systemd-timer.md) |
+| `WgEnrollTokenGuessing` | > 20 unknown-token enroll rejections in 10m | [`operator-guide.md#enrollment-metrics-and-alerts`](operator-guide.md#enrollment-metrics-and-alerts) |
+| `WgEnrollDeadTokens` | Any expired / used-up token presented in 15m | [`operator-guide.md#enrollment-metrics-and-alerts`](operator-guide.md#enrollment-metrics-and-alerts) |
+| `WgEnrollMetricsDown` | Enrollment counters unreadable for 10m | [`operator-guide.md#enrollment-metrics-and-alerts`](operator-guide.md#enrollment-metrics-and-alerts) |
 
 Drop the YAML into your Prometheus config:
 
