@@ -19,6 +19,25 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   listener's TLS policy moved to `wg_manager.tls_listeners` with no
   behaviour change. Groundwork for userdata-driven host enrollment;
   see `ROADMAP.md` Phase 3f.
+- **Zero-touch host enrollment (Phase 3f MVP).** A fresh host can join
+  the fleet from userdata, from outside the VPN, as a fully managed
+  client.
+  - `POST /v1/enrollment-tokens` (admin only) mints a `wgmenr_…` token
+    tied to a ready hub, its tenant and a management SSH identity. It
+    is single-use by default, expires after 60 s to 7 days, and only its
+    SHA-256 is stored (Alembic 0018, `enrollmenttoken`).
+  - `POST /v1/enroll` on the enrollment listener redeems the token. It
+    takes the host's own WireGuard and ed25519 SSH public keys,
+    allocates an address, and signs a host cert whose only principal is
+    that address. It returns a `wg0.conf` with no private key in it.
+    Failures after the token is consumed roll the use back, and every
+    token failure gets the same 401.
+  - `scripts/enroll_node.sh` is the userdata script that does the host
+    side.
+  - New opt-in `enroll` service in `docker-compose.prod.yml`, enabled
+    with `COMPOSE_PROFILES=enroll`.
+  - See `docs/operator-guide.md`, "Zero-touch enrollment", and threats
+    T-13 to T-16 in `docs/THREAT_MODEL.md`.
 
 ## [v0.6.1] - 2026-09-26
 
