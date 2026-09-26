@@ -2246,7 +2246,16 @@ from the operator's first SSH connection as the root of trust.
         and shares one bucket. Fix: PROXY protocol from nginx plus
         parsing it in the enroll runner (uvicorn has no native PROXY
         protocol support).
-  - [ ] Token binding: optional expected source CIDR / instance ID.
+  - [x] **Token source binding** (2026-09-26, Alembic 0021). An optional
+        `allowed_cidrs` (1 to 16 networks) on mint. It's checked with the
+        other token checks before the body, gets the uniform 401 with
+        reason `source_not_allowed`, and fails closed on an unparseable
+        peer. It's only meaningful where the listener sees real client IPs
+        (direct, or `ENROLL_PROXY_PROTOCOL` behind an LB).
+        **Instance-ID binding is intentionally not done here:** without
+        attestation the host would just *claim* an ID, and anyone who can
+        read the userdata (IMDS, console) can read the instance ID too.
+        Proving instance identity is the attestation item under Phase 3.
   - [ ] HA: second `stream {}` server block in
         `docker/nginx/wg-manager.conf` for the enroll port.
   - [x] **Token list/revoke endpoints** (2026-09-26, Alembic 0020).

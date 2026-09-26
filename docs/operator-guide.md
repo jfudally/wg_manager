@@ -360,6 +360,18 @@ curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
 | `name_prefix` | Clients are named `<prefix>-<hostname>`. |
 | `ttl_seconds` | 60 s to 7 days (default 1 h). |
 | `max_uses` | 1 to 100 (default 1). Use more than 1 only for autoscaling groups. Simultaneous enrollments are safe: hub reconfigures coalesce, so a burst costs about one hub restart. |
+| `allowed_cidrs` | Optional list of 1 to 16 networks the token may be redeemed from, e.g. `["203.0.113.0/24"]` or your NAT gateway's address. A bare address means that single host. Omit to allow any source. |
+
+**Bind tokens to where your hosts come from.** With `allowed_cidrs`
+set, a leaked token is useless outside those networks. A redemption
+from elsewhere gets the usual `401`, the token isn't used up, and the
+audit log records `reason: source_not_allowed`. Use the addresses the
+enroll port *sees*: for hosts in a private subnet that's the NAT
+gateway's public IP. Behind a load balancer it's only the real client
+if the balancer sends PROXY protocol (`ENROLL_PROXY_PROTOCOL`).
+Otherwise every request appears to come from the balancer, and a
+binding either blocks everything or, if it includes the balancer,
+blocks nothing.
 
 The response carries `token` **once**. Only its SHA-256 is stored.
 

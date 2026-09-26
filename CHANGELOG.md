@@ -69,6 +69,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   never touched, and the audit log keeps the history. Both settings are
   passed through to `beat` in `docker-compose.prod.yml`.
 
+- **Enrollment tokens can be bound to source networks.** Mint with
+  `allowed_cidrs` (1 to 16 networks; Alembic 0021) and the token is only
+  redeemable from those addresses. Any other source gets the uniform
+  401, and the token isn't used up. The binding is shown in
+  `GET /v1/enrollment-tokens` and recorded in the mint audit event.
+
 ### Changed
 
 - **`POST /v1/enroll` checks the token before the body.** An
