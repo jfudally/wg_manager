@@ -2222,10 +2222,12 @@ from the operator's first SSH connection as the root of trust.
         doesn't include it yet. The new peer then isn't admitted until
         the next reconfigure. This also affects `POST /clients`, but
         autoscaling makes it likely.
-  - [ ] Request validation (422) runs before token checks, so an
-        unauthenticated caller can learn the request schema. Low
-        impact, since the schema is public in `enroll_node.sh`, but
-        worth returning a uniform 401 first.
+  - [x] **Uniform 401 before validation** (2026-09-26). The endpoint
+        takes the raw body and validates it only after the token is
+        found, unexpired and not used up. Before this, request
+        validation (422) ran before the token checks, so an
+        unauthenticated caller could learn the request schema. Covered
+        by `tests/test_enroll_redeem.py::TestValidation`.
   - [x] **Per-source-IP rate limiting** (2026-09-26). New
         `wg_manager.ratelimit` (fixed windows in Valkey, shared across
         replicas; in-memory for tests). There's a request bucket

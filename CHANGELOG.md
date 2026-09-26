@@ -49,6 +49,15 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   503 if Valkey is unreachable, and `enroll_node.sh` retries both. The
   limits are tunable via `ENROLL_RATE_LIMIT_*` / `ENROLL_FAILURE_*`.
 
+### Changed
+
+- **`POST /v1/enroll` checks the token before the body.** An
+  unauthenticated caller used to get field-level 422s describing the
+  request schema. Now a missing, unknown, expired or used-up token gets
+  the uniform 401 whatever the body contains, including invalid JSON
+  or no body at all. Callers with a live token still get 422 for a bad
+  body, and the token isn't consumed.
+
 ### Fixed
 
 - **Hub reconfigures no longer lose peers under concurrency.**
