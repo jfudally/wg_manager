@@ -585,6 +585,57 @@ services:
     volumes: *worker-volumes
 
   # -------------------------------------------------------------------------
+  # Phase 3f: enrollment listener (OPT-IN).
+  #
+  # Lets fresh hosts join from userdata (scripts/enroll_node.sh) by
+  # redeeming a single-use enrollment token. It's a separate process on
+  # its own port, serving ONLY POST /v1/enroll + health probes, with
+  # server-auth TLS and no client cert. The mTLS operator API is
+  # untouched.
+  #
+  # Off by default so an upgrade never opens a new public port on its
+  # own. Enable it by setting COMPOSE_PROFILES=enroll in .env.prod.
+  # Needs the worker's settings (DB, broker for the hub reconfigure,
+  # Vault SSH CA) plus the API server cert.
+  # -------------------------------------------------------------------------
+  enroll:
+    image: ${WG_MANAGER_IMAGE:-wg-manager:prod}
+    container_name: wg_manager_enroll
+    restart: always
+    profiles: ["enroll"]
+    depends_on:
+      bootstrap-app:
+        condition: service_completed_successfully
+      mysql:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    command: ["python", "-m", "wg_manager.enroll_listener"]
+    environment:
+      <<: *worker-env
+      TLS_CERT_PEM: /app/tls/server.crt
+      TLS_KEY_PEM: /app/tls/server.key
+      ENROLL_BIND_HOST: 0.0.0.0
+      ENROLL_BIND_PORT: "8001"
+    volumes: *worker-volumes
+    ports:
+      - "${WG_MANAGER_ENROLL_BIND_ADDR:-0.0.0.0}:${WG_MANAGER_ENROLL_BIND_PORT:-8443}:8001"
+    healthcheck:
+      # No client cert: this listener doesn't ask for one, which is
+      # the whole point of running it separately.
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request, ssl; ctx = ssl.create_default_context(cafile='/app/tls/ca-bundle.crt'); urllib.request.urlopen('https://localhost:8001/healthz', context=ctx, timeout=3).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
   # NEW: Next.js dashboard.
   #
   # Builds web/Dockerfile (Phase 2f). Binds public 3000. The BFF
