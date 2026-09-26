@@ -769,6 +769,24 @@ class AuditEvent(SQLModel, table=True):
     __str__ = __repr__
 
 
+class EnrollmentTokenStatus(str, Enum):
+    """Derived state of an :class:`EnrollmentToken` (not stored).
+
+    Computed by :func:`wg_manager.enrollment.token_status`. When several
+    apply, the first in this order wins: revoked, expired, exhausted.
+
+    :cvar active: Redeemable right now.
+    :cvar revoked: An admin revoked it.
+    :cvar expired: Past ``expires_at``.
+    :cvar exhausted: ``use_count`` has reached ``max_uses``.
+    """
+
+    active = "active"
+    revoked = "revoked"
+    expired = "expired"
+    exhausted = "exhausted"
+
+
 class EnrollmentToken(SQLModel, table=True):
     """A token a fresh host redeems to join the fleet (Phase 3f).
 
@@ -800,6 +818,9 @@ class EnrollmentToken(SQLModel, table=True):
     :ivar created_by_cn: CN of the minting operator (``None`` in the
         ``TLS_REQUIRED=false`` dev posture).
     :ivar created_at: Mint time (UTC).
+    :ivar revoked_at: When an admin revoked the token (UTC); ``None``
+        while it's not revoked. Added in Alembic 0020.
+    :ivar revoked_by_cn: CN of the revoking operator.
     """
 
     id: int | None = Field(default=None, primary_key=True)
@@ -814,6 +835,8 @@ class EnrollmentToken(SQLModel, table=True):
     expires_at: datetime
     created_by_cn: str | None = Field(default=None, max_length=255)
     created_at: datetime = Field(default_factory=_utcnow)
+    revoked_at: datetime | None = Field(default=None)
+    revoked_by_cn: str | None = Field(default=None, max_length=255)
 
     def __repr__(self) -> str:
         # token_hash deliberately omitted: it's the lookup key and has

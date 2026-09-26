@@ -210,3 +210,152 @@ class TestMintAuthorization:
 
         tc = TestClient(create_enroll_app())
         assert tc.post(URL, json={}).status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# List + revoke (Phase 3f hardening)
+# ---------------------------------------------------------------------------
+
+
+def _mint_via_api(client: TestClient, key_id: int, server_id: int, **extra: Any) -> int:
+    resp = client.post(URL, json=_body(key_id, server_id, **extra))
+    assert resp.status_code == 201, resp.text
+    return int(resp.json()["id"])
+
+
+def _set_row(token_id: int, **values: Any) -> None:
+    with Session(db_module.engine) as s:
+        row = s.get(EnrollmentToken, token_id)
+        for k, v in values.items():
+            setattr(row, k, v)
+        s.commit()
+
+
+class TestList:
+    def test_lists_tokens_without_secrets(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        token_id = _mint_via_api(client, key_id, server_id, max_uses=3)
+        resp = client.get(URL)
+        assert resp.status_code == 200, resp.text
+        [item] = resp.json()
+        assert item["id"] == token_id
+        assert item["server_id"] == server_id
+        assert item["tenant_id"] == 1
+        assert item["max_uses"] == 3
+        assert item["use_count"] == 0
+        assert item["status"] == "active"
+        assert item["revoked_at"] is None
+        assert "token" not in item
+        assert "token_hash" not in item
+
+    def test_status_reflects_expiry_uses_and_revocation(
+        self, client: TestClient
+    ) -> None:
+        from datetime import datetime, timezone
+
+        key_id, server_id = _seed()
+        ids = [_mint_via_api(client, key_id, server_id) for _ in range(4)]
+        past = datetime.now(timezone.utc) - timedelta(seconds=1)
+        _set_row(ids[1], expires_at=past)
+        _set_row(ids[2], use_count=1)
+        _set_row(ids[3], revoked_at=datetime.now(timezone.utc))
+        statuses = {i["id"]: i["status"] for i in client.get(URL).json()}
+        assert statuses == {
+            ids[0]: "active",
+            ids[1]: "expired",
+            ids[2]: "exhausted",
+            ids[3]: "revoked",
+        }
+
+    def test_newest_first(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        ids = [_mint_via_api(client, key_id, server_id) for _ in range(3)]
+        assert [i["id"] for i in client.get(URL).json()] == ids[::-1]
+
+    def test_active_filter(self, client: TestClient) -> None:
+        from datetime import datetime, timezone
+
+        key_id, server_id = _seed()
+        live = _mint_via_api(client, key_id, server_id)
+        dead = _mint_via_api(client, key_id, server_id)
+        _set_row(dead, revoked_at=datetime.now(timezone.utc))
+        assert [i["id"] for i in client.get(URL, params={"active": True}).json()] == [live]
+
+    def test_server_filter(self, client: TestClient) -> None:
+        key_a, hub_a = _seed(tenant_id=1)
+        key_b, hub_b = _seed(tenant_id=2)
+        _mint_via_api(client, key_a, hub_a)
+        b = _mint_via_api(client, key_b, hub_b)
+        assert [i["id"] for i in client.get(URL, params={"server_id": hub_b}).json()] == [b]
+
+    def test_tenant_admin_sees_only_own_tenant(self, client: TestClient, scoped) -> None:
+        key1, hub1 = _seed(tenant_id=1)
+        key2, hub2 = _seed(tenant_id=2)
+        mine = _mint_via_api(client, key1, hub1)
+        _mint_via_api(client, key2, hub2)
+        scoped(TenantScope(is_super_admin=False, tenant_ids=(1,),
+                           tenant_roles={1: OperatorRole.admin}))
+        assert [i["id"] for i in client.get(URL).json()] == [mine]
+
+    def test_non_admin_sees_nothing(self, client: TestClient, scoped) -> None:
+        """Tokens are admin objects, like minting."""
+        key_id, server_id = _seed()
+        _mint_via_api(client, key_id, server_id)
+        scoped(TenantScope(is_super_admin=False, tenant_ids=(1,),
+                           tenant_roles={1: OperatorRole.operator}))
+        assert client.get(URL).json() == []
+
+
+class TestRevoke:
+    def test_revokes_and_audits(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        token_id = _mint_via_api(client, key_id, server_id)
+        resp = client.post(f"{URL}/{token_id}/revoke")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "revoked"
+        assert body["revoked_at"] is not None
+        with Session(db_module.engine) as s:
+            events = s.exec(
+                select(AuditEvent).where(AuditEvent.event == "enrollment_token.revoke")
+            ).all()
+        assert len(events) == 1
+        assert events[0].resource_id == token_id
+
+    def test_idempotent(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        token_id = _mint_via_api(client, key_id, server_id)
+        first = client.post(f"{URL}/{token_id}/revoke").json()
+        second = client.post(f"{URL}/{token_id}/revoke")
+        assert second.status_code == 200
+        assert second.json()["revoked_at"] == first["revoked_at"]
+        with Session(db_module.engine) as s:
+            events = s.exec(
+                select(AuditEvent).where(AuditEvent.event == "enrollment_token.revoke")
+            ).all()
+        assert len(events) == 1
+
+    def test_unknown_404(self, client: TestClient) -> None:
+        assert client.post(f"{URL}/999/revoke").status_code == 404
+
+    def test_tenant_operator_forbidden(self, client: TestClient, scoped) -> None:
+        key_id, server_id = _seed()
+        token_id = _mint_via_api(client, key_id, server_id)
+        scoped(TenantScope(is_super_admin=False, tenant_ids=(1,),
+                           tenant_roles={1: OperatorRole.operator}))
+        assert client.post(f"{URL}/{token_id}/revoke").status_code == 403
+
+    def test_admin_of_other_tenant_forbidden(self, client: TestClient, scoped) -> None:
+        key_id, server_id = _seed(tenant_id=1)
+        _seed(tenant_id=2)
+        token_id = _mint_via_api(client, key_id, server_id)
+        scoped(TenantScope(is_super_admin=False, tenant_ids=(2,),
+                           tenant_roles={2: OperatorRole.admin}))
+        assert client.post(f"{URL}/{token_id}/revoke").status_code == 403
+
+    def test_not_on_enroll_listener(self) -> None:
+        from wg_manager.enroll_app import create_enroll_app
+
+        tc = TestClient(create_enroll_app())
+        assert tc.get(URL).status_code == 404
+        assert tc.post(f"{URL}/1/revoke").status_code == 404

@@ -101,8 +101,21 @@ def test_downgrade_drops_table(file_db_url: str) -> None:
         engine.dispose()
 
 
-def test_model_matches_migration() -> None:
-    """The SQLModel table and the migration agree on the column set."""
+def test_model_matches_migrations_at_head(file_db_url: str) -> None:
+    """The SQLModel table and the migration chain agree on the column set.
+
+    Compared at ``head`` rather than at 0018, so later migrations that
+    add columns (0020's revocation columns) don't break this check.
+    """
+    from alembic.command import upgrade
+
     from wg_manager.models import EnrollmentToken
 
-    assert set(EnrollmentToken.__table__.columns.keys()) == _COLUMNS
+    upgrade(_alembic_config(file_db_url), "head")
+    engine, insp = _inspect(file_db_url)
+    try:
+        migrated = {c["name"] for c in insp.get_columns("enrollmenttoken")}
+    finally:
+        engine.dispose()
+    assert _COLUMNS <= migrated
+    assert set(EnrollmentToken.__table__.columns.keys()) == migrated

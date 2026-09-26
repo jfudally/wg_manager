@@ -2249,7 +2249,15 @@ from the operator's first SSH connection as the root of trust.
   - [ ] Token binding: optional expected source CIDR / instance ID.
   - [ ] HA: second `stream {}` server block in
         `docker/nginx/wg-manager.conf` for the enroll port.
-  - [ ] Token revoke/list endpoints; expired-token sweeper.
+  - [x] **Token list/revoke endpoints** (2026-09-26, Alembic 0020).
+        `GET /v1/enrollment-tokens` (derived `status`, `server_id` /
+        `active` filters) and an idempotent soft
+        `POST /v1/enrollment-tokens/{id}/revoke`. The guarded
+        use-count `UPDATE` re-checks `revoked_at`, so a revoke also
+        stops an in-flight redemption.
+  - [ ] Expired-token sweeper: delete rows long past expiry or
+        revocation (keep a grace period so recent ones stay visible in
+        the list; the audit table already has the history).
 - **Phase 3 — Polish `[ ]`**
   - [ ] Cloud instance-identity attestation (AWS IID, GCP identity
         token) in place of bearer tokens, so userdata carries no secret.
