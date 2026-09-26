@@ -10,6 +10,8 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.6.1] - 2026-09-26
+
 ### Fixed
 
 - **`make host-import` now works on a freshly cloned host.** Two
