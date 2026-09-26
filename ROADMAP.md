@@ -2210,15 +2210,18 @@ from the operator's first SSH connection as the root of trust.
   - [x] Operator guide section, README, THREAT_MODEL T-13 to T-16 and
         trust boundary B-6.
 - **Phase 2 — Hardening `[ ]`**
-  - [ ] **Hub-reconfigure race under bursts.** `reconfigure_server_task`
+  - [x] **Hub-reconfigure race under bursts** (fixed 2026-09-26, Alembic
+        0019). Contention now retries instead of skipping, and
+        `server.reconfig_requested_gen` / `reconfig_applied_gen`
+        coalesce bursts to about one hub restart. Covered by
+        `tests/test_reconfigure_coalescing.py`. Original problem: `reconfigure_server_task`
         waits 5 s for the hub lock, then returns `skipped`. An SSH
         reconfigure often takes longer than that.
         If two hosts enroll back to back, the second host's reconfigure
         can be skipped while the first is rendering a config that
         doesn't include it yet. The new peer then isn't admitted until
         the next reconfigure. This also affects `POST /clients`, but
-        autoscaling makes it likely. Fix: re-dispatch (or coalesce)
-        instead of skipping.
+        autoscaling makes it likely.
   - [ ] Request validation (422) runs before token checks, so an
         unauthenticated caller can learn the request schema. Low
         impact, since the schema is public in `enroll_node.sh`, but
