@@ -310,6 +310,10 @@ host cert is under 8h from expiry (at least four failed sweeps), and
 `WgHostCertExpired` once it has lapsed. Without them, the only signal
 is `host-cert rotation failed` in the worker logs.
 
+`beat` also runs the enrollment-token sweeper hourly. It deletes
+tokens that expired or were revoked over a week ago (see the operator
+guide, "List and revoke tokens").
+
 **Upgrading from a version without the validity check:** older
 versions silently accepted expired host certs, so hubs and clients
 that haven't been provisioned in the last day are probably already
