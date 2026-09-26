@@ -359,7 +359,7 @@ curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
 | `ssh_key_id` / `ssh_username` | How the worker will SSH in later. The key must be in the hub's tenant; the script creates the user with passwordless sudo if it's missing. |
 | `name_prefix` | Clients are named `<prefix>-<hostname>`. |
 | `ttl_seconds` | 60 s to 7 days (default 1 h). |
-| `max_uses` | 1 to 100 (default 1). Use more than 1 only for autoscaling groups. |
+| `max_uses` | 1 to 100 (default 1). Use more than 1 only for autoscaling groups. Simultaneous enrollments are safe: hub reconfigures coalesce, so a burst costs about one hub restart. |
 
 The response carries `token` **once**. Only its SHA-256 is stored.
 
