@@ -270,6 +270,18 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   Blocked calls get 429 + `Retry-After`. Enrollment fails closed with
   503 if Valkey is unreachable, and `enroll_node.sh` retries both. The
   limits are tunable via `ENROLL_RATE_LIMIT_*` / `ENROLL_FAILURE_*`.
+- **Enrollment metrics and alerts.** The operator API's mTLS `/metrics`
+  now includes:
+  - `wg_manager_enroll_responses_total{status}`;
+  - `wg_manager_enroll_rejects_total{reason}`;
+  - `wg_manager_enroll_rate_limited_total{bucket}`;
+  - `wg_manager_enroll_metrics_up`.
+
+  Each enroll replica counts into Valkey (`wg_manager.enroll_metrics`),
+  so the public enroll port still serves no `/metrics`, and one scrape
+  covers every replica. Recording never changes a response.
+  `prometheus-alerts.yaml` gains `WgEnrollTokenGuessing`,
+  `WgEnrollDeadTokens` and `WgEnrollMetricsDown`.
 
 ### Changed
 

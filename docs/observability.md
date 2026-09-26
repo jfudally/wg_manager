@@ -27,6 +27,18 @@ configure a client cert the same way operators do.
 | `wg_manager_certs_issued_total` | Counter | `cert_type` |
 | `wg_manager_certs_renewed_total` | Counter | `cert_type` |
 | `wg_manager_certs_revoked_total` | Counter | `cert_type` |
+| `wg_manager_enroll_responses_total` | Counter | `status` |
+| `wg_manager_enroll_rejects_total` | Counter | `reason` |
+| `wg_manager_enroll_rate_limited_total` | Counter | `bucket` |
+| `wg_manager_enroll_metrics_up` | Gauge | — |
+
+The `wg_manager_enroll_*` families describe `POST /v1/enroll` on the
+separate enrollment listener. That listener can't serve `/metrics` on
+its public port, so each replica counts into Valkey and this endpoint
+reads the totals at scrape time: one scrape covers every enroll
+replica. `wg_manager_enroll_metrics_up` is 0 (and the counters are
+omitted) when Valkey can't be read. See the operator guide,
+"Enrollment metrics and alerts".
 
 The HTTP `path` label uses the FastAPI **route template** (e.g.
 `/clients/{client_id}`), not the raw URL — cardinality stays
@@ -292,6 +304,9 @@ failure modes:
 | `WgCertExpiringSoon` | Non-revoked cert TTL < 7 days | [`docs/deploy/systemd-timer.md`](deploy/systemd-timer.md) |
 | `WgHostCertRotationFailing` | SSH host cert < 8h from expiry for 15m (warning) | [`single-host-prod.md#automatic-host-cert-renewal`](deploy/single-host-prod.md#automatic-host-cert-renewal) |
 | `WgHostCertExpired` | SSH host cert past expiry for 5m (critical) | [`single-host-prod.md` Path B](deploy/single-host-prod.md#path-b--cli-for-scripted--ci-use) |
+| `WgEnrollTokenGuessing` | > 20 unknown-token enroll rejections in 10m | [`operator-guide.md#enrollment-metrics-and-alerts`](operator-guide.md#enrollment-metrics-and-alerts) |
+| `WgEnrollDeadTokens` | Any expired / used-up token presented in 15m | [`operator-guide.md#enrollment-metrics-and-alerts`](operator-guide.md#enrollment-metrics-and-alerts) |
+| `WgEnrollMetricsDown` | Enrollment counters unreadable for 10m | [`operator-guide.md#enrollment-metrics-and-alerts`](operator-guide.md#enrollment-metrics-and-alerts) |
 
 Drop the YAML into your Prometheus config:
 
