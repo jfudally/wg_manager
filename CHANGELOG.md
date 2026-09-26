@@ -10,6 +10,27 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Fixed
+
+- **`make host-import` now works on a freshly cloned host.** Two
+  failures turned up during the first real migration (rv → general):
+  - It resolved the compose config with `--env-file .env.prod`, which
+    doesn't exist until the import restores it, so compose failed with
+    `couldn't find env file`. The script now takes the compose command
+    without an env file (`COMPOSE_BASE`, from the new
+    `PROD_COMPOSE_BASE` Makefile variable). On import it uses the
+    bundle's `.env.prod` from a private temp file after the checksums
+    pass.
+  - It refused because `tls/` already exists: a fresh clone has the
+    committed `tls/mysql/.gitkeep`. It now refuses only when a path
+    holds files git doesn't track, and names the first such file.
+- **`host-export` MANIFEST no longer lists locally built images** that a
+  service reuses without its own `build:` section (e.g. `beat` on
+  `wg-manager:prod`) as registry images with an `unknown` digest.
+- The host-migration runbook gained a *rehearsal copy while the source
+  keeps running* variant: stop and restart in place (no `prod-up`
+  rebuild), and start the copy without `worker`/`beat`.
+
 ## [v0.6.0] - 2026-09-25
 
 ### Added

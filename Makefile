@@ -160,6 +160,9 @@ ha-logs:
 # resolve regardless of the operator's shell state.
 # ---------------------------------------------------------------------------
 PROD_COMPOSE := docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml
+# Same stack without --env-file, for scripts that choose the env file
+# themselves (migrate_host.sh import reads it from the bundle).
+PROD_COMPOSE_BASE := docker compose -f docker-compose.yml -f docker-compose.prod.yml
 
 prod-up:
 	@if [ ! -f .env.prod ]; then \
@@ -235,14 +238,14 @@ certs-rotate-if-due:
 # ---------------------------------------------------------------------------
 host-export:
 	@if [ -z "$(o)" ]; then echo "usage: make host-export o=DIR"; exit 2; fi
-	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/migrate_host.sh export "$(o)"
+	@COMPOSE_BASE="$(PROD_COMPOSE_BASE)" scripts/migrate_host.sh export "$(o)"
 
 host-import:
 	@if [ -z "$(i)" ]; then echo "usage: make host-import i=DIR"; exit 2; fi
-	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/migrate_host.sh import "$(i)"
+	@COMPOSE_BASE="$(PROD_COMPOSE_BASE)" scripts/migrate_host.sh import "$(i)"
 
 db-counts:
-	@PROD_COMPOSE="$(PROD_COMPOSE)" scripts/migrate_host.sh counts
+	@COMPOSE_BASE="$(PROD_COMPOSE_BASE)" scripts/migrate_host.sh counts
 
 migrate:
 	$(ALEMBIC) upgrade head

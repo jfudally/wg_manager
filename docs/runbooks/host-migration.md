@@ -204,6 +204,42 @@ docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod
 
 ---
 
+## Variant: rehearsal copy while the source keeps running
+
+Use this to stand up a verified copy on the new host before the real
+cutover, for example to validate the new box. The source is stopped
+only for the export (about a minute for a few hundred MB) and then
+comes back **on exactly the same containers**.
+
+1. **Pause the source's timers** so `certs-rotate-if-due` can't fire
+   mid-export: `sudo systemctl stop wg-manager-certs-rotate.timer`.
+2. **Stop, don't remove:** `$(PROD_COMPOSE) stop`, i.e.
+   `docker compose --env-file .env.prod -f docker-compose.yml
+   -f docker-compose.prod.yml stop`. Avoid `make prod-down` plus
+   `make prod-up` here: `prod-up` runs with `--build`, so the source
+   would come back rebuilt on whatever commit is checked out, which is
+   a silent upgrade.
+3. `make host-export o=DIR`.
+4. **Restart the same containers in dependency order** with
+   `docker start`: `vault`, then `bootstrap_substrate` (wait for exit 0;
+   it unseals Vault), then `mysql valkey vector`, then
+   `api worker beat web`. Resume the timer.
+5. On the target, import as usual. Then start **everything except
+   `worker` and `beat`**:
+   ```bash
+   docker compose --env-file .env.prod -f docker-compose.yml \
+       -f docker-compose.prod.yml up -d --wait vector api web
+   ```
+   Neither `api` nor `web` depends on `worker`/`beat`, so they stay
+   uncreated. Two stacks must never both provision or rotate certs on
+   the same fleet.
+6. Consider binding the copy's listeners to a private or VPN address
+   (`WG_MANAGER_API_BIND_ADDR` / `WG_MANAGER_WEB_BIND_ADDR` in its
+   `.env.prod`), because the dashboard is plain HTTP.
+
+The copy is a snapshot. Anything the source changes afterwards isn't in
+it, so the real cutover needs a fresh export into clean volumes.
+
 ## Rollback
 
 Before step 8, rolling back just means **not** switching over. Run
@@ -220,6 +256,7 @@ before operators start using the new host.
 | `host-export`: *compose volume 'X' is not classified* | Someone added a volume to compose. Add it to `MIGRATE_VOLUMES` or `SKIP_VOLUMES` in `scripts/migrate_host.sh` with a reason, and add a test. |
 | `host-import`: *checksum verification failed* | The transfer was truncated. Re-run the `rsync` from step 5. |
 | `host-import`: *compose project is 'X' but the bundle came from 'Y'* | Re-clone into a directory named `Y`. |
+| `host-import`: *couldn't find env file .env.prod* | You're running a version before the fresh-clone fix. `host-import` now reads `.env.prod` from the bundle. Update `scripts/migrate_host.sh`. |
 | `host-import`: *… already exists — refusing to overwrite* | The target isn't clean (a previous attempt, or a `prod-up` run too early). Inspect it before removing anything. If it came from an early `prod-up`, it's an empty, freshly initialised Vault that you don't need. |
 | Vault stays sealed after `prod-up` | `vault-init.json` doesn't belong to the restored Vault data. Both must come from the same bundle. See [`vault-down.md`](vault-down.md). |
 | `host cert expired` on some hosts | They ran past the time budget. Re-run `bootstrap-host` for each (see `single-host-prod.md`). |

@@ -20,7 +20,9 @@
 #   counts       Exact per-table row counts, for a before/after diff.
 #
 # Env (set by the Makefile; overridable for tests):
-#   PROD_COMPOSE   compose command incl. --env-file / -f flags   [required]
+#   COMPOSE_BASE   compose command + -f flags, WITHOUT --env-file  [required]
+#   ENV_FILE       env file for compose  (default: $REPO_DIR/.env.prod; import
+#                  uses the bundle's copy, since the target has none yet)
 #   DOCKER         docker binary                     (default: docker)
 #   REPO_DIR       the checkout holding .env.prod    (default: $PWD)
 #   HELPER_IMAGE   image whose tar does the copying  (default: alpine:3.20)
@@ -29,9 +31,10 @@
 
 set -euo pipefail
 
-: "${PROD_COMPOSE:?PROD_COMPOSE must be set (run via make host-export / host-import)}"
+: "${COMPOSE_BASE:?COMPOSE_BASE must be set (run via make host-export / host-import)}"
 DOCKER="${DOCKER:-docker}"
 REPO_DIR="$(cd "${REPO_DIR:-$PWD}" && pwd)"
+ENV_FILE="${ENV_FILE:-$REPO_DIR/.env.prod}"
 HELPER_IMAGE="${HELPER_IMAGE:-alpine:3.20}"
 
 # Every volume key in the compose config must be in exactly one list, so
@@ -57,12 +60,13 @@ EOF
     exit 2
 }
 
-# Word-splitting PROD_COMPOSE is intended: it's a command plus flags.
+# Word-splitting COMPOSE_BASE is intended: it's a command plus flags.
 # shellcheck disable=SC2086
-compose() { $PROD_COMPOSE "$@"; }
+compose() { $COMPOSE_BASE --env-file "$ENV_FILE" "$@"; }
 
 # Print "<field>" of the compose config: `project`, `volumes`
-# (key<TAB>name lines) or `images` (registry images, not locally built).
+# (key<TAB>name lines) or `images` (registry images: any image a service
+# builds locally is excluded, even where another service reuses it).
 compose_query() {
     compose config --format json | python3 -c '
 import json, sys
@@ -74,10 +78,12 @@ elif field == "volumes":
     for key, spec in cfg.get("volumes", {}).items():
         print(key + "\t" + spec.get("name", key))
 elif field == "images":
+    services = cfg.get("services", {}).values()
+    built = {svc.get("image") for svc in services if "build" in svc}
     seen = set()
-    for svc in cfg.get("services", {}).values():
+    for svc in services:
         img = svc.get("image")
-        if img and "build" not in svc and img not in seen:
+        if img and img not in built and img not in seen:
             seen.add(img)
             print(img)
 ' "$1"
@@ -115,6 +121,21 @@ resolve_volumes() {
 }
 
 volume_exists() { "$DOCKER" volume inspect "$1" >/dev/null 2>&1; }
+
+# Print the first file under REPO_DIR/$1 that git doesn't track, i.e.
+# deployment state; print nothing if there is none. A fresh clone's tls/
+# holds only the committed tls/mysql/.gitkeep, which is not state.
+first_state_file() {
+    local path="$REPO_DIR/$1" f rel
+    [ -e "$path" ] || return 0
+    while IFS= read -r -d '' f; do
+        rel="${f#"$REPO_DIR"/}"
+        if ! git -C "$REPO_DIR" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+            echo "$rel"
+            return 0
+        fi
+    done < <(find "$path" -type f -print0)
+}
 
 # ---------------------------------------------------------------------
 # export
@@ -197,11 +218,21 @@ cmd_import() {
     [ -d "$in" ] || die "bundle directory '$in' not found."
     in="$(cd "$in" && pwd)"
 
-    require_stack_stopped
-
     log "Verifying checksums"
     (cd "$in" && sha256sum --quiet -c SHA256SUMS) \
         || die "checksum verification failed — the bundle is incomplete or corrupted; re-copy it."
+
+    # The target has no .env.prod yet (and must not: see below), so compose
+    # is resolved with the bundle's copy, from a private temp file.
+    local envdir
+    envdir="$(mktemp -d)"
+    # shellcheck disable=SC2064  # expand now: envdir is local to this function
+    trap "rm -rf '$envdir'" EXIT
+    tar -xOf "$in/files.tar" .env.prod > "$envdir/env.prod" \
+        || die "bundle files.tar has no .env.prod."
+    ENV_FILE="$envdir/env.prod"
+
+    require_stack_stopped
 
     local manifest_commit head
     manifest_commit="$(sed -n 's/^commit=//p' "$in/MANIFEST")"
@@ -219,9 +250,10 @@ cmd_import() {
     [ "$want_project" = "$have_project" ] \
         || die "compose project is '$have_project' but the bundle came from '$want_project' — clone into a directory named '$want_project'."
 
-    local f
+    local f found
     for f in "${REQUIRED_FILES[@]}" "${OPTIONAL_FILES[@]}"; do
-        [ -e "$REPO_DIR/$f" ] && die "$f already exists in $REPO_DIR — refusing to overwrite. Move it aside first."
+        found="$(first_state_file "$f")"
+        [ -z "$found" ] || die "$found already exists in $REPO_DIR — refusing to overwrite. Move it aside first."
     done
 
     resolve_volumes
