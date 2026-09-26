@@ -15,6 +15,12 @@ Grafana when answering "is wg-manager healthy right now?":
   :mod:`wg_manager.ssh_ca`, and :mod:`wg_manager.pki`.
 * **Cert lifecycle** — issue / revoke / renew counters bumped by
   the cert routers and the CLI.
+* **Enrollment** (Phase 3f hardening) — outcomes of ``POST /v1/enroll``
+  on the separate enrollment listener. Those processes can't expose
+  ``/metrics`` on their public port, so they count into Valkey
+  (:mod:`wg_manager.enroll_metrics`), and
+  :class:`EnrollMetricsCollector` reads the counters here at scrape
+  time.
 
 The ``GET /metrics`` endpoint is wired into the FastAPI app and
 exposes the registry in the standard Prometheus text format. The
@@ -35,7 +41,7 @@ Cardinality discipline:
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
@@ -46,7 +52,7 @@ from prometheus_client import (
     Histogram,
     generate_latest,
 )
-from prometheus_client.core import GaugeMetricFamily
+from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
 from prometheus_client.exposition import CONTENT_TYPE_LATEST
 
 # Module-local registry — keeps test isolation cleaner than relying
@@ -373,6 +379,84 @@ except ValueError:
     pass
 
 
+class EnrollMetricsCollector:
+    """Expose the enrollment listener's counters (read from Valkey) at scrape time.
+
+    Yields ``wg_manager_enroll_responses_total{status}``,
+    ``wg_manager_enroll_rejects_total{reason}`` and
+    ``wg_manager_enroll_rate_limited_total{bucket}``, plus
+    ``wg_manager_enroll_metrics_up``. That gauge is 0 when the store
+    can't be read, in which case no counters are emitted: better a gap
+    and an ``up == 0`` alert than stale or zeroed counters that look
+    like "no failures".
+
+    :param store_factory: Returns the store to read. Called once, on the
+        first scrape, so importing this module never opens a connection.
+    """
+
+    def __init__(self, store_factory: Callable[[], Any]) -> None:
+        self._factory = store_factory
+        self._store: Any = None
+
+    def collect(self) -> Iterator[Any]:
+        """Yield the enrollment metric families (Prometheus collector API)."""
+        from wg_manager.enroll_metrics import EnrollMetricsBackendError
+
+        up = GaugeMetricFamily(
+            "wg_manager_enroll_metrics_up",
+            "1 if the enrollment metrics store (Valkey) was readable on "
+            "this scrape, else 0.",
+        )
+        try:
+            if self._store is None:
+                self._store = self._factory()
+            snap = self._store.snapshot()
+        except EnrollMetricsBackendError:
+            up.add_metric([], 0)
+            yield up
+            return
+        up.add_metric([], 1)
+        yield up
+        for name, doc, label, values in (
+            (
+                "wg_manager_enroll_responses",
+                "POST /v1/enroll responses on the enrollment listener, by status.",
+                "status",
+                snap.responses,
+            ),
+            (
+                "wg_manager_enroll_rejects",
+                "Enrollment token rejections (all answered 401), by reason.",
+                "reason",
+                snap.rejects,
+            ),
+            (
+                "wg_manager_enroll_rate_limited",
+                "Enrollment requests answered 429, by rate-limit bucket.",
+                "bucket",
+                snap.rate_limited,
+            ),
+        ):
+            family = CounterMetricFamily(name, doc, labels=[label])
+            for value, count in sorted(values.items()):
+                family.add_metric([value], count)
+            yield family
+
+
+def _enroll_store() -> Any:
+    from wg_manager.config import Settings
+    from wg_manager.enroll_metrics import make_enroll_metrics
+
+    return make_enroll_metrics(Settings())
+
+
+try:
+    REGISTRY.register(EnrollMetricsCollector(_enroll_store))
+except ValueError:
+    # Already registered by an earlier import; see the cert collector.
+    pass
+
+
 def metrics_response() -> tuple[bytes, str]:
     """Return ``(body, content_type)`` for the ``/metrics`` endpoint.
 
@@ -384,6 +468,7 @@ def metrics_response() -> tuple[bytes, str]:
 
 __all__ = [
     "CertificateLifecycleCollector",
+    "EnrollMetricsCollector",
     "MetricsMiddleware",
     "REGISTRY",
     "certs_issued_total",

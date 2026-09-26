@@ -12,7 +12,11 @@ app 404s here.
 Mounted surface:
 
 * ``POST /v1/enroll``: redeem an enrollment token (see :func:`enroll`).
-  Rate-limited per source IP by :class:`EnrollRateLimitMiddleware`.
+  Rate-limited per source IP by :class:`EnrollRateLimitMiddleware`, and
+  its outcomes counted by :class:`EnrollMetricsMiddleware` into the
+  shared store the operator API's ``/metrics`` reads
+  (:mod:`wg_manager.enroll_metrics`). This app serves no ``/metrics``
+  of its own.
 * ``/healthz`` + ``/readyz`` (and their ``/v1/`` twins): the same probes
   as the operator app, so a load balancer can health-check this port
   too.
@@ -38,6 +42,7 @@ from starlette.responses import Response
 from wg_manager import audit
 from wg_manager.config import Settings, settings
 from wg_manager.db import get_session
+from wg_manager.enroll_metrics import EnrollMetrics, make_enroll_metrics
 from wg_manager.enrollment import consume_token, find_token, is_expired
 from wg_manager.ipam import IPPoolExhausted, allocate_client_ip
 from wg_manager.locks import task_row_lock
@@ -68,8 +73,8 @@ def _reject(request: Request, reason: str, token_id: int | None = None) -> NoRet
 
     Every token failure produces the same status, body and header, so a
     caller can't tell a wrong token from an expired or used-up one. The
-    real reason goes to the audit log only. The plaintext token is never
-    logged.
+    real reason goes to the audit log and the ``reject`` counter only.
+    The plaintext token is never logged.
 
     :param request: Incoming request (for the peer address).
     :param reason: Machine-readable reason for the audit line.
@@ -82,6 +87,8 @@ def _reject(request: Request, reason: str, token_id: int | None = None) -> NoRet
         token_id=token_id,
         peer=request.client.host if request.client else None,
     )
+    # The endpoint is sync, so this already runs in the threadpool.
+    request.app.state.enroll_metrics.record_reject(reason)
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="invalid enrollment token",
@@ -341,13 +348,26 @@ class EnrollRateLimitMiddleware(BaseHTTPMiddleware):
     the proxy's bucket (see ``docs/operator-guide.md``).
     """
 
-    def __init__(self, app: Any, *, limiter: Limiter, app_settings: Settings) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        limiter: Limiter,
+        app_settings: Settings,
+        metrics: EnrollMetrics,
+    ) -> None:
         """:param limiter: Backend holding the counters.
         :param app_settings: Supplies the limits and windows.
+        :param metrics: Counts each blocked request by bucket.
         """
         super().__init__(app)
         self._limiter = limiter
         self._s = app_settings
+        self._metrics = metrics
+
+    async def _blocked(self, bucket: str, retry_after: int) -> JSONResponse:
+        await run_in_threadpool(self._metrics.record_rate_limited, bucket)
+        return _too_many(retry_after)
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
@@ -367,7 +387,7 @@ class EnrollRateLimitMiddleware(BaseHTTPMiddleware):
                     window=s.enroll_failure_window_seconds,
                 )
                 if not locked.allowed:
-                    return _too_many(locked.retry_after)
+                    return await self._blocked("failures", locked.retry_after)
             if s.enroll_rate_limit_requests > 0:
                 decision = await run_in_threadpool(
                     self._limiter.hit, req_key,
@@ -378,7 +398,7 @@ class EnrollRateLimitMiddleware(BaseHTTPMiddleware):
                     if decision.count == s.enroll_rate_limit_requests + 1:
                         audit.emit("enroll.rate_limited", peer=ip, bucket="requests",
                                    retry_after=decision.retry_after)
-                    return _too_many(decision.retry_after)
+                    return await self._blocked("requests", decision.retry_after)
         except RateLimitBackendError:
             logger.exception("enroll rate limiter unavailable; failing closed")
             return JSONResponse(
@@ -405,8 +425,34 @@ class EnrollRateLimitMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class EnrollMetricsMiddleware(BaseHTTPMiddleware):
+    """Count every ``POST /v1/enroll`` response by status.
+
+    Installed outermost, so it also sees the rate limiter's own 429s and
+    503s. Recording never raises (see :mod:`wg_manager.enroll_metrics`),
+    so a metrics outage can't change a response.
+    """
+
+    def __init__(self, app: Any, *, metrics: EnrollMetrics) -> None:
+        """:param metrics: Where the counters go."""
+        super().__init__(app)
+        self._metrics = metrics
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        """Pass the request on, then count its status if it was an enroll POST."""
+        response = await call_next(request)
+        if request.method == "POST" and request.url.path == ENROLL_PATH:
+            await run_in_threadpool(self._metrics.record_response, response.status_code)
+        return response
+
+
 def create_enroll_app(
-    app_settings: Settings | None = None, *, limiter: Limiter | None = None
+    app_settings: Settings | None = None,
+    *,
+    limiter: Limiter | None = None,
+    metrics: EnrollMetrics | None = None,
 ) -> FastAPI:
     """Build the enrollment-listener application.
 
@@ -414,6 +460,8 @@ def create_enroll_app(
         environment (the runner's factory call passes nothing).
     :param limiter: Override the limiter backend (tests); default is
         :func:`wg_manager.ratelimit.make_limiter`.
+    :param metrics: Override the outcome counters (tests); default is
+        :func:`wg_manager.enroll_metrics.make_enroll_metrics`.
     :return: A FastAPI app exposing only the enrollment route and the
         health probes, with docs / OpenAPI disabled.
     :rtype: FastAPI
@@ -425,11 +473,16 @@ def create_enroll_app(
         redoc_url=None,
         openapi_url=None,
     )
+    metrics = metrics if metrics is not None else make_enroll_metrics(app_settings)
+    application.state.enroll_metrics = metrics
     application.add_middleware(
         EnrollRateLimitMiddleware,
         limiter=limiter if limiter is not None else make_limiter(app_settings),
         app_settings=app_settings,
+        metrics=metrics,
     )
+    # Added last, so it's outermost and sees the limiter's responses too.
+    application.add_middleware(EnrollMetricsMiddleware, metrics=metrics)
     application.include_router(_router)
     # Same dual mount as the operator app (Phase 3c contract) so an LB
     # probe config can be shared between the two listeners.
