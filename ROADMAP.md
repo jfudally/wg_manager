@@ -2115,3 +2115,73 @@ behaviour in practice.
 
 First-class Kubernetes deploy. The value of Helm is multi-replica
 deploys, so this lands after 3d.
+
+### Phase 3f — Zero-touch host enrollment (userdata) `[~]` (spike in progress)
+
+Let a freshly launched host join the fleet **from outside the VPN**,
+unattended, using a cloud-init / userdata script, without putting a
+control-plane credential in instance metadata.
+
+Why today's surface can't do this:
+
+- The API listener enforces mTLS **at the TLS handshake**
+  (`ssl.CERT_REQUIRED` in `wg_manager.__main__`), so a host with no
+  client cert can't even open a connection. Adding an auth-exempt route
+  to that listener doesn't help.
+- The only credential a host could carry is an operator mTLS cert.
+  Userdata is readable via IMDS and the cloud console, and
+  `POST /clients/manual` is open to any operator in the tenant.
+- `/clients/manual` generates the WireGuard private key on the control
+  plane and marks the row `is_manual`, so the host is never
+  SSH-managed afterwards.
+
+Design: **single-use enrollment tokens** redeemed on a **separate
+enrollment-only listener** that verifies the server cert but asks for no
+client cert. The host generates its own WireGuard keypair and sends its
+SSH host public key. The control plane signs a host cert with the Vault
+SSH CA at enrollment time, so the production `SSHRunner` can manage the
+host over the VPN afterwards with no TOFU step. The token takes over
+from the operator's first SSH connection as the root of trust.
+
+- **Phase 0 — Spike `[~]`** (time-boxed). Riskiest assumption: a
+  second, client-cert-optional listener can run beside the
+  `CERT_REQUIRED` operator listener and exposes **only** the
+  enrollment surface.
+  - [ ] Separate `wg_manager.enroll_app` ASGI app: health probes plus a
+        stub `POST /v1/enroll`; no operator routers, no
+        `MTLSAuthMiddleware`.
+  - [ ] `python -m wg_manager.enroll` runner: server-auth TLS only,
+        own `ENROLL_BIND_HOST` / `ENROLL_BIND_PORT`.
+  - [ ] Real-socket tests proving: a cert-less handshake is refused by
+        the operator listener and accepted by the enroll listener; the
+        enroll listener answers 404 for every operator route.
+  - [ ] Findings recorded here (compose + HA nginx wiring plan).
+- **Phase 1 — MVP `[ ]`**
+  - [ ] `enrollmenttoken` table (Alembic 0018): hash-only storage,
+        `server_id`, `tenant_id`, `expires_at`, `uses_remaining`,
+        `consumed_at`, `created_by`.
+  - [ ] `POST /v1/enrollment-tokens` (mTLS, admin): mint a token, return
+        the plaintext once, audit `enroll.token.issue`.
+  - [ ] `POST /v1/enroll` (bearer token): consume the token atomically;
+        take `{wg_public_key, ssh_host_ed25519_pubkey, hostname}`;
+        allocate an IP; create a **managed** `Client` row dialled at its
+        VPN IP; sign the host cert; queue `reconfigure_server_task`;
+        return the peer block, user CA pubkey and host cert; audit
+        `enroll.redeem`.
+  - [ ] `scripts/enroll_node.sh`: userdata-ready node-side script
+        (keygen → enroll → sshd drop-in → `wg-quick up`).
+  - [ ] `enroll` service in `docker-compose.prod.yml` on its own port.
+  - [ ] Operator guide section + THREAT_MODEL entry for the new
+        unauthenticated surface.
+- **Phase 2 — Hardening `[ ]`**
+  - [ ] Rate limiting and failed-redeem metrics/alerts on the enroll
+        listener.
+  - [ ] Token binding: optional expected source CIDR / instance ID.
+  - [ ] HA: second `stream {}` server block in
+        `docker/nginx/wg-manager.conf` for the enroll port.
+  - [ ] Token revoke/list endpoints; expired-token sweeper.
+- **Phase 3 — Polish `[ ]`**
+  - [ ] Cloud instance-identity attestation (AWS IID, GCP identity
+        token) in place of bearer tokens, so userdata carries no secret.
+  - [ ] `wg-manager enroll-tokens` CLI + dashboard page.
+  - [ ] Terraform module snippet that mints a token per instance.
