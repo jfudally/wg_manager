@@ -359,3 +359,52 @@ class TestRevoke:
         tc = TestClient(create_enroll_app())
         assert tc.get(URL).status_code == 404
         assert tc.post(f"{URL}/1/revoke").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Source-network binding (Phase 3f hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestSourceBinding:
+    def test_unbound_by_default(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        _mint_via_api(client, key_id, server_id)
+        [item] = client.get(URL).json()
+        assert item["allowed_cidrs"] is None
+
+    def test_cidrs_are_normalised_stored_and_listed(self, client: TestClient) -> None:
+        key_id, server_id = _seed()
+        _mint_via_api(
+            client, key_id, server_id,
+            allowed_cidrs=["203.0.113.0/24", "198.51.100.7", "2001:DB8::/32"],
+        )
+        [item] = client.get(URL).json()
+        # A bare address becomes a single-host network; IPv6 is lowercased.
+        assert item["allowed_cidrs"] == ["203.0.113.0/24", "198.51.100.7/32", "2001:db8::/32"]
+
+    def test_audit_records_the_binding(self, client: TestClient) -> None:
+        import json
+
+        key_id, server_id = _seed()
+        _mint_via_api(client, key_id, server_id, allowed_cidrs=["10.1.0.0/16"])
+        with Session(db_module.engine) as s:
+            event = s.exec(
+                select(AuditEvent).where(AuditEvent.event == "enrollment_token.create")
+            ).one()
+        assert json.loads(event.payload)["allowed_cidrs"] == ["10.1.0.0/16"]
+
+    @pytest.mark.parametrize(
+        "cidrs",
+        [
+            [],                                   # binds to nothing: unredeemable
+            ["not-a-cidr"],
+            ["10.0.0.5/24"],                      # host bits set: likely a typo
+            ["10.0.0.0/33"],
+            [f"10.0.{i}.0/24" for i in range(17)],  # more than 16
+        ],
+    )
+    def test_rejects_bad_cidrs(self, client: TestClient, cidrs: list[str]) -> None:
+        key_id, server_id = _seed()
+        resp = client.post(URL, json=_body(key_id, server_id, allowed_cidrs=cidrs))
+        assert resp.status_code == 422, cidrs

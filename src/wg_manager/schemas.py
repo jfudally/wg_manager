@@ -921,6 +921,7 @@ class OperatorTenantRead(BaseModel):
 ENROLL_TOKEN_MIN_TTL_SECONDS = 60
 ENROLL_TOKEN_MAX_TTL_SECONDS = 7 * 86400
 ENROLL_TOKEN_MAX_USES = 100
+ENROLL_TOKEN_MAX_CIDRS = 16
 
 
 class EnrollmentTokenCreate(BaseModel):
@@ -937,6 +938,9 @@ class EnrollmentTokenCreate(BaseModel):
         ``<name_prefix>-<hostname>``. DNS-label shape.
     :ivar ttl_seconds: Token lifetime; 60 s to 7 days, default 1 hour.
     :ivar max_uses: Hosts the token may enroll; 1 to 100, default 1.
+    :ivar allowed_cidrs: Optional networks (1 to 16) the token may be
+        redeemed from, e.g. an autoscaling group's NAT addresses. A bare
+        address means that single host. Omit to allow any source.
     """
 
     server_id: int
@@ -949,6 +953,17 @@ class EnrollmentTokenCreate(BaseModel):
         le=ENROLL_TOKEN_MAX_TTL_SECONDS,
     )
     max_uses: int = Field(default=1, ge=1, le=ENROLL_TOKEN_MAX_USES)
+    allowed_cidrs: list[str] | None = Field(
+        default=None, min_length=1, max_length=ENROLL_TOKEN_MAX_CIDRS
+    )
+
+    @field_validator("allowed_cidrs")
+    @classmethod
+    def _normalize_cidrs(cls, value: list[str] | None) -> list[str] | None:
+        """Canonicalise; reject malformed entries and host bits."""
+        from wg_manager.enrollment import normalize_cidrs
+
+        return None if value is None else normalize_cidrs(value)
 
 
 class EnrollmentTokenCreateResponse(BaseModel):
@@ -982,6 +997,8 @@ class EnrollmentTokenRead(BaseModel):
         :func:`wg_manager.enrollment.token_status`).
     :ivar revoked_at: When it was revoked, or ``None``.
     :ivar revoked_by_cn: Who revoked it.
+    :ivar allowed_cidrs: Networks it may be redeemed from, or ``None``
+        for anywhere.
 
     The other fields mirror :class:`wg_manager.models.EnrollmentToken`.
     """
@@ -1001,7 +1018,16 @@ class EnrollmentTokenRead(BaseModel):
     created_at: datetime
     revoked_at: datetime | None
     revoked_by_cn: str | None
+    allowed_cidrs: list[str] | None = None
     status: EnrollmentTokenStatus
+
+    @field_validator("allowed_cidrs", mode="before")
+    @classmethod
+    def _split_stored_cidrs(cls, value: Any) -> Any:
+        """The row stores a comma-separated string; the API shows a list."""
+        if isinstance(value, str):
+            return value.split(",") if value else None
+        return value
 
 
 # Hostname a host reports about itself. It only names the client row

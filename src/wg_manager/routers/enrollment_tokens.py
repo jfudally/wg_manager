@@ -100,6 +100,7 @@ def create_enrollment_token(
         ttl_seconds=payload.ttl_seconds,
         max_uses=payload.max_uses,
         created_by_cn=actor["actor_cn"],
+        allowed_cidrs=payload.allowed_cidrs,
     )
     audit.persist(
         session,
@@ -116,6 +117,7 @@ def create_enrollment_token(
             "server_id": row.server_id,
             "max_uses": row.max_uses,
             "ttl_seconds": payload.ttl_seconds,
+            "allowed_cidrs": payload.allowed_cidrs,
         },
         tenant_id=row.tenant_id,
     )
