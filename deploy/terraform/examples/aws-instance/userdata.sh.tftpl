@@ -1,0 +1,11 @@
+#!/bin/bash
+# Rendered by Terraform. Readable via IMDS and the cloud console, which
+# is why the token is single-use, short-lived and bound to the NAT IP.
+set -euo pipefail
+
+export WGM_ENROLL_URL='${enroll_url}'
+export WGM_ENROLL_TOKEN='${token}'
+export WGM_CA_BUNDLE_PEM='${ca_bundle}'
+
+# enroll_node.sh baked into the AMI, or fetched from a pinned release tag.
+/opt/wg-manager/enroll_node.sh
