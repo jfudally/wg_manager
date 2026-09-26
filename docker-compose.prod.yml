@@ -627,6 +627,10 @@ services:
       ENROLL_RATE_LIMIT_WINDOW_SECONDS: ${ENROLL_RATE_LIMIT_WINDOW_SECONDS:-60}
       ENROLL_FAILURE_LIMIT: ${ENROLL_FAILURE_LIMIT:-10}
       ENROLL_FAILURE_WINDOW_SECONDS: ${ENROLL_FAILURE_WINDOW_SECONDS:-600}
+      # Behind an L4 load balancer (AWS NLB, HAProxy, nginx stream)
+      # that sends PROXY protocol, so rate limits see real client IPs.
+      ENROLL_PROXY_PROTOCOL: ${ENROLL_PROXY_PROTOCOL:-false}
+      ENROLL_PROXY_TRUSTED_CIDRS: ${ENROLL_PROXY_TRUSTED_CIDRS:-}
     volumes: *worker-volumes
     ports:
       - "${WG_MANAGER_ENROLL_BIND_ADDR:-0.0.0.0}:${WG_MANAGER_ENROLL_BIND_PORT:-8443}:8001"
