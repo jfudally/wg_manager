@@ -48,7 +48,12 @@ RESPONSE = {
     "client_id": 7,
     "name": "web-web-01",
     "address": "10.9.0.2/32",
-    "wg_config": "[Interface]\nAddress = 10.9.0.2/32\nPostUp = wg set %i private-key /etc/wireguard/privatekey\n\n[Peer]\nPublicKey = HUB=\nEndpoint = hub:51820\nAllowedIPs = 10.9.0.0/24\nPersistentKeepalive = 25\n",
+    "wg_config": (
+        "[Interface]\nAddress = 10.9.0.2/32\n"
+        "PostUp = wg set %i private-key /etc/wireguard/privatekey\n\n"
+        "[Peer]\nPublicKey = HUB=\nEndpoint = hub:51820\n"
+        "AllowedIPs = 10.9.0.0/24\nPersistentKeepalive = 25\n"
+    ),
     "ssh_username": "wgmgr",
     "user_ca_public_key": "ssh-ed25519 AAAAUSERCA ca",
     "host_certificate": "ssh-ed25519-cert-v01@openssh.com AAAAHOSTCERT",
@@ -68,17 +73,23 @@ _STUBS = {
         while [[ $# -gt 0 ]]; do
           case "$1" in
             -H) [[ "$2" == @* ]] && cat "${{2#@}}" >> "$FAKE_LOG/curl.headers"; shift 2 ;;
-            --data|--data-binary) [[ "$2" == @* ]] && cp "${{2#@}}" "$FAKE_LOG/curl.body"; shift 2 ;;
+            --data-binary) [[ "$2" == @* ]] && cp "${{2#@}}" "$FAKE_LOG/curl.body"; shift 2 ;;
             -o) out="$2"; shift 2 ;;
             -w) code_fmt="$2"; shift 2 ;;
             *) shift ;;
           esac
         done
-        n=$(cat "$FAKE_LOG/curl.count" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$FAKE_LOG/curl.count"
+        n=$(cat "$FAKE_LOG/curl.count" 2>/dev/null || echo 0)
+        n=$((n+1))
+        echo "$n" > "$FAKE_LOG/curl.count"
         read -r -a codes <<< "$FAKE_HTTP_CODES"
         idx=$(( n <= ${{#codes[@]}} ? n-1 : ${{#codes[@]}}-1 ))
         code="${{codes[$idx]}}"
-        if [[ "$code" == 201 ]]; then cp "$FAKE_RESPONSE" "$out"; else echo '{{"detail":"nope"}}' > "$out"; fi
+        if [[ "$code" == 201 ]]; then
+          cp "$FAKE_RESPONSE" "$out"
+        else
+          echo '{{"detail":"nope"}}' > "$out"
+        fi
         [[ -n "$code_fmt" ]] && printf '%s' "$code"
         exit 0
         """),
