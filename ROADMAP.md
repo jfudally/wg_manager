@@ -2226,8 +2226,24 @@ from the operator's first SSH connection as the root of trust.
         unauthenticated caller can learn the request schema. Low
         impact, since the schema is public in `enroll_node.sh`, but
         worth returning a uniform 401 first.
-  - [ ] Rate limiting and failed-redeem metrics/alerts on the enroll
-        listener.
+  - [x] **Per-source-IP rate limiting** (2026-09-26). New
+        `wg_manager.ratelimit` (fixed windows in Valkey, shared across
+        replicas; in-memory for tests). There's a request bucket
+        (120/min) and a failure bucket (10 x 401/422 per 10 min, which
+        locks the IP out). It returns 429 + `Retry-After`, fails closed
+        with 503, and logs one `enroll.rate_limited` line per trip. The
+        script retries 429.
+  - [ ] Failed-redeem **metrics** and alerts. Not straightforward: the
+        enroll listener is its own process, and serving `/metrics` on
+        its public port would expose it. Needs a loopback-only metrics
+        port or prometheus_client multiprocess mode. Until then, alert
+        on `enroll.reject` / `enroll.rate_limited` in the audit log.
+  - [ ] **Real client IPs behind a proxy.** The limiter keys on the TCP
+        peer. Behind the HA nginx `stream {}` passthrough, or Docker's
+        userland proxy, every caller shows up as the proxy's address
+        and shares one bucket. Fix: PROXY protocol from nginx plus
+        parsing it in the enroll runner (uvicorn has no native PROXY
+        protocol support).
   - [ ] Token binding: optional expected source CIDR / instance ID.
   - [ ] HA: second `stream {}` server block in
         `docker/nginx/wg-manager.conf` for the enroll port.
