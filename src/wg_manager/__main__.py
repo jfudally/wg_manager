@@ -18,12 +18,12 @@ serves plain HTTP.
 
 from __future__ import annotations
 
-import ssl
 import sys
 
 import uvicorn
 
 from wg_manager.config import settings
+from wg_manager.tls_listeners import api_ssl_kwargs
 
 
 def main() -> int:
@@ -62,12 +62,7 @@ def main() -> int:
         host=settings.bind_host,
         port=settings.bind_port,
         reload=True,
-        ssl_certfile=settings.tls_cert_pem,
-        ssl_keyfile=settings.tls_key_pem,
-        ssl_ca_certs=settings.tls_ca_bundle_pem,
-        ssl_cert_reqs=(
-            ssl.CERT_REQUIRED if settings.tls_required else ssl.CERT_OPTIONAL
-        ),
+        **api_ssl_kwargs(settings),
     )
     return 0
 

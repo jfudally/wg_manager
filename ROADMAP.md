@@ -2115,3 +2115,143 @@ behaviour in practice.
 
 First-class Kubernetes deploy. The value of Helm is multi-replica
 deploys, so this lands after 3d.
+
+### Phase 3f — Zero-touch host enrollment (userdata) `[~]` (MVP done)
+
+Let a freshly launched host join the fleet **from outside the VPN**,
+unattended, using a cloud-init / userdata script, without putting a
+control-plane credential in instance metadata.
+
+Why today's surface can't do this:
+
+- The API listener enforces mTLS **at the TLS handshake**
+  (`ssl.CERT_REQUIRED` in `wg_manager.__main__`), so a host with no
+  client cert can't even open a connection. Adding an auth-exempt route
+  to that listener doesn't help.
+- The only credential a host could carry is an operator mTLS cert.
+  Userdata is readable via IMDS and the cloud console, and
+  `POST /clients/manual` is open to any operator in the tenant.
+- `/clients/manual` generates the WireGuard private key on the control
+  plane and marks the row `is_manual`, so the host is never
+  SSH-managed afterwards.
+
+Design: **single-use enrollment tokens** redeemed on a **separate
+enrollment-only listener** that verifies the server cert but asks for no
+client cert. The host generates its own WireGuard keypair and sends its
+SSH host public key. The control plane signs a host cert with the Vault
+SSH CA at enrollment time, so the production `SSHRunner` can manage the
+host over the VPN afterwards with no TOFU step. The token takes over
+from the operator's first SSH connection as the root of trust.
+
+- **Phase 0 — Spike `[x]`** (2026-09-26). Riskiest assumption: a
+  second listener that doesn't require client certs can run beside the
+  `CERT_REQUIRED` operator listener and expose **only** the enrollment
+  surface. **Confirmed.**
+  - [x] Separate `wg_manager.enroll_app` ASGI app: health probes plus a
+        stub `POST /v1/enroll` (501); no operator routers, no
+        `MTLSAuthMiddleware`, OpenAPI/docs disabled.
+  - [x] `python -m wg_manager.enroll_listener` / `make run-enroll`:
+        server-auth TLS only (`CERT_NONE`, no CA bundle loaded), own
+        `ENROLL_BIND_HOST` / `ENROLL_BIND_PORT` (default
+        `127.0.0.1:8001`), reuses `TLS_CERT_PEM` / `TLS_KEY_PEM`.
+        Both listeners' TLS policies now live in
+        `wg_manager.tls_listeners`.
+  - [x] Real-socket tests (`tests/test_enroll_listener.py`): the
+        operator listener drops a cert-less client and admits a valid
+        one (positive control), while the enroll listener admits the
+        cert-less client. Every route in the main app's OpenAPI schema
+        (80 method/path pairs) 404s on the enroll app.
+  - [x] Findings:
+    - **The design holds as two ASGI apps, not one.** An exempt path on
+      the operator listener can't work because the client cert is
+      demanded during the handshake. That's the same gap the prod
+      compose `/healthz` healthcheck comment already works around.
+    - **Compose wiring (MVP):** run a second process from the same
+      image, e.g. an `enroll` service with
+      `command: python -m wg_manager.enroll_listener`, the same `./tls`
+      mount and `ENROLL_BIND_HOST=0.0.0.0`, and its own
+      `${WG_MANAGER_ENROLL_BIND_PORT}:8001` mapping. Running a separate
+      process keeps the operator API's process out of the anonymous
+      attack path.
+    - **HA (Hardening):** add a second nginx `stream {}` server block
+      forwarding the enroll port to each replica's `:8001`. Both are L4
+      passthrough, so neither needs TLS termination.
+    - **Bonus:** the enroll listener can answer LB health probes
+      without a client cert. That closes the prod-compose healthcheck
+      gap noted above without weakening the operator port.
+    - **Side finding:** `LocalDevPKI` leaves have no Authority Key
+      Identifier, so Python 3.13's default `VERIFY_X509_STRICT` rejects
+      them. The tests clear that flag. Vault-issued certs are
+      unaffected, but it's worth its own fix so stdlib clients work
+      against the dev PKI unmodified.
+- **Phase 1 — MVP `[x]`** (2026-09-26)
+  - [x] `enrollmenttoken` table (Alembic 0018): hash-only storage,
+        `server_id`, `tenant_id`, `ssh_key_id`, `ssh_username`,
+        `name_prefix`, `expires_at`, `max_uses` / `use_count`,
+        `created_by_cn`.
+  - [x] `POST /v1/enrollment-tokens` (mTLS, admin on the hub's tenant):
+        mint a token, return the plaintext once, audit
+        `enrollment_token.create`. The SSH key must be in the hub's
+        tenant.
+  - [x] `POST /v1/enroll` (bearer token): one transaction under a
+        per-hub advisory lock. It consumes a use with a guarded
+        `UPDATE`, allocates an IP, signs a host cert whose **only**
+        principal is the VPN IP, and creates a **managed** client
+        dialled at that IP. It audits `client.enroll` and queues
+        `reconfigure_server_task`. Any later failure rolls back the
+        token use. Every token failure gets the same 401, and
+        `enroll.reject` goes to the audit log.
+  - [x] `scripts/enroll_node.sh`: userdata-ready node-side script
+        (keygen, enroll with 5xx retry, install trust + config, sudo
+        user, `wg-quick up`). Its tests actually run it against a
+        temporary root with stubbed binaries.
+  - [x] Opt-in `enroll` service in `docker-compose.prod.yml`
+        (`COMPOSE_PROFILES=enroll`).
+  - [x] Operator guide section, README, THREAT_MODEL T-13 to T-16 and
+        trust boundary B-6.
+- **Phase 2 — Hardening `[ ]`**
+  - [x] **Hub-reconfigure race under bursts** (fixed 2026-09-26, Alembic
+        0019). Contention now retries instead of skipping, and
+        `server.reconfig_requested_gen` / `reconfig_applied_gen`
+        coalesce bursts to about one hub restart. Covered by
+        `tests/test_reconfigure_coalescing.py`. Original problem: `reconfigure_server_task`
+        waits 5 s for the hub lock, then returns `skipped`. An SSH
+        reconfigure often takes longer than that.
+        If two hosts enroll back to back, the second host's reconfigure
+        can be skipped while the first is rendering a config that
+        doesn't include it yet. The new peer then isn't admitted until
+        the next reconfigure. This also affects `POST /clients`, but
+        autoscaling makes it likely.
+  - [x] **Uniform 401 before validation** (2026-09-26). The endpoint
+        takes the raw body and validates it only after the token is
+        found, unexpired and not used up. Before this, request
+        validation (422) ran before the token checks, so an
+        unauthenticated caller could learn the request schema. Covered
+        by `tests/test_enroll_redeem.py::TestValidation`.
+  - [x] **Per-source-IP rate limiting** (2026-09-26). New
+        `wg_manager.ratelimit` (fixed windows in Valkey, shared across
+        replicas; in-memory for tests). There's a request bucket
+        (120/min) and a failure bucket (10 x 401/422 per 10 min, which
+        locks the IP out). It returns 429 + `Retry-After`, fails closed
+        with 503, and logs one `enroll.rate_limited` line per trip. The
+        script retries 429.
+  - [ ] Failed-redeem **metrics** and alerts. Not straightforward: the
+        enroll listener is its own process, and serving `/metrics` on
+        its public port would expose it. Needs a loopback-only metrics
+        port or prometheus_client multiprocess mode. Until then, alert
+        on `enroll.reject` / `enroll.rate_limited` in the audit log.
+  - [ ] **Real client IPs behind a proxy.** The limiter keys on the TCP
+        peer. Behind the HA nginx `stream {}` passthrough, or Docker's
+        userland proxy, every caller shows up as the proxy's address
+        and shares one bucket. Fix: PROXY protocol from nginx plus
+        parsing it in the enroll runner (uvicorn has no native PROXY
+        protocol support).
+  - [ ] Token binding: optional expected source CIDR / instance ID.
+  - [ ] HA: second `stream {}` server block in
+        `docker/nginx/wg-manager.conf` for the enroll port.
+  - [ ] Token revoke/list endpoints; expired-token sweeper.
+- **Phase 3 — Polish `[ ]`**
+  - [ ] Cloud instance-identity attestation (AWS IID, GCP identity
+        token) in place of bearer tokens, so userdata carries no secret.
+  - [ ] `wg-manager enroll-tokens` CLI + dashboard page.
+  - [ ] Terraform module snippet that mints a token per instance.

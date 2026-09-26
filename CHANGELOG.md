@@ -10,6 +10,71 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Enrollment listener spike (Phase 3f, Phase 0).** New
+  `python -m wg_manager.enroll_listener` / `make run-enroll` serves a
+  separate enrollment-only app on `ENROLL_BIND_HOST:ENROLL_BIND_PORT`
+  (default `127.0.0.1:8001`) using server-auth TLS, with no client cert
+  requested. It exposes only the health probes and a stub
+  `POST /v1/enroll` (501), and no operator routes. The operator
+  listener's TLS policy moved to `wg_manager.tls_listeners` with no
+  behaviour change. Groundwork for userdata-driven host enrollment;
+  see `ROADMAP.md` Phase 3f.
+- **Zero-touch host enrollment (Phase 3f MVP).** A fresh host can join
+  the fleet from userdata, from outside the VPN, as a fully managed
+  client.
+  - `POST /v1/enrollment-tokens` (admin only) mints a `wgmenr_…` token
+    tied to a ready hub, its tenant and a management SSH identity. It
+    is single-use by default, expires after 60 s to 7 days, and only its
+    SHA-256 is stored (Alembic 0018, `enrollmenttoken`).
+  - `POST /v1/enroll` on the enrollment listener redeems the token. It
+    takes the host's own WireGuard and ed25519 SSH public keys,
+    allocates an address, and signs a host cert whose only principal is
+    that address. It returns a `wg0.conf` with no private key in it.
+    Failures after the token is consumed roll the use back, and every
+    token failure gets the same 401.
+  - `scripts/enroll_node.sh` is the userdata script that does the host
+    side.
+  - New opt-in `enroll` service in `docker-compose.prod.yml`, enabled
+    with `COMPOSE_PROFILES=enroll`.
+  - See `docs/operator-guide.md`, "Zero-touch enrollment", and threats
+    T-13 to T-16 in `docs/THREAT_MODEL.md`.
+
+- **Rate limiting on `POST /v1/enroll`.** Limits are per source IP,
+  with counters in Valkey (`wg_manager.ratelimit`):
+  - 120 requests/min;
+  - 10 failed attempts (401/422) per 10 min, which then locks that IP
+    out, even for a valid token.
+
+  Blocked calls get 429 + `Retry-After`. Enrollment fails closed with
+  503 if Valkey is unreachable, and `enroll_node.sh` retries both. The
+  limits are tunable via `ENROLL_RATE_LIMIT_*` / `ENROLL_FAILURE_*`.
+
+### Changed
+
+- **`POST /v1/enroll` checks the token before the body.** An
+  unauthenticated caller used to get field-level 422s describing the
+  request schema. Now a missing, unknown, expired or used-up token gets
+  the uniform 401 whatever the body contains, including invalid JSON
+  or no body at all. Callers with a live token still get 422 for a bad
+  body, and the token isn't consumed.
+
+### Fixed
+
+- **Hub reconfigures no longer lose peers under concurrency.**
+  `reconfigure_server_task` used to *skip* when another reconfigure
+  held the hub's lock. The lock holder could have read the client list
+  before the triggering change committed, so that peer (a new
+  enrollment, manual client or deleted client) stayed out of sync on
+  the hub until some unrelated later reconfigure. Now:
+  - it retries on contention (every 10 s, up to 30 times) instead of
+    skipping;
+  - every dispatch goes through `request_reconfigure()`, which bumps
+    a new `server.reconfig_requested_gen` counter (Alembic 0019);
+  - a run records the generation it applied, and queued runs already
+    covered by it return `coalesced` without touching the hub. A
+    burst of N changes now costs about one `wg-quick` restart instead
+    of N.
+
 ## [v0.6.1] - 2026-09-26
 
 ### Fixed

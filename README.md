@@ -166,6 +166,7 @@ The release page also attaches `sbom-api.cdx.json` +
 | Hub + spoke provisioning over SSH | `wg-manager servers register` / `clients register` |
 | Manual clients for phones / IoT (server-side keygen, render `wg0.conf` once) | `wg-manager clients add-manual` |
 | VPN-first node enrollment, then Cinc over the tunnel | `scripts/wg_bootstrap.sh all …` |
+| Zero-touch enrollment from userdata (single-use tokens, separate cert-optional listener) | `POST /v1/enrollment-tokens` + `scripts/enroll_node.sh` |
 | Peer discovery (`wg show … dump` parser) | `POST /servers/{id}/discover` |
 | SSH config export of every managed client | `wg-manager clients ssh-config` |
 | Async provisioning with Celery | `GET /tasks/{task_id}` |
@@ -181,6 +182,7 @@ The release page also attaches `sbom-api.cdx.json` +
 | Need | Doc |
 |---|---|
 | Add a server end-to-end | [`docs/operator-guide.md`](docs/operator-guide.md) |
+| Let new hosts enroll themselves from userdata | [`docs/operator-guide.md#zero-touch-enrollment-userdata`](docs/operator-guide.md#zero-touch-enrollment-userdata) |
 | Cut a release | [`docs/release.md`](docs/release.md) |
 | Cert renewal via systemd timer | [`docs/deploy/systemd-timer.md`](docs/deploy/systemd-timer.md) |
 | Vault setup (raft storage, auto-unseal, audit log shipping) | [`docs/vault-cookbook.md`](docs/vault-cookbook.md) |

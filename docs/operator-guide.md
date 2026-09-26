@@ -15,6 +15,7 @@ what each checkpoint shipped) see [`ROADMAP.md`](../ROADMAP.md).
 2. [MySQL TLS](#mysql-tls)
 3. [Cert renewal](#cert-renewal)
 4. [Adding a server](#adding-a-server)
+5. [Zero-touch enrollment (userdata)](#zero-touch-enrollment-userdata)
 
 ---
 
@@ -304,3 +305,138 @@ new peer.
 Manual clients are excluded from `GET /clients/export/ssh-config`
 (no SSH credentials) and from `POST /clients/{id}/reprovision`.
 To roll their keypair, delete the row and re-register.
+
+---
+
+## Zero-touch enrollment (userdata)
+
+Phase 3f. A freshly launched host can join the fleet by itself, from
+outside the VPN, with no operator SSH session. You mint a single-use
+**enrollment token** and put it in the instance's userdata. On first
+boot, `scripts/enroll_node.sh` redeems it on the **enrollment
+listener**, a separate port that accepts TLS without a client cert
+and serves nothing except `POST /v1/enroll` and health probes. The
+host ends up as an ordinary managed client: reprovision, host-cert
+rotation and discovery all work on it.
+
+### 1. Turn on the enrollment listener (once)
+
+It's off by default. In `.env.prod`:
+
+```bash
+COMPOSE_PROFILES=enroll
+WG_MANAGER_ENROLL_BIND_PORT=8443   # the port hosts will reach
+```
+
+Then `make prod-up`. Open that port to wherever new hosts boot (a
+cloud security group, for example). The operator API port can stay
+as locked down as before. For local dev, `make run-enroll` starts it
+on `127.0.0.1:8001` using the same `TLS_CERT_PEM` / `TLS_KEY_PEM` as
+`make run`.
+
+> **The worker must be able to reach the VPN.** An enrolled host is
+> dialled at its VPN address: that's the only name its host cert
+> vouches for, and the host may have no reachable public IP. Run the
+> worker on a hub or another VPN peer. Otherwise the daily host-cert
+> rotation, and every later reprovision, will fail for enrolled
+> hosts.
+
+### 2. Mint a token
+
+Admin only (admin on the hub's tenant, or a super-admin):
+
+```bash
+curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
+  -X POST https://wg.example.com/v1/enrollment-tokens \
+  -H 'Content-Type: application/json' \
+  -d '{"server_id": 1, "ssh_key_id": 1, "ssh_username": "wgmgr",
+       "name_prefix": "web", "ttl_seconds": 3600, "max_uses": 1}'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `server_id` | Hub the host joins. Must be `ready`. |
+| `ssh_key_id` / `ssh_username` | How the worker will SSH in later. The key must be in the hub's tenant; the script creates the user with passwordless sudo if it's missing. |
+| `name_prefix` | Clients are named `<prefix>-<hostname>`. |
+| `ttl_seconds` | 60 s to 7 days (default 1 h). |
+| `max_uses` | 1 to 100 (default 1). Use more than 1 only for autoscaling groups. Simultaneous enrollments are safe: hub reconfigures coalesce, so a burst costs about one hub restart. |
+
+The response carries `token` **once**. Only its SHA-256 is stored.
+
+### 3. Put it in userdata
+
+```bash
+#!/bin/bash
+export WGM_ENROLL_URL=https://wg.example.com:8443
+export WGM_ENROLL_TOKEN=wgmenr_...
+export WGM_CA_BUNDLE_PEM='-----BEGIN CERTIFICATE-----
+...contents of tls/ca-bundle.crt...
+-----END CERTIFICATE-----'
+/opt/wg-manager/enroll_node.sh   # baked into the image, or fetched from a pinned release tag
+```
+
+The script generates the WireGuard key on the host (it never leaves),
+sends only the public keys, retries while the control plane answers
+5xx, installs the returned `wg0.conf`, SSH user CA, host cert and
+sshd drop-in, and brings `wg0` up. See the header of
+`scripts/enroll_node.sh` for every setting.
+
+### What the control plane does on redemption
+
+In one transaction, serialised per hub:
+
+- it consumes one use of the token,
+- allocates the next VPN address,
+- signs the host's ed25519 key with **only that address** as the
+  principal (the hostname the host reports never becomes a
+  principal),
+- creates the client row, writes a `client.enroll` audit event, then
+  queues a hub reconfigure.
+
+If anything fails after the token is consumed, the whole transaction
+rolls back and the use is returned.
+
+A bad, expired or used-up token always gets the same `401`. The token
+is checked before the body, so a caller without a live token never sees
+a `422`. The real
+reason goes to the audit log as `enroll.reject`, which is worth
+alerting on.
+
+### Rate limits
+
+`POST /v1/enroll` is limited per source IP, with counters in Valkey
+shared by every enroll replica:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `ENROLL_RATE_LIMIT_REQUESTS` / `_WINDOW_SECONDS` | 120 / 60 | All enroll requests from one IP. |
+| `ENROLL_FAILURE_LIMIT` / `ENROLL_FAILURE_WINDOW_SECONDS` | 10 / 600 | Failed attempts (bad token = 401, bad body with a live token = 422) before that IP is locked out for the rest of the window, **even with a valid token**. |
+
+Set a limit to `0` to disable it. Blocked calls get `429` with
+`Retry-After`, and `enroll_node.sh` backs off and retries. If Valkey
+is unreachable, enrollment fails closed with `503`, which the script
+also retries. Each trip writes one `enroll.rate_limited` line to the
+audit log.
+
+Things to know:
+
+- **Fleets behind NAT share an IP.** An autoscaling group in a private
+  subnet usually reaches the internet through one NAT address. Raise
+  `ENROLL_RATE_LIMIT_REQUESTS` if large groups enroll at once. It only
+  slows them down; they retry.
+- **One broken host can lock out its neighbours.** A host behind the
+  same NAT that keeps sending a bad token counts toward the shared
+  failure bucket. Check `enroll.reject` in the audit log for the
+  reason.
+- **Proxies hide client IPs.** The limit keys on the TCP peer. Behind
+  the HA nginx L4 proxy, or Docker's userland proxy, every caller looks
+  like the proxy and shares one bucket. Publish the enroll port
+  directly, with iptables DNAT (Docker's default for IPv4), until
+  PROXY protocol support lands.
+
+### Treat userdata as readable
+
+Anyone who can read the instance's metadata can read the token.
+That's why tokens are single-use by default, short-lived, and tied to
+one hub and one tenant. Keep `ttl_seconds` close to how long a boot
+takes, and keep `max_uses` at 1 unless you really need more.
