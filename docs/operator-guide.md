@@ -466,3 +466,10 @@ a revoked token gets the same `401` as any other bad token, with
 `reason: revoked` in the `enroll.reject` audit line. Hosts that already
 enrolled with the token stay enrolled; delete their clients to remove
 them. Revocations are audited as `enrollment_token.revoke`.
+
+Dead tokens don't stay listed forever. The `beat` service deletes
+tokens that expired or were revoked more than
+`ENROLL_TOKEN_RETENTION_SECONDS` ago (default 7 days), checking every
+`ENROLL_TOKEN_SWEEP_INTERVAL_SECONDS` (default 1 hour). Live tokens are
+never swept. The audit log keeps the full history, and each sweep logs
+how many tokens it deleted.

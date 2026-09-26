@@ -2255,9 +2255,12 @@ from the operator's first SSH connection as the root of trust.
         `POST /v1/enrollment-tokens/{id}/revoke`. The guarded
         use-count `UPDATE` re-checks `revoked_at`, so a revoke also
         stops an in-flight redemption.
-  - [ ] Expired-token sweeper: delete rows long past expiry or
-        revocation (keep a grace period so recent ones stay visible in
-        the list; the audit table already has the history).
+  - [x] **Expired-token sweeper** (2026-09-26). The beat task
+        `sweep_enrollment_tokens` deletes tokens dead (expired or
+        revoked) for over `ENROLL_TOKEN_RETENTION_SECONDS` (7 days),
+        every `ENROLL_TOKEN_SWEEP_INTERVAL_SECONDS` (1 hour). The grace
+        period keeps recent ones in the list, and the audit table keeps
+        the history.
 - **Phase 3 — Polish `[ ]`**
   - [ ] Cloud instance-identity attestation (AWS IID, GCP identity
         token) in place of bearer tokens, so userdata carries no secret.

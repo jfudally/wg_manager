@@ -61,6 +61,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
     usual uniform 401, and the guarded use-count `UPDATE` re-checks
     revocation, so a revoke also stops a redemption already in flight.
 
+- **Expired-token sweeper.** A new Celery beat task,
+  `wg_manager.tasks.sweep_enrollment_tokens`, deletes enrollment tokens
+  that expired or were revoked more than `ENROLL_TOKEN_RETENTION_SECONDS`
+  ago (default 7 days). It runs every
+  `ENROLL_TOKEN_SWEEP_INTERVAL_SECONDS` (default 1 hour). Live tokens are
+  never touched, and the audit log keeps the history. Both settings are
+  passed through to `beat` in `docker-compose.prod.yml`.
+
 ### Changed
 
 - **`POST /v1/enroll` checks the token before the body.** An
