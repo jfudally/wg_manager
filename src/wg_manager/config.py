@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     :cvar database_url: SQLAlchemy connection URL for the state store.
     :cvar bind_host: Address the API binds to (localhost by default).
     :cvar bind_port: TCP port the API listens on.
+    :cvar enroll_bind_host: Address the Phase 3f enrollment listener
+        binds to (localhost by default).
+    :cvar enroll_bind_port: TCP port of the enrollment listener.
     :cvar default_subnet: CIDR used when a ``POST /servers`` payload omits
         the ``subnet`` field. Validated at construction time so a broken
         ``.env`` value fails on app startup rather than at the first
@@ -57,6 +60,11 @@ class Settings(BaseSettings):
     database_url: str = "mysql+pymysql://wg:wg@localhost:3306/wg_manager"
     bind_host: str = "127.0.0.1"
     bind_port: int = 8000
+    # Phase 3f enrollment listener (wg_manager.enroll_listener). A
+    # separate port so it can be exposed to not-yet-enrolled hosts
+    # while the mTLS operator API stays locked down.
+    enroll_bind_host: str = "127.0.0.1"
+    enroll_bind_port: int = 8001
     default_subnet: str = "10.9.0.0/24"
     default_wg_port: int = 51820
     celery_broker_url: str = "redis://localhost:6379/0"

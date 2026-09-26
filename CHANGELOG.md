@@ -10,6 +10,16 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Enrollment listener spike (Phase 3f, Phase 0).** New
+  `python -m wg_manager.enroll_listener` / `make run-enroll` serves a
+  separate enrollment-only app on `ENROLL_BIND_HOST:ENROLL_BIND_PORT`
+  (default `127.0.0.1:8001`) using server-auth TLS, with no client cert
+  requested. It exposes only the health probes and a stub
+  `POST /v1/enroll` (501), and no operator routes. The operator
+  listener's TLS policy moved to `wg_manager.tls_listeners` with no
+  behaviour change. Groundwork for userdata-driven host enrollment;
+  see `ROADMAP.md` Phase 3f.
+
 ## [v0.6.1] - 2026-09-26
 
 ### Fixed
