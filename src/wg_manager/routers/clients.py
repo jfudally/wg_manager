@@ -26,7 +26,7 @@ from wg_manager.schemas import (
 )
 from wg_manager.tasks import (
     provision_client_task,
-    reconfigure_server_task,
+    request_reconfigure,
     rotate_client_host_cert_task,
 )
 from wg_manager.tenant_scope import (
@@ -135,7 +135,7 @@ def register_manual_client(
        can't log into), so persisting it would be pure liability.
     4. Render the WireGuard config (with the private key inline) and
        return it as ``wg_config`` on the response.
-    5. Dispatch :func:`wg_manager.tasks.reconfigure_server_task` so the
+    5. Dispatch a hub reconfigure (:func:`wg_manager.tasks.request_reconfigure`) so the
        hub's ``wg0.conf`` is rewritten to admit the new peer.
 
     Because the private key is dropped after this call, the operator
@@ -199,7 +199,7 @@ def register_manual_client(
 
     # Push the new peer into the hub's running config so the device can
     # actually connect once the operator installs the rendered .conf.
-    async_result = reconfigure_server_task.delay(payload.server_id)
+    async_result = request_reconfigure(payload.server_id)
     return ClientManualRegisterResponse(
         task_id=async_result.id,
         client=ClientRead.model_validate(row),
@@ -456,7 +456,7 @@ def delete_client(
     """Delete a client and dispatch a hub reconfigure to drop the peer.
 
     The row is removed from the database immediately. A follow-up
-    :func:`wg_manager.tasks.reconfigure_server_task` is enqueued against
+    a hub reconfigure (:func:`wg_manager.tasks.request_reconfigure`) is enqueued against
     the parent server so the hub's ``wg0.conf`` is rewritten without the
     deleted peer — meaning the deleted client's public key can no longer
     be used to connect. Poll ``GET /tasks/{task_id}`` to confirm the hub
@@ -496,7 +496,7 @@ def delete_client(
     )
     session.commit()
 
-    async_result = reconfigure_server_task.delay(server_id)
+    async_result = request_reconfigure(server_id)
     return ClientDeleteResponse(
         task_id=async_result.id,
         client_id=client_id,
