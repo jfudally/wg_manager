@@ -2273,5 +2273,10 @@ from the operator's first SSH connection as the root of trust.
 - **Phase 3 — Polish `[ ]`**
   - [ ] Cloud instance-identity attestation (AWS IID, GCP identity
         token) in place of bearer tokens, so userdata carries no secret.
-  - [ ] `wg-manager enroll-tokens` CLI + dashboard page.
+  - [x] **`wg-manager enroll-tokens` CLI** (2026-09-26): `create` (with
+        `--ttl 2h`-style durations, repeatable `--allow-cidr`, and
+        `--token-only` for launch scripts), `list` (`--server-id`,
+        `--active`), and `revoke`. These are thin wrappers over
+        `/v1/enrollment-tokens`, so authz and audit stay in the API.
+  - [ ] Dashboard page for enrollment tokens.
   - [ ] Terraform module snippet that mints a token per instance.

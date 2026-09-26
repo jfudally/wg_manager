@@ -75,6 +75,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   401, and the token isn't used up. The binding is shown in
   `GET /v1/enrollment-tokens` and recorded in the mint audit event.
 
+- **`wg-manager enroll-tokens` CLI.** It has three commands, `create`,
+  `list` and `revoke`, over `/v1/enrollment-tokens`.
+  - `create` takes `--ttl` as seconds or `90s`/`15m`/`2h`/`1d`, and
+    `--allow-cidr` can be repeated.
+  - `create --token-only` prints just the token, for
+    `TOKEN=$(...)` in launch scripts.
+
 ### Changed
 
 - **`POST /v1/enroll` checks the token before the body.** An
