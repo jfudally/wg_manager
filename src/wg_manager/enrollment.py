@@ -3,7 +3,8 @@
 Holds everything about enrollment tokens that isn't HTTP-shaped, so
 both routers stay thin:
 
-* the operator-side minting router (:mod:`wg_manager.routers.enrollment_tokens`),
+* the operator-side mint / list / revoke router
+  (:mod:`wg_manager.routers.enrollment_tokens`),
 * the host-side redemption route on the enrollment listener
   (:mod:`wg_manager.enroll_app`).
 
@@ -18,10 +19,10 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import update
-from sqlmodel import Session, select
+from sqlalchemy import ColumnElement, and_, update
+from sqlmodel import Session, col, select
 
-from wg_manager.models import EnrollmentToken, Server, SSHKey
+from wg_manager.models import EnrollmentToken, EnrollmentTokenStatus, Server, SSHKey
 
 TOKEN_PREFIX = "wgmenr_"
 
@@ -133,14 +134,73 @@ def is_expired(row: EnrollmentToken, now: datetime | None = None) -> bool:
     return as_utc(row.expires_at) <= now
 
 
+def token_status(
+    row: EnrollmentToken, now: datetime | None = None
+) -> EnrollmentTokenStatus:
+    """Derive ``row``'s state; see :class:`EnrollmentTokenStatus` for precedence.
+
+    :param row: Token row.
+    :param now: Override for tests; defaults to the current UTC time.
+    """
+    if row.revoked_at is not None:
+        return EnrollmentTokenStatus.revoked
+    if is_expired(row, now):
+        return EnrollmentTokenStatus.expired
+    if row.use_count >= row.max_uses:
+        return EnrollmentTokenStatus.exhausted
+    return EnrollmentTokenStatus.active
+
+
+def active_filter(now: datetime | None = None) -> ColumnElement[bool]:
+    """SQL twin of ``token_status(row) is active``, for list queries.
+
+    :param now: Override for tests; defaults to the current UTC time.
+    """
+    now = now or datetime.now(timezone.utc)
+    return and_(
+        col(EnrollmentToken.revoked_at).is_(None),
+        # Compared naive: SQLite stores these naive (see as_utc).
+        col(EnrollmentToken.expires_at) > now.replace(tzinfo=None),
+        col(EnrollmentToken.use_count) < col(EnrollmentToken.max_uses),
+    )
+
+
+def revoke_token(
+    session: Session, row: EnrollmentToken, *, revoked_by_cn: str | None
+) -> bool:
+    """Mark ``row`` revoked unless it already is.
+
+    Doesn't commit: the router commits together with the audit row. A
+    redemption already in flight is still stopped, because
+    :func:`consume_token` re-checks ``revoked_at`` in its guarded
+    ``UPDATE``.
+
+    :param session: Active session.
+    :param row: Token to revoke.
+    :param revoked_by_cn: Revoking operator's CN, for provenance.
+    :return: ``True`` if this call revoked it; ``False`` if it was
+        already revoked (the row is left untouched, so repeat calls are
+        idempotent).
+    """
+    if row.revoked_at is not None:
+        return False
+    row.revoked_at = datetime.now(timezone.utc)
+    row.revoked_by_cn = revoked_by_cn
+    session.add(row)
+    session.flush()
+    return True
+
+
 def consume_token(session: Session, row: EnrollmentToken) -> bool:
     """Atomically take one use of ``row``; return ``False`` if none are left.
 
     Runs a single guarded ``UPDATE … SET use_count = use_count + 1
-    WHERE id = :id AND use_count < max_uses`` and checks the rowcount.
+    WHERE id = :id AND use_count < max_uses AND revoked_at IS NULL``
+    and checks the rowcount.
     That makes the check and the increment one statement, so two
     concurrent redemptions of a single-use token can't both succeed on
-    any backend. The update joins the caller's transaction and is
+    any backend, and a revoke committed after the caller loaded ``row``
+    still wins. The update joins the caller's transaction and is
     undone if the caller rolls back, which is how a failed enrollment
     gives its use back.
 
@@ -152,6 +212,7 @@ def consume_token(session: Session, row: EnrollmentToken) -> bool:
         update(EnrollmentToken)
         .where(EnrollmentToken.id == row.id)
         .where(EnrollmentToken.use_count < EnrollmentToken.max_uses)
+        .where(col(EnrollmentToken.revoked_at).is_(None))
         .values(use_count=EnrollmentToken.use_count + 1)
     )
     return bool(result.rowcount == 1)

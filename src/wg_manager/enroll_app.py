@@ -144,7 +144,8 @@ def enroll(
     Runs as one transaction, serialised per hub by an advisory lock so
     concurrent redemptions can't be handed the same address:
 
-    1. Find the token by hash; reject if unknown, expired or used up.
+    1. Find the token by hash; reject if unknown, revoked, expired or
+       used up.
        Only then is the body validated (422), so an unauthenticated
        caller gets the same 401 whatever it sends.
     2. Consume one use (guarded ``UPDATE``); reject if none are left.
@@ -172,6 +173,8 @@ def enroll(
     row = find_token(session, token)
     if row is None:
         _reject(request, "unknown_token")
+    if row.revoked_at is not None:
+        _reject(request, "revoked", row.id)
     if is_expired(row):
         _reject(request, "expired", row.id)
     # Cheap pre-check so a used-up token with a bad body still gets the
