@@ -552,6 +552,10 @@ services:
       SSH_HOST_CERT_TTL_SECONDS: ${SSH_HOST_CERT_TTL_SECONDS:-86400}
       SSH_HOST_CERT_RENEW_BEFORE_SECONDS: ${SSH_HOST_CERT_RENEW_BEFORE_SECONDS:-43200}
       SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS: ${SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS:-3600}
+      # Enrollment-token sweeper (also run by `beat`): delete tokens
+      # that expired or were revoked more than RETENTION ago.
+      ENROLL_TOKEN_RETENTION_SECONDS: ${ENROLL_TOKEN_RETENTION_SECONDS:-604800}
+      ENROLL_TOKEN_SWEEP_INTERVAL_SECONDS: ${ENROLL_TOKEN_SWEEP_INTERVAL_SECONDS:-3600}
     volumes: &worker-volumes
       - ./tls:/app/tls:ro
       # Read-only — the entrypoint shim sources VAULT_TOKEN from this
