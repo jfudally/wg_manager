@@ -27,7 +27,9 @@ import logging
 from typing import Annotated, Any, NoReturn
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from sqlmodel import Session, select
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -87,6 +89,35 @@ def _reject(request: Request, reason: str, token_id: int | None = None) -> NoRet
     )
 
 
+async def _raw_body(request: Request) -> bytes:
+    """Read the request body without parsing it.
+
+    The endpoint takes the raw bytes rather than an ``EnrollRequest``
+    parameter so the body is validated only *after* the token checks
+    pass (see :func:`_parse_body`). With a typed parameter, FastAPI
+    validates before the handler runs, so an unauthenticated caller
+    would get field-by-field 422s describing the schema.
+    """
+    return await request.body()
+
+
+def _parse_body(body: bytes) -> EnrollRequest:
+    """Validate an already-authenticated request body.
+
+    :param body: Raw request body.
+    :return: The parsed request.
+    :raises RequestValidationError: On bad JSON or bad fields. FastAPI
+        turns it into the same 422 shape a typed body parameter would
+        produce, with ``loc`` prefixed by ``"body"``.
+    """
+    try:
+        return EnrollRequest.model_validate_json(body)
+    except ValidationError as exc:
+        raise RequestValidationError(
+            [{**err, "loc": ("body", *err["loc"])} for err in exc.errors()]
+        ) from None
+
+
 def _bearer(authorization: str | None) -> str | None:
     """Extract the token from an ``Authorization: Bearer <token>`` header."""
     if not authorization:
@@ -103,9 +134,9 @@ def _bearer(authorization: str | None) -> str | None:
     status_code=status.HTTP_201_CREATED,
 )
 def enroll(
-    payload: EnrollRequest,
     request: Request,
     session: _SessionDep,
+    body: Annotated[bytes, Depends(_raw_body)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> EnrollResponse:
     """Redeem an enrollment token and admit the calling host as a managed client.
@@ -113,7 +144,9 @@ def enroll(
     Runs as one transaction, serialised per hub by an advisory lock so
     concurrent redemptions can't be handed the same address:
 
-    1. Find the token by hash; reject if unknown or expired.
+    1. Find the token by hash; reject if unknown, expired or used up.
+       Only then is the body validated (422), so an unauthenticated
+       caller gets the same 401 whatever it sends.
     2. Consume one use (guarded ``UPDATE``); reject if none are left.
     3. Check the hub is ready and the name and WireGuard key are free.
     4. Allocate the next address and have the SSH CA sign the host key.
@@ -127,7 +160,9 @@ def enroll(
     including the token use. A hub reconfigure is queued after commit so
     the hub admits the new peer.
 
-    :raises HTTPException: 401 for any token problem; 409 for a name or
+    :raises HTTPException: 401 for any token problem; 422 (via
+        :class:`RequestValidationError`) for a bad body with a live
+        token; 409 for a name or
         key clash or an exhausted subnet; 503 if the hub isn't ready or
         the lock is contended; 502 if the SSH CA refuses to sign.
     """
@@ -139,6 +174,11 @@ def enroll(
         _reject(request, "unknown_token")
     if is_expired(row):
         _reject(request, "expired", row.id)
+    # Cheap pre-check so a used-up token with a bad body still gets the
+    # 401. consume_token() below stays the authoritative, race-free guard.
+    if row.use_count >= row.max_uses:
+        _reject(request, "exhausted", row.id)
+    payload = _parse_body(body)
 
     token_id = int(row.id or 0)
     server_id = row.server_id
