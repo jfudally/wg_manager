@@ -2240,15 +2240,19 @@ from the operator's first SSH connection as the root of trust.
         its public port would expose it. Needs a loopback-only metrics
         port or prometheus_client multiprocess mode. Until then, alert
         on `enroll.reject` / `enroll.rate_limited` in the audit log.
-  - [ ] **Real client IPs behind a proxy.** The limiter keys on the TCP
-        peer. Behind the HA nginx `stream {}` passthrough, or Docker's
-        userland proxy, every caller shows up as the proxy's address
-        and shares one bucket. Fix: PROXY protocol from nginx plus
-        parsing it in the enroll runner (uvicorn has no native PROXY
-        protocol support).
+  - [x] **Real client IPs behind a proxy** (2026-09-26). New
+        `wg_manager.proxy_protocol`: with `ENROLL_PROXY_PROTOCOL=true`
+        the enroll listener requires a PROXY v1/v2 header from
+        `ENROLL_PROXY_TRUSTED_CIDRS` on every connection, then does TLS
+        itself and gives uvicorn the header's client address. uvicorn
+        has no PROXY support, so this is a uvicorn `http=` protocol
+        class. Covered over real sockets on asyncio and uvloop,
+        including a header coalesced with the ClientHello.
   - [ ] Token binding: optional expected source CIDR / instance ID.
-  - [ ] HA: second `stream {}` server block in
-        `docker/nginx/wg-manager.conf` for the enroll port.
+  - [x] **HA enroll port** (2026-09-26). A second `stream {}` server
+        in `docker/nginx/wg-manager.conf` (8444, `proxy_protocol on;`)
+        in front of new `enroll1` / `enroll2` services in the dev `ha`
+        profile.
   - [ ] Token revoke/list endpoints; expired-token sweeper.
 - **Phase 3 — Polish `[ ]`**
   - [ ] Cloud instance-identity attestation (AWS IID, GCP identity

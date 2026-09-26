@@ -428,11 +428,35 @@ Things to know:
   same NAT that keeps sending a bad token counts toward the shared
   failure bucket. Check `enroll.reject` in the audit log for the
   reason.
-- **Proxies hide client IPs.** The limit keys on the TCP peer. Behind
-  the HA nginx L4 proxy, or Docker's userland proxy, every caller looks
-  like the proxy and shares one bucket. Publish the enroll port
-  directly, with iptables DNAT (Docker's default for IPv4), until
-  PROXY protocol support lands.
+- **Proxies hide client IPs unless they send PROXY protocol.** The
+  limit keys on the client address. Behind an L4 load balancer every
+  caller looks like the balancer and shares one bucket, so one bad
+  actor could lock everyone out. Either publish the enroll port
+  directly, with iptables DNAT (Docker's default for IPv4), or put it
+  behind a balancer that sends PROXY protocol (below). Docker's
+  userland proxy hides client IPs too and can't send PROXY protocol.
+
+### Behind a load balancer (PROXY protocol)
+
+If the enroll port sits behind an L4 load balancer that can send PROXY
+protocol, set:
+
+| Setting | Meaning |
+| --- | --- |
+| `ENROLL_PROXY_PROTOCOL=true` | Every connection must start with a PROXY v1 or v2 header; the listener uses the client address in it. |
+| `ENROLL_PROXY_TRUSTED_CIDRS` | Comma-separated networks your load balancers connect from. Required when the above is on; connections from anywhere else are dropped. |
+
+Turn the balancer's side on at the same time: an AWS NLB target group
+attribute (`proxy_protocol_v2.enabled`), HAProxy `send-proxy` /
+`send-proxy-v2`, or nginx `proxy_protocol on;` in a `stream {}` server
+(the HA demo's `docker/nginx/wg-manager.conf` does this). The two sides
+must match: a listener expecting the header drops connections that
+don't send one, and a listener not expecting it fails the TLS
+handshake on one that does.
+
+Keep the trusted list tight and don't let other hosts reach the enroll
+port directly. Anyone who can connect from a trusted address can claim
+any client IP.
 
 ### Treat userdata as readable
 
