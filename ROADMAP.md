@@ -2116,7 +2116,7 @@ behaviour in practice.
 First-class Kubernetes deploy. The value of Helm is multi-replica
 deploys, so this lands after 3d.
 
-### Phase 3f — Zero-touch host enrollment (userdata) `[~]` (spike in progress)
+### Phase 3f — Zero-touch host enrollment (userdata) `[~]` (spike done)
 
 Let a freshly launched host join the fleet **from outside the VPN**,
 unattended, using a cloud-init / userdata script, without putting a
@@ -2143,19 +2143,47 @@ SSH CA at enrollment time, so the production `SSHRunner` can manage the
 host over the VPN afterwards with no TOFU step. The token takes over
 from the operator's first SSH connection as the root of trust.
 
-- **Phase 0 — Spike `[~]`** (time-boxed). Riskiest assumption: a
-  second, client-cert-optional listener can run beside the
-  `CERT_REQUIRED` operator listener and exposes **only** the
-  enrollment surface.
-  - [ ] Separate `wg_manager.enroll_app` ASGI app: health probes plus a
-        stub `POST /v1/enroll`; no operator routers, no
-        `MTLSAuthMiddleware`.
-  - [ ] `python -m wg_manager.enroll` runner: server-auth TLS only,
-        own `ENROLL_BIND_HOST` / `ENROLL_BIND_PORT`.
-  - [ ] Real-socket tests proving: a cert-less handshake is refused by
-        the operator listener and accepted by the enroll listener; the
-        enroll listener answers 404 for every operator route.
-  - [ ] Findings recorded here (compose + HA nginx wiring plan).
+- **Phase 0 — Spike `[x]`** (2026-09-26). Riskiest assumption: a
+  second listener that doesn't require client certs can run beside the
+  `CERT_REQUIRED` operator listener and expose **only** the enrollment
+  surface. **Confirmed.**
+  - [x] Separate `wg_manager.enroll_app` ASGI app: health probes plus a
+        stub `POST /v1/enroll` (501); no operator routers, no
+        `MTLSAuthMiddleware`, OpenAPI/docs disabled.
+  - [x] `python -m wg_manager.enroll_listener` / `make run-enroll`:
+        server-auth TLS only (`CERT_NONE`, no CA bundle loaded), own
+        `ENROLL_BIND_HOST` / `ENROLL_BIND_PORT` (default
+        `127.0.0.1:8001`), reuses `TLS_CERT_PEM` / `TLS_KEY_PEM`.
+        Both listeners' TLS policies now live in
+        `wg_manager.tls_listeners`.
+  - [x] Real-socket tests (`tests/test_enroll_listener.py`): the
+        operator listener drops a cert-less client and admits a valid
+        one (positive control), while the enroll listener admits the
+        cert-less client. Every route in the main app's OpenAPI schema
+        (80 method/path pairs) 404s on the enroll app.
+  - [x] Findings:
+    - **The design holds as two ASGI apps, not one.** An exempt path on
+      the operator listener can't work because the client cert is
+      demanded during the handshake. That's the same gap the prod
+      compose `/healthz` healthcheck comment already works around.
+    - **Compose wiring (MVP):** run a second process from the same
+      image, e.g. an `enroll` service with
+      `command: python -m wg_manager.enroll_listener`, the same `./tls`
+      mount and `ENROLL_BIND_HOST=0.0.0.0`, and its own
+      `${WG_MANAGER_ENROLL_BIND_PORT}:8001` mapping. Running a separate
+      process keeps the operator API's process out of the anonymous
+      attack path.
+    - **HA (Hardening):** add a second nginx `stream {}` server block
+      forwarding the enroll port to each replica's `:8001`. Both are L4
+      passthrough, so neither needs TLS termination.
+    - **Bonus:** the enroll listener can answer LB health probes
+      without a client cert. That closes the prod-compose healthcheck
+      gap noted above without weakening the operator port.
+    - **Side finding:** `LocalDevPKI` leaves have no Authority Key
+      Identifier, so Python 3.13's default `VERIFY_X509_STRICT` rejects
+      them. The tests clear that flag. Vault-issued certs are
+      unaffected, but it's worth its own fix so stdlib clients work
+      against the dev PKI unmodified.
 - **Phase 1 — MVP `[ ]`**
   - [ ] `enrollmenttoken` table (Alembic 0018): hash-only storage,
         `server_id`, `tenant_id`, `expires_at`, `uses_remaining`,
