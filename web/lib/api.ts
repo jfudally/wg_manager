@@ -23,6 +23,10 @@ import type {
   ClientUpdate,
   CryptoStatus,
   DiscoverAllResponse,
+  EnrollmentToken,
+  EnrollmentTokenCreate,
+  EnrollmentTokenCreateResponse,
+  EnrollmentTokenListParams,
   DiscoveredPeer,
   DiscoverResponse,
   HostCertRotateResponse,
@@ -402,6 +406,31 @@ export const api = {
     const suffix = qs.toString();
     return request<AuditEventList>(`/audit${suffix ? `?${suffix}` : ""}`);
   },
+
+  // --- Enrollment tokens (Phase 3f) ---
+  /**
+   * List tokens the caller administers, newest first. Non-admins get
+   * an empty list rather than a 403.
+   */
+  listEnrollmentTokens: (params: EnrollmentTokenListParams = {}) => {
+    const qs = new URLSearchParams();
+    if (params.serverId !== undefined) qs.set("server_id", String(params.serverId));
+    if (params.active) qs.set("active", "true");
+    const suffix = qs.toString();
+    return request<EnrollmentToken[]>(`/enrollment-tokens${suffix ? `?${suffix}` : ""}`);
+  },
+  /**
+   * Mint a token. The response carries the plaintext token; it is
+   * never retrievable again, so callers must show it right away.
+   */
+  createEnrollmentToken: (payload: EnrollmentTokenCreate) =>
+    request<EnrollmentTokenCreateResponse>("/enrollment-tokens", {
+      method: "POST",
+      body: payload,
+    }),
+  /** Revoke a token (idempotent). Hosts it already enrolled stay enrolled. */
+  revokeEnrollmentToken: (id: number) =>
+    request<EnrollmentToken>(`/enrollment-tokens/${id}/revoke`, { method: "POST" }),
 
   // --- Tenants (Phase 3b cycle 2) ---
   /**
