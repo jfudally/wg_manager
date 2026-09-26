@@ -10,6 +10,20 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`GET /v1/enrollment-tokens/{id}`.** Returns one token, in the same
+  shape as a list row and never with the token itself. Admin on the
+  token's tenant; 404 if unknown.
+
+- **Terraform module for enrollment tokens.**
+  `deploy/terraform/wg-manager-enrollment-token` uses the
+  `Mastercard/restapi` provider, pinned to 2.x:
+  - it mints on create, revokes on destroy, and replaces the token on
+    any input change;
+  - its token output is sensitive;
+  - `deploy/terraform/examples/aws-instance` is a complete example;
+  - `make terraform-check` runs `terraform fmt -check` and `validate`,
+    using Docker if Terraform isn't installed.
+
 - **Enrollment tokens dashboard page** (`/enrollment-tokens`).
   - The list shows each token's status, uses, expiry and allowed
     networks, with an "Active only" filter.
