@@ -2116,7 +2116,7 @@ behaviour in practice.
 First-class Kubernetes deploy. The value of Helm is multi-replica
 deploys, so this lands after 3d.
 
-### Phase 3f — Zero-touch host enrollment (userdata) `[~]` (spike done)
+### Phase 3f — Zero-touch host enrollment (userdata) `[~]` (MVP done)
 
 Let a freshly launched host join the fleet **from outside the VPN**,
 unattended, using a cloud-init / userdata script, without putting a
@@ -2184,24 +2184,45 @@ from the operator's first SSH connection as the root of trust.
       them. The tests clear that flag. Vault-issued certs are
       unaffected, but it's worth its own fix so stdlib clients work
       against the dev PKI unmodified.
-- **Phase 1 — MVP `[ ]`**
-  - [ ] `enrollmenttoken` table (Alembic 0018): hash-only storage,
-        `server_id`, `tenant_id`, `expires_at`, `uses_remaining`,
-        `consumed_at`, `created_by`.
-  - [ ] `POST /v1/enrollment-tokens` (mTLS, admin): mint a token, return
-        the plaintext once, audit `enroll.token.issue`.
-  - [ ] `POST /v1/enroll` (bearer token): consume the token atomically;
-        take `{wg_public_key, ssh_host_ed25519_pubkey, hostname}`;
-        allocate an IP; create a **managed** `Client` row dialled at its
-        VPN IP; sign the host cert; queue `reconfigure_server_task`;
-        return the peer block, user CA pubkey and host cert; audit
-        `enroll.redeem`.
-  - [ ] `scripts/enroll_node.sh`: userdata-ready node-side script
-        (keygen → enroll → sshd drop-in → `wg-quick up`).
-  - [ ] `enroll` service in `docker-compose.prod.yml` on its own port.
-  - [ ] Operator guide section + THREAT_MODEL entry for the new
-        unauthenticated surface.
+- **Phase 1 — MVP `[x]`** (2026-09-26)
+  - [x] `enrollmenttoken` table (Alembic 0018): hash-only storage,
+        `server_id`, `tenant_id`, `ssh_key_id`, `ssh_username`,
+        `name_prefix`, `expires_at`, `max_uses` / `use_count`,
+        `created_by_cn`.
+  - [x] `POST /v1/enrollment-tokens` (mTLS, admin on the hub's tenant):
+        mint a token, return the plaintext once, audit
+        `enrollment_token.create`. The SSH key must be in the hub's
+        tenant.
+  - [x] `POST /v1/enroll` (bearer token): one transaction under a
+        per-hub advisory lock. It consumes a use with a guarded
+        `UPDATE`, allocates an IP, signs a host cert whose **only**
+        principal is the VPN IP, and creates a **managed** client
+        dialled at that IP. It audits `client.enroll` and queues
+        `reconfigure_server_task`. Any later failure rolls back the
+        token use. Every token failure gets the same 401, and
+        `enroll.reject` goes to the audit log.
+  - [x] `scripts/enroll_node.sh`: userdata-ready node-side script
+        (keygen, enroll with 5xx retry, install trust + config, sudo
+        user, `wg-quick up`). Its tests actually run it against a
+        temporary root with stubbed binaries.
+  - [x] Opt-in `enroll` service in `docker-compose.prod.yml`
+        (`COMPOSE_PROFILES=enroll`).
+  - [x] Operator guide section, README, THREAT_MODEL T-13 to T-16 and
+        trust boundary B-6.
 - **Phase 2 — Hardening `[ ]`**
+  - [ ] **Hub-reconfigure race under bursts.** `reconfigure_server_task`
+        waits 5 s for the hub lock, then returns `skipped`. An SSH
+        reconfigure often takes longer than that.
+        If two hosts enroll back to back, the second host's reconfigure
+        can be skipped while the first is rendering a config that
+        doesn't include it yet. The new peer then isn't admitted until
+        the next reconfigure. This also affects `POST /clients`, but
+        autoscaling makes it likely. Fix: re-dispatch (or coalesce)
+        instead of skipping.
+  - [ ] Request validation (422) runs before token checks, so an
+        unauthenticated caller can learn the request schema. Low
+        impact, since the schema is public in `enroll_node.sh`, but
+        worth returning a uniform 401 first.
   - [ ] Rate limiting and failed-redeem metrics/alerts on the enroll
         listener.
   - [ ] Token binding: optional expected source CIDR / instance ID.
