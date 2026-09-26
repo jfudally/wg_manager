@@ -82,6 +82,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   - `create --token-only` prints just the token, for
     `TOKEN=$(...)` in launch scripts.
 
+- **Enrollment tokens dashboard page** (`/enrollment-tokens`).
+  - The list shows each token's status, uses, expiry and allowed
+    networks, with an "Active only" filter.
+  - Revoke asks for confirmation first.
+  - The mint form offers ready hubs only and takes optional allowed
+    networks, one per line.
+  - A new token is shown exactly once, with a copy button.
+
 ### Changed
 
 - **`POST /v1/enroll` checks the token before the body.** An
