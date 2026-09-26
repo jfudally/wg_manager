@@ -2,8 +2,25 @@
 
 from __future__ import annotations
 
+import ipaddress
+
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _parse_cidrs(value: str) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse a comma-separated CIDR list; blanks are ignored.
+
+    ``strict=True`` rejects host bits (``10.0.0.1/8``), which is usually
+    a typo for something narrower.
+
+    :raises ValueError: On any malformed entry.
+    """
+    return [
+        ipaddress.ip_network(part.strip(), strict=True)
+        for part in value.split(",")
+        if part.strip()
+    ]
 
 
 class Settings(BaseSettings):
@@ -24,6 +41,13 @@ class Settings(BaseSettings):
     :cvar enroll_failure_limit: Failed enroll attempts (401 / 422) per
         source IP per ``enroll_failure_window_seconds`` before that IP is
         locked out for the rest of the window. 0 disables.
+    :cvar enroll_proxy_protocol: Require a PROXY protocol header (v1 or
+        v2) on every enroll connection and use its client address. Turn
+        on only behind an L4 proxy that sends one (see
+        :mod:`wg_manager.proxy_protocol`).
+    :cvar enroll_proxy_trusted_cidrs: Comma-separated networks allowed to
+        connect when ``enroll_proxy_protocol`` is on (the proxies).
+        Required in that mode; other peers are dropped.
     :cvar default_subnet: CIDR used when a ``POST /servers`` payload omits
         the ``subnet`` field. Validated at construction time so a broken
         ``.env`` value fails on app startup rather than at the first
@@ -84,6 +108,12 @@ class Settings(BaseSettings):
     enroll_rate_limit_window_seconds: int = 60
     enroll_failure_limit: int = 10
     enroll_failure_window_seconds: int = 600
+    # Behind an L4 proxy every caller shares the proxy's address, so the
+    # limits above would lump them into one bucket. PROXY protocol
+    # carries the real client address; the trusted list stops a direct
+    # caller from forging one.
+    enroll_proxy_protocol: bool = False
+    enroll_proxy_trusted_cidrs: str = ""
     default_subnet: str = "10.9.0.0/24"
     default_wg_port: int = 51820
     celery_broker_url: str = "redis://localhost:6379/0"
@@ -284,6 +314,30 @@ class Settings(BaseSettings):
     # all spans (API, worker, CLI) share one resource identity.
     otel_service_name: str = "wg-manager"
 
+    @property
+    def enroll_proxy_trusted_networks(
+        self,
+    ) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        """``enroll_proxy_trusted_cidrs`` parsed into networks (empty if unset)."""
+        return _parse_cidrs(self.enroll_proxy_trusted_cidrs)
+
+    @field_validator("enroll_proxy_trusted_cidrs")
+    @classmethod
+    def _validate_enroll_proxy_cidrs(cls, value: str) -> str:
+        """Fail at startup on a malformed CIDR, not on the first connection."""
+        _parse_cidrs(value)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_enroll_proxy_protocol(self) -> "Settings":
+        """PROXY mode without a trusted list would let anyone forge client IPs."""
+        if self.enroll_proxy_protocol and not self.enroll_proxy_trusted_networks:
+            raise ValueError(
+                "ENROLL_PROXY_PROTOCOL=true requires ENROLL_PROXY_TRUSTED_CIDRS "
+                "(the networks your load balancers connect from)"
+            )
+        return self
+
     @model_validator(mode="after")
     def _validate_host_cert_rotation_windows(self) -> "Settings":
         """Reject rotation settings that would let host certs lapse.
@@ -350,3 +404,4 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+

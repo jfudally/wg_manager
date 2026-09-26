@@ -13,6 +13,12 @@ binds ``ENROLL_BIND_HOST:ENROLL_BIND_PORT`` (default
 ``127.0.0.1:8001``). Exposing it publicly is a deployment decision
 made in compose or the firewall, not here.
 
+Behind an L4 load balancer, set ``ENROLL_PROXY_PROTOCOL=true`` and
+``ENROLL_PROXY_TRUSTED_CIDRS``. Every connection must then start with a
+PROXY header from a trusted proxy, and the app sees the real client
+address (see :mod:`wg_manager.proxy_protocol`). TLS then happens in that
+protocol class rather than in uvicorn, with the same policy.
+
 It won't start without the server cert and key. There is no
 plain-HTTP enrollment mode, because the token in the request body
 must never cross the wire unencrypted.
@@ -22,11 +28,13 @@ from __future__ import annotations
 
 import logging
 import sys
+from typing import Any
 
 import uvicorn
 
 from wg_manager.config import Settings
-from wg_manager.tls_listeners import enroll_ssl_kwargs
+from wg_manager.proxy_protocol import make_proxy_protocol_class
+from wg_manager.tls_listeners import enroll_ssl_context, enroll_ssl_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +63,29 @@ def main(settings: Settings | None = None) -> int:
         )
         return 2
 
+    transport: dict[str, Any]
+    if settings.enroll_proxy_protocol:
+        # No ssl_* kwargs: the PROXY header precedes the TLS handshake,
+        # so the protocol class does TLS itself.
+        transport = {
+            "http": make_proxy_protocol_class(
+                enroll_ssl_context(settings),
+                trusted=settings.enroll_proxy_trusted_networks,
+            )
+        }
+        logger.info(
+            "enrollment listener expects PROXY protocol from %s",
+            settings.enroll_proxy_trusted_cidrs,
+        )
+    else:
+        transport = enroll_ssl_kwargs(settings)
+
     uvicorn.run(
         "wg_manager.enroll_app:create_enroll_app",
         factory=True,
         host=settings.enroll_bind_host,
         port=settings.enroll_bind_port,
-        **enroll_ssl_kwargs(settings),
+        **transport,
     )
     return 0
 

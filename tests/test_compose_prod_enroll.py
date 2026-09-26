@@ -98,3 +98,13 @@ def test_rate_limits_are_tunable_from_env(enroll: dict) -> None:
     assert env["ENROLL_FAILURE_LIMIT"] == "${ENROLL_FAILURE_LIMIT:-10}"
     assert env["ENROLL_RATE_LIMIT_WINDOW_SECONDS"] == "${ENROLL_RATE_LIMIT_WINDOW_SECONDS:-60}"
     assert env["ENROLL_FAILURE_WINDOW_SECONDS"] == "${ENROLL_FAILURE_WINDOW_SECONDS:-600}"
+
+
+def test_proxy_protocol_is_opt_in_from_env(enroll: dict) -> None:
+    """Off by default; behind an NLB / HAProxy the operator turns it on."""
+    env = _env(enroll)
+    assert env["ENROLL_PROXY_PROTOCOL"] == "${ENROLL_PROXY_PROTOCOL:-false}"
+    assert env["ENROLL_PROXY_TRUSTED_CIDRS"] == "${ENROLL_PROXY_TRUSTED_CIDRS:-}"
+    example = (REPO_ROOT / ".env.prod.example").read_text()
+    assert "# ENROLL_PROXY_PROTOCOL=" in example
+    assert "# ENROLL_PROXY_TRUSTED_CIDRS=" in example
