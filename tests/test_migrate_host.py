@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -52,6 +53,8 @@ def _compose_config(keys: tuple[str, ...] = ALL_KEYS) -> dict:
             "mysql": {"image": "mysql:8"},
             "vault": {"image": "hashicorp/vault:1.18"},
             "api": {"image": "wg-manager:prod", "build": {"context": "."}},
+            # beat reuses the api image without its own build section.
+            "beat": {"image": "wg-manager:prod"},
         },
         "volumes": {k: {"name": f"{PROJECT}_{k}"} for k in keys},
     }
@@ -81,6 +84,10 @@ class Env:
         self.repo.mkdir()
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True)
         (self.repo / "README.md").write_text("x\n")
+        # Mirror the real repo: tls/mysql/.gitkeep is committed, so every
+        # fresh clone already has a tls/ directory.
+        (self.repo / "tls" / "mysql").mkdir(parents=True)
+        (self.repo / "tls" / "mysql" / ".gitkeep").write_text("")
         subprocess.run(
             ["git", "-C", str(self.repo), "add", "."], check=True
         )
@@ -96,8 +103,14 @@ class Env:
         self.existing_volumes: list[str] = []
         self.config = _compose_config()
 
-        # docker fake: `volume inspect` consults FAKE_EXISTING; `run` with
-        # tar -c emits a deterministic payload; tar -x swallows stdin.
+        # docker fake:
+        # * `volume inspect` succeeds only for names in FAKE_EXISTING.
+        # * `run` against a named volume: tar -c emits a fake payload and
+        #   tar -x swallows stdin.
+        # * `run` against a bind mount (source is an absolute path): runs
+        #   the tar command for real on the host, with the container path
+        #   swapped for the host path, so files.tar is a real archive and
+        #   the import really lands files in the checkout.
         self.docker = _write_exe(
             tmp_path / "docker",
             f"""#!/usr/bin/env bash
@@ -111,16 +124,35 @@ case "$1 $2" in
     img="${{@: -1}}"; echo "${{img%%:*}}@sha256:deadbeef"; exit 0 ;;
 esac
 if [ "$1" = run ]; then
-  if [[ " $* " == *" -c"* ]]; then echo "payload:$*"; else cat >/dev/null; fi
+  shift; src=""; dst=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -v) IFS=: read -r src dst _ <<< "$2"; shift 2 ;;
+      -*) shift ;;
+      *) shift; break ;;   # the image; the rest is the command
+    esac
+  done
+  if [[ "$src" == /* ]]; then
+    cmd=(); for a in "$@"; do [ "$a" = "$dst" ] && a="$src"; cmd+=("$a"); done
+    exec "${{cmd[@]}}"
+  fi
+  if [[ " $* " == *" -cpf "* ]]; then echo "payload:$*"; else cat >/dev/null; fi
   exit 0
 fi
 exit 0
 """,
         )
+        # compose fake: behaves like `docker compose --env-file X ...` —
+        # a missing env file is fatal, exactly like the real CLI.
         self.compose = _write_exe(
             tmp_path / "compose",
             f"""#!/usr/bin/env bash
 echo "compose $*" >> "{self.log}"
+if [ "$1" = --env-file ]; then
+  [ -f "$2" ] || {{ echo "couldn't find env file: $2" >&2; exit 1; }}
+  echo "envfile $2 $(head -1 "$2")" >> "{self.log}"
+  shift 2
+fi
 case "$1" in
   ps) printf '%s' "$FAKE_RUNNING"; [ -n "$FAKE_RUNNING" ] && echo; exit 0 ;;
   config) cat "{tmp_path}/config.json"; exit 0 ;;
@@ -134,14 +166,14 @@ exit 0
         """Create the operator files a live prod checkout has."""
         (self.repo / ".env.prod").write_text("MYSQL_ROOT_PASSWORD=x\n")
         (self.repo / "vault-init.json").write_text('{"root_token":"t"}')
-        (self.repo / "tls").mkdir()
+        (self.repo / "tls").mkdir(exist_ok=True)
         (self.repo / "tls" / "server.crt").write_text("cert")
 
     def run(self, *args: str, **extra_env: str) -> subprocess.CompletedProcess:
         (self.tmp / "config.json").write_text(json.dumps(self.config))
         env = {
             **os.environ,
-            "PROD_COMPOSE": str(self.compose),
+            "COMPOSE_BASE": str(self.compose),
             "DOCKER": str(self.docker),
             "REPO_DIR": str(self.repo),
             "FAKE_RUNNING": self.running,
@@ -232,9 +264,7 @@ class TestExportGuards:
         env.seed_state_files()
         target = env.repo / missing
         if target.is_dir():
-            for child in target.iterdir():
-                child.unlink()
-            target.rmdir()
+            shutil.rmtree(target)
         else:
             target.unlink()
         proc = env.run("export", str(env.tmp / "bundle"))
@@ -418,7 +448,9 @@ class TestImportGuards:
         assert "wg_manager_vault_data" in proc.stderr
         assert "volume create" not in dst.calls()
 
-    @pytest.mark.parametrize("name", [".env.prod", "vault-init.json", "tls"])
+    @pytest.mark.parametrize(
+        "name", [".env.prod", "vault-init.json", "tls/server.crt"]
+    )
     def test_refuses_existing_state_file(self, bundle_and_target, name) -> None:
         bundle, dst = bundle_and_target
         (dst.repo / name).write_text("already here")
@@ -441,6 +473,42 @@ class TestImportGuards:
         proc = dst.run("import", str(bundle))
         assert proc.returncode != 0
         assert "project" in proc.stderr.lower()
+
+
+class TestImportFreshClone:
+    """Regressions from the first real migration (rv -> general): a fresh
+    clone has no .env.prod yet and already has a tracked tls/mysql/.gitkeep."""
+
+    def test_imports_into_fresh_clone(self, bundle_and_target) -> None:
+        bundle, dst = bundle_and_target
+        assert not (dst.repo / ".env.prod").exists()
+        assert (dst.repo / "tls" / "mysql" / ".gitkeep").exists()
+        proc = dst.run("import", str(bundle))
+        assert proc.returncode == 0, proc.stderr
+        assert (dst.repo / ".env.prod").read_text() == "MYSQL_ROOT_PASSWORD=x\n"
+        assert (dst.repo / "tls" / "server.crt").read_text() == "cert"
+
+    def test_compose_reads_env_from_bundle(self, bundle_and_target) -> None:
+        """Compose is resolved with the bundle's .env.prod (the checkout has
+        none yet), from a temp file that is removed afterwards."""
+        bundle, dst = bundle_and_target
+        proc = dst.run("import", str(bundle))
+        assert proc.returncode == 0, proc.stderr
+        envfiles = [
+            ln.split()[1] for ln in dst.calls().splitlines()
+            if ln.startswith("envfile ")
+        ]
+        assert envfiles, "compose was never given an env file"
+        assert all(
+            "MYSQL_ROOT_PASSWORD=x" in ln
+            for ln in dst.calls().splitlines() if ln.startswith("envfile ")
+        )
+        assert all(p != str(dst.repo / ".env.prod") for p in envfiles)
+        assert not any(Path(p).exists() for p in envfiles)
+
+    def test_export_uses_checkout_env_file(self, env: Env) -> None:
+        _export(env)
+        assert f"envfile {env.repo / '.env.prod'} " in env.calls()
 
 
 class TestImportRestore:
@@ -478,9 +546,10 @@ class TestImportRestore:
 
 class TestCounts:
     def test_counts_queries_mysql_via_compose_exec(self, env: Env) -> None:
+        env.seed_state_files()
         proc = env.run("counts")
         assert proc.returncode == 0, proc.stderr
-        assert "compose exec -T mysql" in env.calls()
+        assert "exec -T mysql" in env.calls()
         assert "users 3" in proc.stdout
 
 
@@ -520,7 +589,7 @@ class TestMakefile:
         assert f"  {target}" in body  # help line
         block = _block_for_target(target)
         assert "scripts/migrate_host.sh" in block and arg in block
-        assert "$(PROD_COMPOSE)" in block
+        assert "$(PROD_COMPOSE_BASE)" in block
 
 
 class TestRunbook:
