@@ -20,6 +20,7 @@ from wg_manager.routers import (
     certs,
     clients,
     crypto,
+    enrollment_tokens,
     health,
     servers,
     ssh_keys,
@@ -161,6 +162,9 @@ def create_app() -> FastAPI:
         certs.router,
         audit.router,
         tenants.router,
+        # Phase 3f: mint enrollment tokens (redeemed on the separate
+        # enrollment listener, never here).
+        enrollment_tokens.router,
         # Phase 3d cycle 1 — load-balancer probes. Dual-mounted at
         # both / and /v1 so an operator hitting the legacy or v1
         # surface sees the same probe answers. The auth middleware

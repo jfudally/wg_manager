@@ -6,7 +6,7 @@ from datetime import datetime
 from ipaddress import AddressValueError, IPv4Network, NetmaskValueError
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from wg_manager.models import (
     CertificateType,
@@ -908,3 +908,64 @@ class OperatorTenantRead(BaseModel):
     operator_cn: str
     role: OperatorRole
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# Phase 3f: enrollment tokens
+# ---------------------------------------------------------------------------
+
+# Upper bounds keep a leaked token's blast radius small: at most a week
+# of validity and at most 100 hosts. Hardening can make these
+# per-tenant settings if autoscaling groups need more.
+ENROLL_TOKEN_MIN_TTL_SECONDS = 60
+ENROLL_TOKEN_MAX_TTL_SECONDS = 7 * 86400
+ENROLL_TOKEN_MAX_USES = 100
+
+
+class EnrollmentTokenCreate(BaseModel):
+    """Payload for ``POST /enrollment-tokens``.
+
+    :ivar server_id: Hub that enrolled hosts will peer with. Must be
+        ``ready`` (its public key goes into the host's config).
+    :ivar ssh_key_id: :class:`SSHKey` label the worker uses to manage
+        enrolled hosts. Must belong to the hub's tenant.
+    :ivar ssh_username: Remote account the worker's user cert is issued
+        for. Restricted to a POSIX-username shape because it ends up in
+        SSH principals and shell commands.
+    :ivar name_prefix: Enrolled clients are named
+        ``<name_prefix>-<hostname>``. DNS-label shape.
+    :ivar ttl_seconds: Token lifetime; 60 s to 7 days, default 1 hour.
+    :ivar max_uses: Hosts the token may enroll; 1 to 100, default 1.
+    """
+
+    server_id: int
+    ssh_key_id: int
+    ssh_username: str = Field(pattern=r"^[a-z_][a-z0-9_-]{0,31}$")
+    name_prefix: str = Field(default="node", pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")
+    ttl_seconds: int = Field(
+        default=3600,
+        ge=ENROLL_TOKEN_MIN_TTL_SECONDS,
+        le=ENROLL_TOKEN_MAX_TTL_SECONDS,
+    )
+    max_uses: int = Field(default=1, ge=1, le=ENROLL_TOKEN_MAX_USES)
+
+
+class EnrollmentTokenCreateResponse(BaseModel):
+    """201 response for ``POST /enrollment-tokens``.
+
+    :ivar id: Token row id (for audit / future revoke).
+    :ivar token: The plaintext token. Returned **only here**. The
+        server keeps a hash, so a lost token can't be recovered, only
+        replaced.
+    :ivar server_id: Hub the token enrolls into.
+    :ivar tenant_id: Tenant enrolled clients land in.
+    :ivar max_uses: Hosts the token may enroll.
+    :ivar expires_at: Expiry (UTC).
+    """
+
+    id: int
+    token: str
+    server_id: int
+    tenant_id: int | None
+    max_uses: int
+    expires_at: datetime
