@@ -41,6 +41,10 @@ os.environ.setdefault("SSH_CA_BACKEND", "local")
 # ``SSH_CA_BACKEND=vault`` for daily work doesn't leak into the suite.
 os.environ["SSH_CA_BACKEND"] = "local"
 
+# Phase 3f: the enroll rate limiter defaults to Valkey. Keep the suite
+# hermetic with the in-process backend.
+os.environ["ENROLL_RATE_LIMIT_BACKEND"] = "memory"
+
 # Phase 2d CP2: the TestClient suite uses :class:`starlette.testclient.TestClient`
 # which never speaks TLS, so :class:`wg_manager.auth.MTLSAuthMiddleware` must
 # be in passthrough mode for the existing routers' tests to keep returning 200.

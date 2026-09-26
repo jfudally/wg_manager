@@ -12,6 +12,7 @@ app 404s here.
 Mounted surface:
 
 * ``POST /v1/enroll``: redeem an enrollment token (see :func:`enroll`).
+  Rate-limited per source IP by :class:`EnrollRateLimitMiddleware`.
 * ``/healthz`` + ``/readyz`` (and their ``/v1/`` twins): the same probes
   as the operator app, so a load balancer can health-check this port
   too.
@@ -23,18 +24,23 @@ would only serve as a map for scanners.
 from __future__ import annotations
 
 import logging
-from typing import Annotated, NoReturn
+from typing import Annotated, Any, NoReturn
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from sqlmodel import Session, select
+from starlette.concurrency import run_in_threadpool
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 
 from wg_manager import audit
-from wg_manager.config import settings
+from wg_manager.config import Settings, settings
 from wg_manager.db import get_session
 from wg_manager.enrollment import consume_token, find_token, is_expired
 from wg_manager.ipam import IPPoolExhausted, allocate_client_ip
 from wg_manager.locks import task_row_lock
 from wg_manager.models import Client, EnrollmentToken, NodeStatus, Server
+from wg_manager.ratelimit import Limiter, RateLimitBackendError, make_limiter
 from wg_manager.routers import health
 from wg_manager.schemas import EnrollRequest, EnrollResponse
 from wg_manager.ssh_ca import HostCert, SSHCAError, make_ssh_ca_backend
@@ -258,18 +264,131 @@ def _admit(
     return client, server, cert, ca.ca_public_key
 
 
-def create_enroll_app() -> FastAPI:
+# Responses that count against the per-IP failure bucket: bad or missing
+# tokens and malformed bodies. 409 (a re-run of userdata) and 5xx
+# (our side) aren't attack signals, so they don't count.
+_FAILURE_STATUSES = frozenset({401, 422})
+
+
+def _too_many(retry_after: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": "too many requests"},
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+class EnrollRateLimitMiddleware(BaseHTTPMiddleware):
+    """Per-source-IP limits on ``POST /v1/enroll`` (Phase 3f hardening).
+
+    Runs before request validation, token lookup and CA work, so a
+    blocked caller costs one limiter round trip. There are two buckets:
+
+    * **failures** (``enroll-fail:<ip>``): counted when the response is
+      401 or 422. Once ``enroll_failure_limit`` is reached, every request
+      from that IP gets 429 until the window ends, *including ones
+      carrying a valid token*. It's checked with ``peek`` so blocked
+      requests don't extend the count.
+    * **requests** (``enroll-req:<ip>``): every enroll request, capped at
+      ``enroll_rate_limit_requests`` per window. Loose, because a fleet
+      behind one NAT address shares it.
+
+    One ``enroll.rate_limited`` audit line is written when a bucket
+    trips, not one per blocked request, so an attack can't flood the
+    audit stream. If the limiter backend is unreachable, the request
+    fails closed with 503. The source IP is the TCP peer: behind an L4
+    proxy that doesn't pass the client address on, every caller shares
+    the proxy's bucket (see ``docs/operator-guide.md``).
+    """
+
+    def __init__(self, app: Any, *, limiter: Limiter, app_settings: Settings) -> None:
+        """:param limiter: Backend holding the counters.
+        :param app_settings: Supplies the limits and windows.
+        """
+        super().__init__(app)
+        self._limiter = limiter
+        self._s = app_settings
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        """Apply both buckets to enroll POSTs; pass everything else through."""
+        if request.method != "POST" or request.url.path != ENROLL_PATH:
+            return await call_next(request)
+
+        ip = request.client.host if request.client else "unknown"
+        s = self._s
+        fail_key, req_key = f"enroll-fail:{ip}", f"enroll-req:{ip}"
+        try:
+            if s.enroll_failure_limit > 0:
+                locked = await run_in_threadpool(
+                    self._limiter.peek, fail_key,
+                    limit=s.enroll_failure_limit,
+                    window=s.enroll_failure_window_seconds,
+                )
+                if not locked.allowed:
+                    return _too_many(locked.retry_after)
+            if s.enroll_rate_limit_requests > 0:
+                decision = await run_in_threadpool(
+                    self._limiter.hit, req_key,
+                    limit=s.enroll_rate_limit_requests,
+                    window=s.enroll_rate_limit_window_seconds,
+                )
+                if not decision.allowed:
+                    if decision.count == s.enroll_rate_limit_requests + 1:
+                        audit.emit("enroll.rate_limited", peer=ip, bucket="requests",
+                                   retry_after=decision.retry_after)
+                    return _too_many(decision.retry_after)
+        except RateLimitBackendError:
+            logger.exception("enroll rate limiter unavailable; failing closed")
+            return JSONResponse(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                content={"detail": "enrollment temporarily unavailable; retry"},
+                headers={"Retry-After": "5"},
+            )
+
+        response = await call_next(request)
+
+        if response.status_code in _FAILURE_STATUSES and s.enroll_failure_limit > 0:
+            try:
+                failed = await run_in_threadpool(
+                    self._limiter.hit, fail_key,
+                    limit=s.enroll_failure_limit,
+                    window=s.enroll_failure_window_seconds,
+                )
+                if failed.count == s.enroll_failure_limit:
+                    audit.emit("enroll.rate_limited", peer=ip, bucket="failures",
+                               retry_after=failed.retry_after)
+            except RateLimitBackendError:
+                # The response is already decided; don't mask it.
+                logger.exception("could not record failed enroll attempt from %s", ip)
+        return response
+
+
+def create_enroll_app(
+    app_settings: Settings | None = None, *, limiter: Limiter | None = None
+) -> FastAPI:
     """Build the enrollment-listener application.
 
+    :param app_settings: Settings for the rate limits; ``None`` reads the
+        environment (the runner's factory call passes nothing).
+    :param limiter: Override the limiter backend (tests); default is
+        :func:`wg_manager.ratelimit.make_limiter`.
     :return: A FastAPI app exposing only the enrollment route and the
         health probes, with docs / OpenAPI disabled.
     :rtype: FastAPI
     """
+    app_settings = app_settings or Settings()
     application = FastAPI(
         title="wg-manager-enroll",
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+    )
+    application.add_middleware(
+        EnrollRateLimitMiddleware,
+        limiter=limiter if limiter is not None else make_limiter(app_settings),
+        app_settings=app_settings,
     )
     application.include_router(_router)
     # Same dual mount as the operator app (Phase 3c contract) so an LB
