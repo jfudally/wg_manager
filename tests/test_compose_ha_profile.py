@@ -261,3 +261,52 @@ class TestLoadBalancer:
             "lb must publish at least one host ingress port — the "
             "single front door for operators talking to the HA cluster."
         )
+
+
+# ---------------------------------------------------------------------------
+# Enrollment replicas (Phase 3f hardening)
+# ---------------------------------------------------------------------------
+
+
+def _env_map(svc: dict) -> dict[str, str]:
+    env = svc.get("environment") or {}
+    if isinstance(env, list):
+        return dict(e.split("=", 1) for e in env)
+    return {k: str(v) for k, v in env.items()}
+
+
+class TestEnrollReplicas:
+    """enroll1 + enroll2 sit behind the LB's PROXY-protocol enroll port."""
+
+    @pytest.mark.parametrize("name", ["enroll1", "enroll2"])
+    def test_replica_shape(self, services: dict, name: str) -> None:
+        svc = services[name]
+        assert "ha" in svc.get("profiles", [])
+        assert svc["command"] == ["python", "-m", "wg_manager.enroll_listener"]
+        assert {"mysql", "vault", "valkey"} <= _depends_on_keys(svc)
+        env = _env_map(svc)
+        assert env["ENROLL_BIND_HOST"] == "0.0.0.0"
+        assert env["ENROLL_BIND_PORT"] == "8001"
+        assert env["ENROLL_RATE_LIMIT_BACKEND"] == "redis"
+
+    @pytest.mark.parametrize("name", ["enroll1", "enroll2"])
+    def test_replica_expects_proxy_protocol(self, services: dict, name: str) -> None:
+        env = _env_map(services[name])
+        assert env["ENROLL_PROXY_PROTOCOL"] == "true"
+        assert env["ENROLL_PROXY_TRUSTED_CIDRS"]
+
+    @pytest.mark.parametrize("name", ["enroll1", "enroll2"])
+    def test_replica_publishes_no_host_port(self, services: dict, name: str) -> None:
+        """Reachable only through the LB.
+
+        A published port would let a host-local caller connect through
+        Docker's proxy (from a trusted private address) and forge a
+        PROXY header.
+        """
+        assert not services[name].get("ports")
+
+    def test_lb_depends_on_enroll_replicas(self, services: dict) -> None:
+        assert {"enroll1", "enroll2"} <= _depends_on_keys(services["lb"])
+
+    def test_lb_publishes_enroll_port(self, services: dict) -> None:
+        assert "8444" in _host_ports(services["lb"])
