@@ -186,13 +186,17 @@ class TestRoundTrip:
         self, runner: CliRunner, backup_env: None, tmp_path: Path
     ) -> None:
         """A backup of an empty DB still round-trips. Edge case the
-        envelope path must handle — a zero-row JSON is not zero bytes."""
+        envelope path must handle — a zero-row JSON is not zero bytes.
+
+        ``--drop-existing`` because the fixture seeds a default tenant,
+        and restore covers the tenant table too."""
         out = tmp_path / "empty.enc.json"
         backup = _invoke(runner, "db", "backup", "--output", str(out), "--encrypt")
         assert backup.exit_code == 0, backup.output
 
         restore = _invoke(
-            runner, "db", "restore", "--input", str(out), "--decrypt"
+            runner, "db", "restore", "--input", str(out), "--decrypt",
+            "--drop-existing",
         )
         assert restore.exit_code == 0, restore.output
 

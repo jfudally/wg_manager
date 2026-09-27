@@ -10,6 +10,19 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Fixed
+
+- **`wg-manager db backup` now covers every table.** It used to dump
+  only `sshkey`, `server` and `client`, so tenants, operators,
+  operator-tenant links, certificates, audit events, discovered peers
+  and enrollment tokens were missing from every backup. Backup and
+  restore now use every table in the schema, in foreign-key order,
+  and restore runs in a single transaction. The backup format is now
+  version 2, which an older CLI refuses instead of restoring part of
+  it. Version 1 files still restore. Restoring a full backup into a
+  freshly migrated database needs `--drop-existing`, because Alembic
+  `0014` seeds a default tenant.
+
 ## [v0.7.0] - 2026-09-27
 
 ### Added

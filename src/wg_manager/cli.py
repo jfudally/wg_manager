@@ -528,11 +528,56 @@ def tasks_wait(
 # db backup / restore
 # ---------------------------------------------------------------------------
 
-# Table order matters: parents before children so FK constraints are
-# satisfied during restore.
-_TABLE_ORDER = ("sshkey", "server", "client")
+# Version 2 covers every table in ``SQLModel.metadata``. Version 1
+# (v0.6.x and earlier) carried only sshkey/server/client; restore still
+# accepts it. Bumping the version also makes an older CLI refuse a v2
+# file instead of silently restoring three tables out of ten.
+_BACKUP_VERSION = 2
+_SUPPORTED_BACKUP_VERSIONS = (1, 2)
 
-_BACKUP_VERSION = 1
+
+def _backup_tables() -> list[Any]:
+    """Return every table to back up, parents before children.
+
+    Derived from ``SQLModel.metadata`` so a new model is covered the
+    moment it exists — the old hard-coded list silently skipped every
+    table added after it was written. ``sorted_tables`` is FK-ordered,
+    which is the insert order restore needs (and, reversed, the delete
+    order).
+    """
+    from sqlmodel import SQLModel
+
+    import wg_manager.models  # noqa: F401 — registers every table
+
+    return list(SQLModel.metadata.sorted_tables)
+
+
+def _deserialize_row(table: Any, row: dict[str, Any]) -> dict[str, Any]:
+    """Turn one JSON row back into insertable values for ``table``.
+
+    Keys that are no longer columns are dropped, so a backup that
+    carries retired fields (e.g. a pre-0005 plaintext ``private_key``)
+    restores cleanly against the current schema. Datetimes come back
+    from ISO strings. Enums are stored by ``.value`` but the column
+    persists the member *name*, and the two differ for some members
+    (``CertificateType.mysql_client`` is ``"mysql-client"``), so they
+    are mapped back to the enum member rather than passed as strings.
+    """
+    from sqlalchemy import DateTime
+    from sqlalchemy import Enum as SAEnum
+
+    out: dict[str, Any] = {}
+    for col in table.columns:
+        if col.key not in row:
+            continue
+        val = row[col.key]
+        if isinstance(val, str):
+            if isinstance(col.type, DateTime):
+                val = datetime.fromisoformat(val)
+            elif isinstance(col.type, SAEnum) and col.type.enum_class:
+                val = col.type.enum_class(val)
+        out[col.key] = val
+    return out
 
 
 def _get_engine(database_url: str | None = None) -> Any:
@@ -549,11 +594,11 @@ def _get_engine(database_url: str | None = None) -> Any:
     return engine
 
 
-def _serialize_row(row: Any) -> dict[str, Any]:
-    """Convert a SQLModel row to a JSON-safe dictionary."""
+def _serialize_row(table: Any, row: Any) -> dict[str, Any]:
+    """Convert one Core result row of ``table`` to a JSON-safe dictionary."""
     data: dict[str, Any] = {}
-    for col in row.__table__.columns:
-        val = getattr(row, col.key)
+    for col in table.columns:
+        val = row._mapping[col]
         if isinstance(val, datetime):
             data[col.key] = val.isoformat()
         elif isinstance(val, Enum):
@@ -703,7 +748,7 @@ def db_backup(
     """Dump all wg-manager data to a portable JSON file.
 
     The dump is database-agnostic: it serialises every row from every table
-    (SSHKey, Server, Client) as plain JSON objects, preserving primary keys,
+    in ``SQLModel.metadata`` as plain JSON objects, preserving primary keys,
     foreign keys, and timestamps. The file can be restored into any
     supported backend (MySQL, SQLite, PostgreSQL, etc.).
 
@@ -714,32 +759,29 @@ def db_backup(
     ``CRYPTO_BACKEND``, so a production deployment with Vault
     Transit gets the Transit data-key flow without additional config.
     """
-    from sqlmodel import Session, select
-
-    from wg_manager.models import Client, Server, SSHKey
+    from sqlalchemy import select as sa_select
 
     engine = _get_engine(database_url)
-    table_map: dict[str, type] = {
-        "sshkey": SSHKey,
-        "server": Server,
-        "client": Client,
-    }
+    tables = _backup_tables()
 
     dump: dict[str, Any] = {"version": _BACKUP_VERSION, "tables": {}}
-    with Session(engine) as session:
-        for table_name in _TABLE_ORDER:
-            model = table_map[table_name]
-            rows = session.exec(select(model)).all()
-            dump["tables"][table_name] = [_serialize_row(r) for r in rows]
+    # One connection for the whole dump; plain Core selects so every
+    # table is handled the same way, with or without a SQLModel class.
+    with engine.connect() as conn:
+        for table in tables:
+            stmt = sa_select(table).order_by(*table.primary_key.columns)
+            dump["tables"][table.name] = [
+                _serialize_row(table, r) for r in conn.execute(stmt)
+            ]
 
     plaintext = json.dumps(dump, indent=2, default=str, sort_keys=True)
 
     if encrypt:
         envelope = _envelope_encrypt(plaintext.encode("utf-8"))
         output.write_text(json.dumps(envelope, indent=2, sort_keys=True))
-        for table_name in _TABLE_ORDER:
-            count = len(dump["tables"][table_name])
-            typer.echo(f"  {table_name}: {count} row(s)")
+        for table in tables:
+            count = len(dump["tables"][table.name])
+            typer.echo(f"  {table.name}: {count} row(s)")
         typer.echo(
             f"encrypted backup written to {output} "
             f"(DEK wrapped via {envelope['dek_ct'].split(':', 1)[0]} backend)"
@@ -747,9 +789,9 @@ def db_backup(
         return
 
     output.write_text(plaintext)
-    for table_name in _TABLE_ORDER:
-        count = len(dump["tables"][table_name])
-        typer.echo(f"  {table_name}: {count} row(s)")
+    for table in tables:
+        count = len(dump["tables"][table.name])
+        typer.echo(f"  {table.name}: {count} row(s)")
     typer.echo(f"backup written to {output}")
 
 
@@ -788,9 +830,11 @@ def db_restore(
 ) -> None:
     """Restore wg-manager data from a JSON backup file.
 
-    Rows are inserted in FK order (SSHKey -> Server -> Client) so
+    Every table in the file is restored, parents before children, so
     referential integrity is maintained. Primary keys from the backup
-    are preserved, making the restore a faithful copy.
+    are preserved, making the restore a faithful copy. Version 1 files
+    (sshkey/server/client only) are still accepted. The whole restore
+    runs in one transaction.
 
     By default the command refuses to proceed if any target table
     already contains rows. Pass ``--drop-existing`` to truncate first.
@@ -800,9 +844,7 @@ def db_restore(
     :class:`wg_manager.crypto.CryptoBackend` selected by
     ``CRYPTO_BACKEND`` — must be the same backend that wrapped it.
     """
-    from sqlmodel import Session, select
-
-    from wg_manager.models import Client, NodeStatus, Server, SSHKey
+    from sqlalchemy import func, select
 
     raw_text = input_file.read_text()
     try:
@@ -848,84 +890,52 @@ def db_restore(
         raw = json.loads(plaintext.decode("utf-8"))
 
     version = raw.get("version", 0)
-    if version != _BACKUP_VERSION:
+    if version not in _SUPPORTED_BACKUP_VERSIONS:
         typer.secho(
-            f"unsupported backup version {version} (expected {_BACKUP_VERSION})",
+            f"unsupported backup version {version} "
+            f"(expected one of {_SUPPORTED_BACKUP_VERSIONS})",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(code=1)
 
     tables_data: dict[str, list[dict[str, Any]]] = raw["tables"]
-
-    table_map: dict[str, type] = {
-        "sshkey": SSHKey,
-        "server": Server,
-        "client": Client,
-    }
+    # Restore exactly the tables the file carries, in FK order. A v2
+    # file carries all of them; a v1 file only sshkey/server/client.
+    tables = [t for t in _backup_tables() if t.name in tables_data]
 
     engine = _get_engine(database_url)
 
-    with Session(engine) as session:
+    # One transaction: a failure part-way (e.g. an FK the file can't
+    # satisfy) rolls back to the pre-restore state instead of leaving a
+    # half-restored database.
+    with engine.begin() as conn:
         # Safety check: refuse to clobber unless --drop-existing.
-        for table_name in _TABLE_ORDER:
-            model = table_map[table_name]
-            existing = len(session.exec(select(model)).all())
+        for table in tables:
+            existing = conn.execute(
+                select(func.count()).select_from(table)
+            ).scalar_one()
             if existing > 0 and not drop_existing:
                 typer.secho(
-                    f"table {table_name!r} has {existing} existing row(s); "
+                    f"table {table.name!r} has {existing} existing row(s); "
                     "pass --drop-existing to truncate before restore",
                     fg=typer.colors.RED,
                     err=True,
                 )
                 raise typer.Exit(code=1)
 
-        # Truncate in reverse FK order (children first).
+        # Delete children before parents.
         if drop_existing:
-            for table_name in reversed(_TABLE_ORDER):
-                model = table_map[table_name]
-                rows = session.exec(select(model)).all()
-                for row in rows:
-                    session.delete(row)
-            session.commit()
+            for table in reversed(tables):
+                conn.execute(table.delete())
 
-        # Insert in FK order. The set of valid column keys per model is
-        # snapshotted once so a backup file that carries dropped fields
-        # (e.g. a pre-0005 ``private_key`` plaintext) restores cleanly
-        # against the current schema. The dropped fields are silently
-        # filtered — they no longer have anywhere to land.
-        for table_name in _TABLE_ORDER:
-            model = table_map[table_name]
-            valid_keys = {col.key for col in model.__table__.columns}
-            rows_data = tables_data.get(table_name, [])
-            for row_dict in rows_data:
-                # Parse datetime strings back into datetime objects.
-                # ``host_cert_valid_after`` / ``host_cert_valid_before``
-                # are populated on every Server row post-CP4.4 (the
-                # host-cert install runs unconditionally now), so the
-                # backup file carries them as ISO strings and the
-                # restore has to inflate them too — otherwise SQLite's
-                # DateTime type rejects the str at INSERT time.
-                for ts_field in (
-                    "created_at",
-                    "host_cert_valid_after",
-                    "host_cert_valid_before",
-                ):
-                    if ts_field in row_dict and isinstance(row_dict[ts_field], str):
-                        row_dict[ts_field] = datetime.fromisoformat(
-                            row_dict[ts_field]
-                        )
-                # Parse status enums.
-                if "status" in row_dict and isinstance(row_dict["status"], str):
-                    row_dict["status"] = NodeStatus(row_dict["status"])
-                filtered = {
-                    k: v for k, v in row_dict.items() if k in valid_keys
-                }
-                row = model(**filtered)
-                session.add(row)
-            session.flush()
-            typer.echo(f"  {table_name}: {len(rows_data)} row(s) restored")
-        session.commit()
+        # Insert parents before children, keeping the backup's primary
+        # keys so FKs between restored rows line up.
+        for table in tables:
+            rows = [_deserialize_row(table, r) for r in tables_data[table.name]]
+            if rows:
+                conn.execute(table.insert(), rows)
+            typer.echo(f"  {table.name}: {len(rows)} row(s) restored")
     typer.echo(f"restore complete from {input_file}")
 
 
