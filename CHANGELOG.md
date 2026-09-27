@@ -10,6 +10,15 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Fixed
+
+- **Dashboard tables fit the page again.** The Actions cells on the
+  Clients, Servers and SSH keys tables were `display: flex` `<td>`s,
+  which broke table layout and kept the buttons from wrapping. The
+  Clients table grew wider than the page and showed a horizontal
+  scrollbar. The buttons now sit in a wrapping container inside a
+  normal table cell.
+
 ## [v0.6.1] - 2026-09-26
 
 ### Fixed

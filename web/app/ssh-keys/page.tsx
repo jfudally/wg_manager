@@ -145,30 +145,35 @@ function SshKeyTable({
               <TableCell className="text-muted-foreground">
                 {formatDateTime(k.created_at)}
               </TableCell>
-              <TableCell className="flex justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => onEdit(k)}
-                >
-                  Edit
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `Delete SSH role "${k.name}"? This fails if any server or client still references it.`,
-                      )
-                    ) {
-                      deleteMutation.mutate(k.id);
-                    }
-                  }}
-                  disabled={deleteMutation.isPending}
-                >
-                  Delete
-                </Button>
+              <TableCell className="text-right">
+                {/* Flex on an inner div, not the <td>: a flex <td> stops
+                    being a table cell, and flex-wrap lets the column
+                    shrink instead of widening the table. */}
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => onEdit(k)}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          `Delete SSH role "${k.name}"? This fails if any server or client still references it.`,
+                        )
+                      ) {
+                        deleteMutation.mutate(k.id);
+                      }
+                    }}
+                    disabled={deleteMutation.isPending}
+                  >
+                    Delete
+                  </Button>
+                </div>
               </TableCell>
             </TableRow>
           ))}
