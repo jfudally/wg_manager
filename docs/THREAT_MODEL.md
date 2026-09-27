@@ -65,6 +65,11 @@ systemd timer (see [`deploy/systemd-timer.md`](deploy/systemd-timer.md)).
 - **B-4.** Worker ↔ managed host (SSH; **Phase 2c shipped**: Vault-signed short-lived user certs in both directions, host cert chain enforced via `KnownHostsCAPolicy`, no TOFU).
 - **B-5.** Operator ↔ managed host (post-provision; out of scope — wg-manager
   ends at writing `wg0.conf`).
+- **B-6.** Not-yet-enrolled host ↔ enrollment listener (**Phase 3f**). This
+  is a separate port and a separate ASGI app. It uses server-auth TLS only
+  (no client cert) and serves just `POST /v1/enroll` plus health probes.
+  Callers are authenticated by single-use, hash-stored enrollment tokens
+  instead of mTLS.
 
 ## 4. Actors
 
@@ -97,6 +102,10 @@ actors who can mount it, and the roadmap phase that closes it. See
 | T-10 | T      | Malicious dependency pulled at build time (paramiko, hvac, …)                       | All            | U-5        | Phase 2e   |
 | T-11 | R      | Operator actions are not audit-logged — no forensic trail after an incident         | —              | U-1        | Phase 2e (storage hardening) — **partially mitigated in Phase 2d CP5**: every admit / reject decision lands on the `wg_manager.audit` JSON stream with cn / serial / role / reason / method / path. The Phase 2e work is the storage side (append-only ship-out, retention) rather than the emission. |
 | T-12 | D      | A single dead host on `discover-all` could hang every worker                        | Service uptime | U-4        | Closed in Phase 1 (fail-soft discovery, `connect_timeout`) |
+| T-13 | S      | Enrollment token read from userdata / instance metadata lets an attacker enroll a rogue host onto the VPN | A-3 | U-2 | **Partially mitigated in Phase 3f MVP**: tokens are single-use by default, expire (60 s to 7 d), are tied to one hub and tenant, and can only be minted by admins. The management SSH identity is fixed at mint time. Every redemption lands in the audit table as `client.enroll`, and every failure as `enroll.reject`. Still open: source/instance binding (Phase 3f hardening) and cloud instance-identity attestation in place of bearer tokens (Phase 3f polish). |
+| T-14 | S, E   | Enrolled host obtains an SSH host cert for another machine's name and impersonates it to the worker | A-1, A-2 | U-2 | **Closed in Phase 3f MVP**: the host cert's only principal is the VPN address the control plane allocated. The host-reported hostname never becomes a principal. `tests/test_enroll_redeem.py::TestPrincipals` pins this. |
+| T-15 | S, E   | The cert-optional enrollment port exposes operator routes | A-3 | U-2 | **Closed in Phase 3f spike**: the enrollment listener serves a separate app that imports no operator router. `tests/test_enroll_listener.py` checks that every route in the operator OpenAPI schema 404s there, and that the operator port still refuses cert-less handshakes. |
+| T-16 | D, I   | Unauthenticated flood or token guessing against `POST /v1/enroll` | Service uptime | U-2 | **Partially mitigated**: tokens carry 256 bits of entropy, so guessing isn't feasible. All token failures return one uniform 401, so token state can't be probed. The token is checked before the body is validated, so an unauthenticated caller can't learn the request schema from 422s either. **Phase 3f hardening** added per-source-IP rate limiting in Valkey: 120 requests/min, plus a lockout after 10 failed attempts in 10 min, which also blocks valid tokens from that IP. It's applied before any DB or CA work, fails closed if Valkey is down, and logs `enroll.rate_limited` once per trip. Still open: a many-IP (distributed) flood is outside what app-level limiting can stop (use an LB/WAF), client IPs are lost behind the HA L4 proxy until PROXY protocol support lands, and there are no failed-redeem metrics yet. |
 
 ## 6. Out of scope
 

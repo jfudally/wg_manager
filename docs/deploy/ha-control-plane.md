@@ -160,7 +160,7 @@ than once**, and every task is written to be safe under re-delivery.
 |---|---|---|
 | `provision_server_task` | **GUARDED_BY_ROW_LOCK** | Cycle 3 added `task_row_lock("server", server_id)` around the body. Concurrent workers serialize at the lock; on contention the second worker skips. Remote SSH commands remain re-run safe as the belt to the lock's suspenders. |
 | `rotate_host_cert_task` | **GUARDED_BY_ROW_LOCK** | `task_row_lock("server", server_id)`. No racing Vault signatures. |
-| `reconfigure_server_task` | **GUARDED_BY_ROW_LOCK** | `task_row_lock("server", server_id)`. No racing `wg-quick` flaps. |
+| `reconfigure_server_task` | **GUARDED_BY_ROW_LOCK** + **GENERATION_COALESCED** | `task_row_lock("server", server_id)`. No racing `wg-quick` flaps. Unlike the other tasks, it **retries** on contention rather than skipping, because the lock holder may have read the client list before this task's change committed (Phase 3f hardening). Dispatched only through `request_reconfigure()`, which bumps `server.reconfig_requested_gen`. A task whose generation is already in `reconfig_applied_gen` returns `coalesced` without touching the hub, so a burst of changes costs about one restart rather than one per change. |
 | `provision_client_task` | **GUARDED_BY_ROW_LOCK** | `task_row_lock("client", client_id)`. Follow-up `reconfigure_server_task` takes its own lock. |
 | `discover_peers_task` | **NATURALLY_IDEMPOTENT** | Read-only SSH + upsert keyed on `(server_id, public_key)`. No lock needed — concurrent reads converge on the same row set. |
 | `discover_all_peers_task` | **NATURALLY_IDEMPOTENT** | Inherits from `discover_peers_task`. |
@@ -180,6 +180,10 @@ with task_row_lock(session, "server", server_id) as acquired:
         return {"status": "skipped", "reason": "concurrent_run", ...}
     # ... do the work ...
 ```
+
+`reconfigure_server_task` is the exception: on contention it calls
+`self.retry()` (every 10 s, up to 30 times) instead of skipping. See
+the table above.
 
 Lock-name shape: `wgm:<scope>:<row_id>` (e.g. `wgm:server:7`,
 `wgm:client:42`). The `wgm:` prefix keeps the namespace clean if
