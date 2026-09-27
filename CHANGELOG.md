@@ -10,6 +10,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`make prod-db-backup`.** Takes an encrypted DB backup of the
+  single-host production stack by running `wg-manager db backup
+  --encrypt` inside a one-off `bootstrap-app` container, and writes it
+  to `backups/wg-<UTC timestamp>.enc.json` (mode `0600`). A failed
+  run leaves no file behind.
+
 ### Fixed
 
 - **`wg-manager db backup` now covers every table.** It used to dump
@@ -22,6 +28,10 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   it. Version 1 files still restore. Restoring a full backup into a
   freshly migrated database needs `--drop-existing`, because Alembic
   `0014` seeds a default tenant.
+- **The single-host deploy docs no longer point at `make db-backup`
+  for production.** That target runs on the host with the dev `.env`
+  and fails against the prod stack with "Access denied". The deploy
+  doc and host-migration runbook now use `make prod-db-backup`.
 
 ## [v0.7.0] - 2026-09-27
 
