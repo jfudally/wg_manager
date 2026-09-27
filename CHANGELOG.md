@@ -10,6 +10,10 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.7.0] - 2026-09-27
+
+### Added
+
 - **Enrollment listener spike (Phase 3f, Phase 0).** New
   `python -m wg_manager.enroll_listener` / `make run-enroll` serves a
   separate enrollment-only app on `ENROLL_BIND_HOST:ENROLL_BIND_PORT`
