@@ -397,9 +397,17 @@ The Phase 2e backup tooling covers the two pieces of state that
 matter:
 
 ```bash
-make db-backup o=backups/wg-$(date +%F).json    # Phase 2e CP3 — encrypted DB dump
-make backup-vault                                # Phase 2e CP5 — Vault raft snapshot (no-op in dev mode)
+make prod-db-backup    # encrypted dump of every table → backups/wg-<UTC timestamp>.enc.json
+make backup-vault      # Phase 2e CP5 — Vault raft snapshot (no-op in dev mode)
 ```
+
+`make prod-db-backup` runs `wg-manager db backup --encrypt` inside a
+one-off `bootstrap-app` container, so it uses the prod `DATABASE_URL`
+and Vault Transit. The file is written `0600`, and a failed run leaves
+nothing behind. Don't use `make db-backup` here: it runs on the host
+with the dev `.env` settings and can't reach this stack's MySQL.
+The dump can only be decrypted by this stack's Vault, so it's a guard
+against bad data or a bad migration, not against losing the host.
 
 Encrypted DB dumps go in `backups/`. `make backup-vault` doesn't work
 against this stack: its Vault uses `storage "file"`, which has no raft

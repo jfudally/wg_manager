@@ -185,6 +185,14 @@ table already has rows — exactly the behaviour you want during a
 disaster-recovery drill, where partial state on the new host is a
 red flag worth investigating before clobbering.
 
+A backup covers **every** table (backup format version 2, from
+v0.7.x). Alembic `0014` seeds a `default` tenant, so a freshly
+migrated database is never empty and restoring a full backup into it
+needs `--drop-existing`. The whole restore runs in one transaction:
+if any row fails to insert, the database is left as it was. Version 1
+files (written by v0.6.x and earlier) still restore, but they only
+ever contained `sshkey`, `server` and `client`.
+
 ---
 
 ## Verification

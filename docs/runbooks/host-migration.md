@@ -91,7 +91,7 @@ most migrations take under an hour.
 make prod-logs      # Ctrl-C once quiet
 
 make db-counts > before-counts.txt                      # exact per-table row counts
-make db-backup o=backups/pre-migrate-$(date +%F).json   # extra safety copy
+make prod-db-backup                                     # extra safety copy (backups/*.enc.json)
 ```
 
 ### 3. Stop the old stack (old host)

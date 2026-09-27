@@ -483,7 +483,7 @@ class TestDBBackupRestore:
         import json as json_mod
 
         data = json_mod.loads(outfile.read_text())
-        assert data["version"] == 1
+        assert data["version"] == 2
         assert len(data["tables"]["sshkey"]) == 1
         assert len(data["tables"]["server"]) == 1
         assert len(data["tables"]["client"]) == 1
@@ -593,11 +593,13 @@ class TestDBBackupRestore:
         outfile = tmp_path / "backup.json"
         _invoke(runner, "db", "backup", "--output", str(outfile))
 
-        # Manually clear.
-        with Session(engine) as session:
-            for row in session.exec(select(SSHKey)).all():
-                session.delete(row)
-            session.commit()
+        # Manually clear every table (the backup covers all of them,
+        # including the fixture's default tenant), children first.
+        from sqlmodel import SQLModel
+
+        with engine.begin() as conn:
+            for table in reversed(SQLModel.metadata.sorted_tables):
+                conn.execute(table.delete())
 
         # Restore without --drop-existing should succeed.
         result = _invoke(runner, "db", "restore", "--input", str(outfile))
