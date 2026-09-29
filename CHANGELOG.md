@@ -10,6 +10,10 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.7.1] - 2026-09-29
+
+### Added
+
 - **`make prod-db-backup`.** Takes an encrypted DB backup of the
   single-host production stack by running `wg-manager db backup
   --encrypt` inside a one-off `bootstrap-app` container, and writes it
