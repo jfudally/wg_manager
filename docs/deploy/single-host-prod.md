@@ -192,6 +192,11 @@ Notes:
   `--ssh-key-passphrase <pass>` (or set
   `WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE`), `--ssh-port 22`,
   `--ttl-seconds 86400`, `--connect-timeout 15`.
+- Don't run the bare `wg-manager bootstrap-host` from the repo
+  checkout. With no `.env` it falls back to `SSH_CA_BACKEND=local`,
+  which would sign with a throwaway CA the worker doesn't trust.
+  The CLI now refuses that case (exit 1) rather than leaving the
+  host unreachable with `host cert signed by an untrusted CA`.
 
 Expected output:
 

@@ -224,6 +224,13 @@ exits with:
 Idempotent — re-running rotates the host cert in place before TTL
 expiry.
 
+The CLI must sign with the same CA the worker uses (Vault in
+production), so run it inside the stack as shown in
+[`docs/deploy/single-host-prod.md`](deploy/single-host-prod.md)
+Path B. It refuses to run with `SSH_CA_BACKEND=local` unless
+`SSH_CA_LOCAL_DEV_PEM` pins the CA, since an unpinned local CA is
+a throwaway that nothing else trusts.
+
 The command does **not** write to the wg-manager database. Two
 operator actions on purpose so you can verify the install before
 committing a row.

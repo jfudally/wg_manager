@@ -18,6 +18,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Fixed
 
+- **`bootstrap-host` refuses to use a throwaway SSH CA.** With
+  `SSH_CA_BACKEND=local` and no `SSH_CA_LOCAL_DEV_PEM` (the defaults
+  when the CLI runs outside the stack with no `.env`), it used to mint
+  a fresh CA per run. The host then trusted a CA nothing else knew, so
+  the worker failed with `host cert signed by an untrusted CA`. It now
+  exits 1 before opening SSH and says to run it inside the stack.
 - **`wg-manager db backup` now covers every table.** It used to dump
   only `sshkey`, `server` and `client`, so tenants, operators,
   operator-tenant links, certificates, audit events, discovered peers

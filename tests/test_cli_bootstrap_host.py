@@ -42,6 +42,22 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _pinned_local_ca(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin a local-backend CA PEM so the ephemeral-CA guard stays quiet.
+
+    ``tests/conftest.py`` forces ``SSH_CA_BACKEND=local`` with no PEM,
+    which is exactly the configuration ``bootstrap-host`` refuses (see
+    :class:`TestEphemeralCARefused`). Tests about other CLI behaviour
+    pin a CA here; the guard tests clear it again explicitly.
+    """
+    from wg_manager.ssh_ca import LocalDevSSHCA
+
+    monkeypatch.setenv(
+        "SSH_CA_LOCAL_DEV_PEM", LocalDevSSHCA.generate().ca_private_pem
+    )
+
+
 @pytest.fixture()
 def ed25519_key_file(tmp_path: Path) -> Path:
     """A real unencrypted OpenSSH ed25519 private key on disk.
@@ -308,6 +324,82 @@ class TestVaultUnreachable:
         )
         assert result.exit_code == 1, result.output
         assert "vault" in result.output.lower()
+
+
+class TestEphemeralCARefused:
+    """Local backend with no pinned CA → refuse before touching the host.
+
+    Regression: with no ``.env``, a bare ``wg-manager bootstrap-host``
+    falls back to ``SSH_CA_BACKEND=local`` and
+    :func:`make_ssh_ca_backend` generates a throwaway CA. The host then
+    gets a cert (and a user-CA trust anchor) from a CA nothing else
+    knows, so the worker fails with "host cert signed by an untrusted
+    CA" and Vault-minted user certs are rejected too.
+    """
+
+    def test_cli_refuses_local_backend_without_pinned_ca(
+        self,
+        runner: CliRunner,
+        ed25519_key_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Exit 1 with an explanation; never build the CA or open SSH."""
+        monkeypatch.setenv("SSH_CA_BACKEND", "local")
+        monkeypatch.delenv("SSH_CA_LOCAL_DEV_PEM", raising=False)
+        monkeypatch.setattr(
+            cli,
+            "make_ssh_ca_backend",
+            lambda *_a, **_kw: pytest.fail(
+                "make_ssh_ca_backend must not run for an ephemeral CA"
+            ),
+        )
+        monkeypatch.setattr(
+            cli,
+            "BootstrapSSHRunner",
+            lambda **_kw: pytest.fail(
+                "BootstrapSSHRunner must not be constructed for an ephemeral CA"
+            ),
+        )
+
+        result = _invoke(
+            runner,
+            "bootstrap-host",
+            "--hostname",
+            "fresh-host.example.com",
+            "--ssh-key",
+            str(ed25519_key_file),
+        )
+
+        assert result.exit_code == 1, result.output
+        output = result.output.lower()
+        assert "ephemeral" in output
+        assert "ssh_ca_backend" in output
+
+    def test_cli_allows_local_backend_with_pinned_ca(
+        self,
+        runner: CliRunner,
+        ed25519_key_file: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A pinned ``SSH_CA_LOCAL_DEV_PEM`` is a stable CA — proceed."""
+        monkeypatch.setenv("SSH_CA_BACKEND", "local")
+        monkeypatch.setattr(
+            cli, "bootstrap_host", lambda **_kw: _fake_host_cert()
+        )
+        monkeypatch.setattr(
+            cli, "BootstrapSSHRunner", lambda **_kw: _NoopRunner()
+        )
+
+        result = _invoke(
+            runner,
+            "bootstrap-host",
+            "--hostname",
+            "fresh-host.example.com",
+            "--ssh-key",
+            str(ed25519_key_file),
+        )
+
+        assert result.exit_code == 0, result.output
 
 
 # ---------------------------------------------------------------------------

@@ -2513,6 +2513,9 @@ def bootstrap_host_cmd(
     Prerequisites:
     * Vault SSH CA already bootstrapped (`make ssh-ca-bootstrap`).
       Vault unreachable → exit 1.
+    * A stable CA: SSH_CA_BACKEND=vault, or local with
+      SSH_CA_LOCAL_DEV_PEM pinned. Unpinned local (a throwaway CA)
+      → exit 1 before any SSH.
     * Operator SSH key already authorized on the target host. SSH
       refused → exit 1 (with the underlying paramiko reason).
     * The target user has passwordless sudo. Missing sudo → exit 1
@@ -2524,6 +2527,28 @@ def bootstrap_host_cmd(
     the box in the state store.
     """
     settings = Settings()
+
+    # The local backend with no pinned PEM mints a fresh CA per process.
+    # A host bootstrapped against it trusts a CA nothing else knows, so
+    # the worker rejects its host cert ("signed by an untrusted CA") and
+    # sshd rejects the worker's user certs. Typical cause: running the
+    # bare CLI outside the prod stack, where there's no .env and the
+    # backend defaults to "local". Refuse before touching the host.
+    if (
+        settings.ssh_ca_backend.lower() == "local"
+        and not settings.ssh_ca_local_dev_pem
+    ):
+        typer.secho(
+            "refusing to bootstrap with an ephemeral SSH CA: "
+            "SSH_CA_BACKEND=local and SSH_CA_LOCAL_DEV_PEM is unset, so the "
+            "host would trust a throwaway CA the worker never uses. Run "
+            "bootstrap-host inside the stack (docker compose run ... api "
+            "bootstrap-host, see docs/deploy/single-host-prod.md) or set "
+            "SSH_CA_BACKEND=vault.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=1)
 
     try:
         ca = make_ssh_ca_backend(settings)
