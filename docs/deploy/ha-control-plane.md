@@ -198,6 +198,12 @@ Release shape: `RELEASE_LOCK(name)` runs on context exit. The lock
 is also auto-released when the underlying connection closes, so a
 worker crash mid-task leaves no stranded lock.
 
+The lock lives on its own connection, not the task's session. MySQL
+ties a named lock to one connection, and the session gives its
+connection back to the pool on every commit or rollback. If the
+release fails (for example after a failed flush), the connection is
+invalidated rather than pooled, so MySQL drops the lock.
+
 On SQLite (the test suite), `task_row_lock` is a no-op acquire —
 SQLite's `StaticPool` has no multi-connection contention shape
 worth modelling. Task-level integration tests monkey-patch the

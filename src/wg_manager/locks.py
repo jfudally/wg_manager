@@ -3,7 +3,7 @@
 Phase 3d cycle 3 — every Celery task that mutates a single row
 (``provision_server``, ``rotate_host_cert``, ``reconfigure_server``,
 ``provision_client``) acquires an advisory lock on entry. The lock
-is connection-scoped and self-releases when the session closes, so
+is connection-scoped and self-releases when its connection closes, so
 a worker that crashes mid-task leaves no stranded lock for the next
 re-delivery to walk into.
 
@@ -34,11 +34,14 @@ the holding worker finishes).
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Iterator
 
 from sqlalchemy import text
 from sqlmodel import Session
+
+logger = logging.getLogger(__name__)
 
 # Conservative default — wait at most this long for another worker
 # to finish. In practice the tasks are short (seconds), so a few
@@ -103,9 +106,10 @@ def task_row_lock(
     shape to model. Tests that need to exercise the contended
     branch monkey-patch this function directly.
 
-    :param session: Active SQLModel session. The lock rides on the
-        session's underlying connection — keep the session open for
-        the protected region.
+    :param session: Active SQLModel session. Only its bind is used: the
+        lock is taken on a dedicated connection from the same engine, so
+        commits, rollbacks or a failed flush inside the protected region
+        can't strand it.
     :param scope: See :func:`lock_name_for`.
     :param row_id: See :func:`lock_name_for`.
     :param timeout_seconds: Max wait. ``0`` returns immediately if
@@ -123,31 +127,44 @@ def task_row_lock(
         yield True
         return
 
+    # The lock rides on a dedicated connection, not the session's.
+    # GET_LOCK is owned by one MySQL connection, and the session hands
+    # its connection back to the pool on every commit/rollback, so a
+    # RELEASE_LOCK issued through the session can land on a different
+    # connection. Worse, a failed flush (e.g. the host-cert serial
+    # DataError) leaves the session needing a rollback, so the release
+    # raised and the lock leaked onto a pooled connection until the
+    # worker restarted. A connection we own is unaffected by either.
+    conn = session.get_bind().connect()
     acquired = False
     try:
-        result = session.exec(  # type: ignore[call-overload]
-            text("SELECT GET_LOCK(:name, :timeout)"),
-            params={"name": name, "timeout": timeout_seconds},
-        ).first()
-        # GET_LOCK returns 1 on success, 0 on timeout, NULL on
-        # driver error. ``session.exec`` wraps the result; defensively
-        # treat anything other than 1 as "not acquired".
-        first_col = result[0] if result is not None else None
-        acquired = first_col == 1
+        # GET_LOCK returns 1 on success, 0 on timeout, NULL on driver
+        # error. Treat anything other than 1 as "not acquired".
+        acquired = (
+            conn.execute(
+                text("SELECT GET_LOCK(:name, :timeout)"),
+                {"name": name, "timeout": timeout_seconds},
+            ).scalar()
+            == 1
+        )
         yield acquired
     finally:
-        if acquired:
-            # Best-effort release. If the connection has already
-            # been killed (worker died), the server releases the
-            # lock for us — so a release failure here is safe to
-            # swallow.
-            try:
-                session.exec(  # type: ignore[call-overload]
-                    text("SELECT RELEASE_LOCK(:name)"),
-                    params={"name": name},
-                ).first()
-            except Exception:  # pragma: no cover — defensive
-                pass
+        try:
+            if acquired:
+                released = conn.execute(
+                    text("SELECT RELEASE_LOCK(:name)"), {"name": name}
+                ).scalar()
+                if released != 1:
+                    raise RuntimeError(f"RELEASE_LOCK returned {released!r}")
+        except Exception:
+            # Don't mask the caller's exception, but don't leak the
+            # lock either: invalidating closes the connection for real
+            # (rather than returning it to the pool), and MySQL drops
+            # a closed connection's named locks.
+            logger.exception("failed to release advisory lock %s; dropping connection", name)
+            conn.invalidate()
+        finally:
+            conn.close()
 
 
 __all__ = [
