@@ -105,3 +105,36 @@ class TestEveryAlertHasRequiredFields:
                     assert annots.get("summary"), (
                         f"alert {rule['alert']!r} has no annotations.summary"
                     )
+
+
+class TestHostCertRotationAlerts:
+    """SSH host-cert alerts on ``wg_manager_host_cert_valid_before_seconds``.
+
+    Beat renews host certs 12h before expiry, hourly. A cert that keeps
+    getting closer to expiry means rotation is failing; one that has
+    expired can only be recovered by hand with ``bootstrap-host``.
+    """
+
+    def _rule(self, alerts: dict, name: str) -> dict:
+        for group in alerts.get("groups", []):
+            for rule in group.get("rules", []):
+                if rule.get("alert") == name:
+                    return rule
+        pytest.fail(f"alert {name!r} missing")
+
+    def test_rotation_failing_alert_uses_host_cert_gauge(self, alerts: dict) -> None:
+        rule = self._rule(alerts, "WgHostCertRotationFailing")
+        assert "wg_manager_host_cert_valid_before_seconds" in rule["expr"]
+        assert rule["labels"]["severity"] == "warning"
+
+    def test_expired_alert_is_critical(self, alerts: dict) -> None:
+        rule = self._rule(alerts, "WgHostCertExpired")
+        assert "wg_manager_host_cert_valid_before_seconds" in rule["expr"]
+        assert rule["labels"]["severity"] == "critical"
+
+    def test_expired_runbook_points_at_in_stack_bootstrap(self, alerts: dict) -> None:
+        """Recovery is the in-stack bootstrap-host (Path B), not the bare CLI."""
+        rule = self._rule(alerts, "WgHostCertExpired")
+        assert rule["annotations"]["runbook"].startswith(
+            "docs/deploy/single-host-prod.md"
+        )

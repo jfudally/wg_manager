@@ -15,6 +15,9 @@ Grafana when answering "is wg-manager healthy right now?":
   :mod:`wg_manager.ssh_ca`, and :mod:`wg_manager.pki`.
 * **Cert lifecycle** — issue / revoke / renew counters bumped by
   the cert routers and the CLI.
+* **SSH host certs** — per-host cert expiry, read from the DB on each
+  scrape by :class:`HostCertCollector`, so Prometheus can alert when
+  the beat rotation sweep stops renewing a host.
 
 The ``GET /metrics`` endpoint is wired into the FastAPI app and
 exposes the registry in the standard Prometheus text format. The
@@ -373,6 +376,82 @@ except ValueError:
     pass
 
 
+class HostCertCollector:
+    """Emit ``wg_manager_host_cert_valid_before_seconds`` per managed host.
+
+    One sample per ``ready`` server and SSH-provisioned client with a
+    known host-cert expiry: the same rows the beat sweep
+    (:func:`wg_manager.tasks.rotate_expiring_host_certs_task`) rotates.
+    Manual clients, rows mid-provision or in ``error``, and rows with no
+    recorded cert are skipped, since nothing is meant to renew them.
+
+    The sweep renews each cert ``SSH_HOST_CERT_RENEW_BEFORE_SECONDS``
+    ahead of expiry, so a cert that keeps getting closer means its
+    rotations are failing (or beat / the worker is down). That's what
+    ``WgHostCertRotationFailing`` alerts on. The worker's own Celery
+    counters can't serve here: they live in the worker process, and
+    only the API serves ``/metrics``.
+
+    Read from the DB on every scrape, like
+    :class:`CertificateLifecycleCollector`. Cardinality is one series
+    per managed host.
+    """
+
+    def collect(self):  # noqa: ANN201 — prometheus_client's protocol
+        from datetime import timezone
+
+        from sqlmodel import Session, col, select
+
+        from wg_manager import db as db_module
+        from wg_manager.models import Client, NodeStatus, Server
+
+        gauge = GaugeMetricFamily(
+            "wg_manager_host_cert_valid_before_seconds",
+            (
+                "Unix timestamp when each managed host's SSH host cert "
+                "expires. Subtract `time()` for seconds left; beat renews "
+                "at SSH_HOST_CERT_RENEW_BEFORE_SECONDS (12h) before."
+            ),
+            labels=["kind", "id", "name", "hostname"],
+        )
+        try:
+            with Session(db_module.engine) as session:
+                servers = session.exec(
+                    select(Server).where(
+                        Server.status == NodeStatus.ready,
+                        col(Server.host_cert_valid_before).is_not(None),
+                    )
+                ).all()
+                clients = session.exec(
+                    select(Client).where(
+                        Client.status == NodeStatus.ready,
+                        Client.is_manual == False,  # noqa: E712
+                        col(Client.host_cert_valid_before).is_not(None),
+                    )
+                ).all()
+        except Exception:  # noqa: BLE001 — never let a DB blip crash the scrape
+            return
+        # Stored datetimes are naive UTC; .timestamp() on a naive value
+        # would use the process's local timezone.
+        for kind, rows in (("server", servers), ("client", clients)):
+            for row in rows:
+                name = getattr(row, "name", None) or row.hostname
+                gauge.add_metric(
+                    [kind, str(row.id), name, row.hostname],
+                    row.host_cert_valid_before.replace(
+                        tzinfo=timezone.utc
+                    ).timestamp(),
+                )
+        yield gauge
+
+
+try:
+    REGISTRY.register(HostCertCollector())
+except ValueError:
+    # Already registered by an earlier import; see above.
+    pass
+
+
 def metrics_response() -> tuple[bytes, str]:
     """Return ``(body, content_type)`` for the ``/metrics`` endpoint.
 
@@ -384,6 +463,7 @@ def metrics_response() -> tuple[bytes, str]:
 
 __all__ = [
     "CertificateLifecycleCollector",
+    "HostCertCollector",
     "MetricsMiddleware",
     "REGISTRY",
     "certs_issued_total",
