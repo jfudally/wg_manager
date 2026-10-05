@@ -10,6 +10,10 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.8.0] - 2026-10-05
+
+### Added
+
 - **Alerts for failing SSH host-cert rotation.** A new
   `wg_manager_host_cert_valid_before_seconds` gauge on `/metrics`
   reports each managed host's cert expiry. Two new rules in
