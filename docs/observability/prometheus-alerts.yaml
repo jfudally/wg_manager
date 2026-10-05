@@ -6,7 +6,7 @@
 #   rule_files:
 #     - /etc/prometheus/wg-manager-alerts.yaml
 #
-# Three rules covering the most operationally-meaningful failure
+# Rules covering the most operationally-meaningful failure
 # modes a v0.1.0 wg-manager deployment can hit:
 #
 #   * Wg5xxSurge          — 5xx-rate climbs (almost always a backend
@@ -20,6 +20,11 @@
 #                           should have caught it (see
 #                           docs/deploy/systemd-timer.md), so this
 #                           firing means the timer skipped
+#   * WgHostCertRotationFailing — an SSH host cert is < 8h from
+#                           expiry, so the hourly rotation sweep
+#                           keeps failing for that host
+#   * WgHostCertExpired   — an SSH host cert has expired; the host
+#                           needs a manual in-stack bootstrap-host
 #
 # Tune ``for:`` durations to your deployment's pain tolerance. The
 # defaults are conservative: short enough to catch incidents,
@@ -110,3 +115,48 @@ groups:
             ``wg-manager certs issue --out-cert/...`` to opt into
             automated renewal.
           runbook: docs/deploy/systemd-timer.md
+
+      # ----- SSH host certs ---------------------------------------
+      - alert: WgHostCertRotationFailing
+        # Beat renews every host cert 12h before expiry
+        # (SSH_HOST_CERT_RENEW_BEFORE_SECONDS) and retries hourly
+        # (SSH_HOST_CERT_ROTATION_INTERVAL_SECONDS). Under 8h left
+        # means at least four sweeps failed for this host, or beat /
+        # the worker isn't running. Scale the threshold if you change
+        # either setting.
+        expr: (wg_manager_host_cert_valid_before_seconds - time()) < 8 * 3600
+        for: 15m
+        labels:
+          severity: warning
+          component: ssh
+        annotations:
+          summary: "Host cert for {{ $labels.kind }} {{ $labels.name }} not renewing (< 8h left)"
+          description: |
+            The SSH host cert on {{ $labels.kind }} {{ $labels.id }}
+            ({{ $labels.hostname }}) expires in under 8 hours and the
+            hourly rotation hasn't renewed it. Look for
+            ``host-cert rotation failed`` in the worker logs, check
+            that beat and the worker are running, then rotate it with
+            ``POST /{{ $labels.kind }}s/{{ $labels.id }}/rotate-host-cert``.
+            Once it expires, it can only be recovered by hand.
+          runbook: docs/deploy/single-host-prod.md#automatic-host-cert-renewal
+
+      - alert: WgHostCertExpired
+        # Past expiry the worker rejects the host's cert, so rotation,
+        # reconfigure and discovery all fail until an operator
+        # re-bootstraps it.
+        expr: wg_manager_host_cert_valid_before_seconds < time()
+        for: 5m
+        labels:
+          severity: critical
+          component: ssh
+        annotations:
+          summary: "Host cert for {{ $labels.kind }} {{ $labels.name }} has expired"
+          description: |
+            The SSH host cert on {{ $labels.kind }} {{ $labels.id }}
+            ({{ $labels.hostname }}) has expired. wg-manager can't
+            reach the host until it's re-bootstrapped: run
+            ``bootstrap-host`` inside the stack (Path B) with the
+            host's out-of-band SSH key and its recorded
+            ``ssh_username``, then rotate the row.
+          runbook: docs/deploy/single-host-prod.md#path-b--cli-for-scripted--ci-use

@@ -301,8 +301,13 @@ before expiry. Tune all three in `.env.prod`; startup fails unless
 `ROTATION_INTERVAL < RENEW_BEFORE < SSH_HOST_CERT_TTL`.
 
 Run exactly one `beat` per deployment. A host that stays unreachable
-through the whole renew window will expire — watch the worker logs for
-`host-cert rotation failed` and re-run `bootstrap-host` for it.
+through the whole renew window will expire, and then needs
+`bootstrap-host` (Path B). Load
+[`docs/observability/prometheus-alerts.yaml`](../observability/prometheus-alerts.yaml)
+so you hear about it in time: `WgHostCertRotationFailing` fires when a
+host cert is under 8h from expiry (at least four failed sweeps), and
+`WgHostCertExpired` once it has lapsed. Without them, the only signal
+is `host-cert rotation failed` in the worker logs.
 
 **Upgrading from a version without the validity check:** older
 versions silently accepted expired host certs, so hubs and clients

@@ -10,6 +10,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Alerts for failing SSH host-cert rotation.** A new
+  `wg_manager_host_cert_valid_before_seconds` gauge on `/metrics`
+  reports each managed host's cert expiry. Two new rules in
+  `docs/observability/prometheus-alerts.yaml` use it:
+  `WgHostCertRotationFailing` (warning, under 8h left, meaning at
+  least four hourly sweeps failed) and `WgHostCertExpired` (critical,
+  the host needs a manual `bootstrap-host`).
+
 - **`make prod-db-backup`.** Takes an encrypted DB backup of the
   single-host production stack by running `wg-manager db backup
   --encrypt` inside a one-off `bootstrap-app` container, and writes it

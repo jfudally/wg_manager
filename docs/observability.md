@@ -239,6 +239,27 @@ bottomk(20, wg_manager_cert_not_after_seconds)
 count by (cert_type) (wg_manager_cert_not_after_seconds)
 ```
 
+### SSH host-cert expiry gauge
+
+| Metric | Type | Labels |
+|---|---|---|
+| `wg_manager_host_cert_valid_before_seconds` | Gauge | `kind` (`server`/`client`), `id`, `name`, `hostname` |
+
+One sample per `ready` server and SSH-provisioned client with a
+recorded host cert: the rows the beat sweep rotates. Manual clients,
+rows that are `pending` or in `error`, and rows with no cert yet are
+left out, since nothing is meant to renew them.
+
+Beat renews each cert 12h before expiry, so in a healthy fleet every
+value sits 12–24h ahead of `time()`. The Celery task counters can't
+show rotation failures to Prometheus: they live in the worker
+process, and only the API serves `/metrics`.
+
+```promql
+# Hours left on each host cert, nearest first
+sort((wg_manager_host_cert_valid_before_seconds - time()) / 3600)
+```
+
 ### Cert-lifecycle dashboard
 
 [`docs/observability/grafana-cert-lifecycle.json`](observability/grafana-cert-lifecycle.json)
@@ -261,7 +282,7 @@ the cycle 1 service-health dashboard.
 ## Alerting recipes (Phase 3a cycle 3)
 
 [`docs/observability/prometheus-alerts.yaml`](observability/prometheus-alerts.yaml)
-ships three alert rules covering the most operationally-meaningful
+ships alert rules covering the most operationally-meaningful
 failure modes:
 
 | Alert | Trigger | Runbook |
@@ -269,6 +290,8 @@ failure modes:
 | `Wg5xxSurge` | 5xx fraction > 5% over 5m | [`observability.md#alerting-recipes`](#alerting-recipes) |
 | `WgVaultLatencyHigh` | Vault round-trip p95 > 2s for 5m | [`docs/runbooks/vault-down.md`](runbooks/vault-down.md) |
 | `WgCertExpiringSoon` | Non-revoked cert TTL < 7 days | [`docs/deploy/systemd-timer.md`](deploy/systemd-timer.md) |
+| `WgHostCertRotationFailing` | SSH host cert < 8h from expiry for 15m (warning) | [`single-host-prod.md#automatic-host-cert-renewal`](deploy/single-host-prod.md#automatic-host-cert-renewal) |
+| `WgHostCertExpired` | SSH host cert past expiry for 5m (critical) | [`single-host-prod.md` Path B](deploy/single-host-prod.md#path-b--cli-for-scripted--ci-use) |
 
 Drop the YAML into your Prometheus config:
 
