@@ -18,6 +18,19 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Fixed
 
+- **Host-cert rotation no longer fails on about half of Vault serials.**
+  `server.host_cert_serial` and `client.host_cert_serial` were signed
+  `BIGINT`, but Vault issues SSH cert serials across the full 64-bit
+  range. Any serial `>= 2**63` failed to save with `Out of range value
+  for column 'host_cert_serial'` after the new cert was already on the
+  host, so the row kept showing the expired cert. Alembic 0020 makes
+  both columns `BIGINT UNSIGNED` on MySQL (`prod-up` applies it).
+- **A failed task no longer leaks its row lock.** When a locked task's
+  commit failed, releasing the advisory lock failed too, and the error
+  was swallowed. Later runs of that task for the same row were skipped
+  with `concurrent_run` until the worker restarted. The lock now uses
+  its own connection, and a failed release drops that connection.
+
 - **`bootstrap-host` refuses to use a throwaway SSH CA.** With
   `SSH_CA_BACKEND=local` and no `SSH_CA_LOCAL_DEV_PEM` (the defaults
   when the CLI runs outside the stack with no `.env`), it used to mint

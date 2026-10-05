@@ -12,7 +12,58 @@ from sqlalchemy import (
     Text,  # re-exported for the manual-client column below
     UniqueConstraint,
 )
+from sqlalchemy.dialects import mysql
+from sqlalchemy.types import TypeDecorator
 from sqlmodel import Field, SQLModel
+
+_UINT64_LIMIT = 2**64
+_INT64_LIMIT = 2**63
+
+
+class UnsignedBigInteger(TypeDecorator):
+    """A ``uint64`` column: ``BIGINT UNSIGNED`` on MySQL, mapped elsewhere.
+
+    SSH certificate serials are unsigned 64-bit, and Vault's SSH CA
+    draws them from the whole range, so about half exceed the signed
+    ``BIGINT`` maximum (``2**63 - 1``). On MySQL/MariaDB the column is
+    natively unsigned (Alembic 0020) and values pass straight through.
+
+    SQLite (tests, local dev) has no unsigned integer, so values
+    ``>= 2**63`` are stored two's-complement as negative ``INTEGER``s
+    and mapped back on read. Python always sees the true serial.
+
+    :raises ValueError: On bind, if the value is outside ``[0, 2**64)``.
+    """
+
+    impl = BigInteger
+    cache_ok = True
+
+    @staticmethod
+    def _native(dialect) -> bool:
+        """Whether ``dialect`` stores the unsigned value as-is."""
+        return dialect.name in ("mysql", "mariadb")
+
+    def load_dialect_impl(self, dialect):
+        """Use ``BIGINT UNSIGNED`` on MySQL/MariaDB, plain ``BIGINT`` otherwise."""
+        if self._native(dialect):
+            return dialect.type_descriptor(mysql.BIGINT(unsigned=True))
+        return dialect.type_descriptor(BigInteger())
+
+    def process_bind_param(self, value, dialect):
+        """Validate the range; fold ``>= 2**63`` to negative off MySQL."""
+        if value is None:
+            return None
+        if not 0 <= value < _UINT64_LIMIT:
+            raise ValueError(f"{value} is outside the uint64 range")
+        if not self._native(dialect) and value >= _INT64_LIMIT:
+            return value - _UINT64_LIMIT
+        return value
+
+    def process_result_value(self, value, dialect):
+        """Undo the two's-complement fold applied by :meth:`process_bind_param`."""
+        if value is None or self._native(dialect):
+            return value
+        return value + _UINT64_LIMIT if value < 0 else value
 
 
 class NodeStatus(str, Enum):
@@ -301,12 +352,10 @@ class Server(SQLModel, table=True):
     host_cert_pem: str | None = Field(
         default=None, sa_column=Column(Text, nullable=True)
     )
-    # ``secrets.randbits(63)`` (used by both LocalDevSSHCA and the OpenSSH
-    # serial field) regularly exceeds the 32-bit ``Integer`` range MySQL
-    # would otherwise infer. Pin BigInteger so the column survives
-    # serials > 2³¹-1 on MySQL as well as SQLite (which doesn't care).
+    # SSH cert serials are uint64 and Vault uses the full range, so a
+    # signed BIGINT overflows on about half of them (Alembic 0020).
     host_cert_serial: int | None = Field(
-        default=None, sa_column=Column(BigInteger, nullable=True)
+        default=None, sa_column=Column(UnsignedBigInteger, nullable=True)
     )
     host_cert_principals: str | None = Field(default=None)
     host_cert_valid_after: datetime | None = Field(default=None)
@@ -386,7 +435,7 @@ class Client(SQLModel, table=True):
         default=None, sa_column=Column(Text, nullable=True)
     )
     host_cert_serial: int | None = Field(
-        default=None, sa_column=Column(BigInteger, nullable=True)
+        default=None, sa_column=Column(UnsignedBigInteger, nullable=True)
     )
     host_cert_principals: str | None = Field(default=None)
     host_cert_valid_after: datetime | None = Field(default=None)

@@ -142,3 +142,139 @@ class TestTaskRowLockContract:
             assert s_acq is True
             with task_row_lock(session, "client", 7) as c_acq:
                 assert c_acq is True
+
+
+# ---------------------------------------------------------------------------
+# MySQL release path — modelled on SQLite with fake GET_LOCK / RELEASE_LOCK
+# ---------------------------------------------------------------------------
+
+
+class _FakeNamedLocks:
+    """Connection-scoped named locks with MySQL's ``GET_LOCK`` semantics.
+
+    Registered as SQL functions on every SQLite DBAPI connection, so the
+    real ``task_row_lock`` SQL runs unchanged. Each lock is owned by the
+    DBAPI connection that took it: re-entrant for the owner, ``0`` for
+    anyone else, released only by the owner's ``RELEASE_LOCK`` or by
+    that connection actually closing — exactly the property that makes
+    a swallowed release leak the lock onto a pooled connection.
+    """
+
+    def __init__(self) -> None:
+        self.owners: dict[str, int] = {}
+
+    def install(self, engine) -> None:
+        """Register GET_LOCK / RELEASE_LOCK on ``engine``'s connections."""
+        from sqlalchemy import event
+
+        @event.listens_for(engine, "connect")
+        def _register(dbapi_conn, _record) -> None:
+            me = id(dbapi_conn)
+
+            def get_lock(name: str, _timeout: int) -> int:
+                if self.owners.get(name, me) != me:
+                    return 0
+                self.owners[name] = me
+                return 1
+
+            def release_lock(name: str) -> int | None:
+                if self.owners.get(name) != me:
+                    return 0
+                del self.owners[name]
+                return 1
+
+            dbapi_conn.create_function("GET_LOCK", 2, get_lock)
+            dbapi_conn.create_function("RELEASE_LOCK", 1, release_lock)
+
+        @event.listens_for(engine, "close")
+        def _closed(dbapi_conn, _record) -> None:
+            # Server-side: closing a connection drops its named locks.
+            me = id(dbapi_conn)
+            for name in [n for n, o in self.owners.items() if o == me]:
+                del self.owners[name]
+
+
+class TestTaskRowLockReleaseAfterFailedFlush:
+    """Regression: a failed flush must not leak the advisory lock.
+
+    In production a host-cert rotation's commit raised ``DataError``
+    (serial out of range). That left the session needing a rollback,
+    so the ``RELEASE_LOCK`` in ``task_row_lock``'s ``finally`` raised
+    too, was swallowed, and the lock stayed held on the pooled
+    connection. Every later rotation of that row was skipped with
+    ``concurrent_run`` until the worker restarted.
+    """
+
+    @pytest.fixture()
+    def locking_engine(self, tmp_path, monkeypatch):
+        """File-backed SQLite (real pool, many connections) with fake locks."""
+        from sqlalchemy import create_engine
+        from sqlmodel import SQLModel
+
+        import wg_manager.locks as locks
+        import wg_manager.models  # noqa: F401 — populate metadata
+
+        engine = create_engine(f"sqlite:///{tmp_path / 'locks.sqlite'}")
+        fake = _FakeNamedLocks()
+        fake.install(engine)
+        SQLModel.metadata.create_all(engine)
+        # Take the MySQL branch so the real GET_LOCK SQL runs.
+        monkeypatch.setattr(locks, "_is_mysql_session", lambda _s: True)
+        yield engine, fake
+        engine.dispose()
+
+    def test_lock_released_when_protected_flush_fails(self, locking_engine) -> None:
+        """After an IntegrityError on commit, another connection can lock the row."""
+        from sqlalchemy.exc import IntegrityError
+        from sqlmodel import Session
+
+        from wg_manager.locks import lock_name_for, task_row_lock
+        from wg_manager.models import Operator
+
+        engine, fake = locking_engine
+        with Session(engine) as seed:
+            seed.add(Operator(cn="dup"))
+            seed.commit()
+
+        with Session(engine) as session:
+            with pytest.raises(IntegrityError):
+                with task_row_lock(session, "server", 1) as acquired:
+                    assert acquired is True
+                    # Duplicate unique CN: the flush fails and the
+                    # session is left needing a rollback, like the
+                    # serial-overflow DataError did.
+                    session.add(Operator(cn="dup"))
+                    session.commit()
+
+            assert lock_name_for("server", 1) not in fake.owners
+
+    def test_lock_released_on_success_path(self, locking_engine) -> None:
+        """The normal commit-then-exit path still releases the lock."""
+        from sqlmodel import Session
+
+        from wg_manager.locks import lock_name_for, task_row_lock
+        from wg_manager.models import Operator
+
+        engine, fake = locking_engine
+        with Session(engine) as session:
+            with task_row_lock(session, "server", 1) as acquired:
+                assert acquired is True
+                session.add(Operator(cn="ok"))
+                session.commit()
+            assert lock_name_for("server", 1) not in fake.owners
+
+    def test_contended_lock_yields_false(self, locking_engine) -> None:
+        """A lock held by another connection is reported as not acquired."""
+        from sqlalchemy import text
+        from sqlmodel import Session
+
+        from wg_manager.locks import lock_name_for, task_row_lock
+
+        engine, _fake = locking_engine
+        with engine.connect() as holder:
+            holder.execute(
+                text("SELECT GET_LOCK(:n, 0)"), {"n": lock_name_for("server", 1)}
+            )
+            with Session(engine) as session:
+                with task_row_lock(session, "server", 1, timeout_seconds=0) as acquired:
+                    assert acquired is False
