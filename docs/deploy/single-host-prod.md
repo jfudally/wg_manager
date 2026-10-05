@@ -161,29 +161,38 @@ the trust model.
 
 #### Path B — CLI (for scripted / CI use)
 
-The CLI is baked into the api/worker image, so the cleanest
-invocation is a one-shot container that joins the compose network
-where Vault lives and mounts your operator SSH key read-only:
+The CLI is baked into the api/worker image, so run it in a one-shot
+`api` container on the compose network where Vault lives. Pipe your
+operator SSH key in on stdin:
 
 ```bash
 docker compose --env-file .env.prod \
     -f docker-compose.yml -f docker-compose.prod.yml \
-    run --rm \
-    -v ~/.ssh:/keys:ro \
-    --entrypoint wg-manager \
-    api \
-    bootstrap-host \
-      --hostname <target-fqdn-or-ip> \
-      --ssh-user <user> \
-      --ssh-key /keys/<your-key-filename>
+    run --rm -T api sh -c '
+      umask 077; cat > /tmp/oob_key
+      exec wg-manager bootstrap-host \
+        --hostname <target-fqdn-or-ip> \
+        --ssh-user <user> \
+        --ssh-key /tmp/oob_key' \
+    < ~/.ssh/<your-key-filename>
 ```
 
 Notes:
 
-- `--rm` so the container disappears after the install.
+- Keep the image's entrypoint (no `--entrypoint`). It reads the root
+  token from `vault-init.json` and exports `VAULT_TOKEN` before running
+  the command. Skip it and the CLI fails with `VAULT_TOKEN (or
+  CRYPTO_VAULT_TOKEN) is required for the vault SSH CA backend`.
+- Pipe the key rather than bind-mounting `~/.ssh`. The container runs
+  as `wgmanager` (uid 1001), which can't read a `0600` key you own
+  (`File '/keys/…' is not readable`). Running with `--user` to fix
+  that instead breaks the token load, because `vault-init.json` is
+  readable only by uid 1001.
+- `-T` passes stdin through without a TTY. `umask 077` keeps the
+  temporary copy private, and `--rm` deletes it with the container.
 - `run` inherits the api service's env (`VAULT_ADDR=http://vault:8200`,
-  `VAULT_TOKEN=…`, the four backend pins) so the CLI hits Vault on
-  the docker network without any extra wiring.
+  the four backend pins) so the CLI hits Vault on the docker network
+  without any extra wiring.
 - Optional flags: `--principal <name>` (adds an alias principal
   alongside `--hostname`, e.g. internal DNS when you dial a public
   IP — the cert always names the dial host, because
@@ -192,6 +201,9 @@ Notes:
   `--ssh-key-passphrase <pass>` (or set
   `WG_MANAGER_BOOTSTRAP_SSH_KEY_PASSPHRASE`), `--ssh-port 22`,
   `--ttl-seconds 86400`, `--connect-timeout 15`.
+- `--ssh-user` must be an account that accepts this key. For a host
+  that's already registered, use the row's `ssh_username`
+  (`GET /clients/{id}` or `/servers/{id}`).
 - Don't run the bare `wg-manager bootstrap-host` from the repo
   checkout. With no `.env` it falls back to `SSH_CA_BACKEND=local`,
   which would sign with a throwaway CA the worker doesn't trust.

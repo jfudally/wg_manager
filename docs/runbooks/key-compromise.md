@@ -240,10 +240,18 @@ Vault-side rotation in the root-token row, you also need to:
 2. Re-bootstrap every managed host:
 
    ```bash
-   wg-manager bootstrap-host --hostname X --ssh-key PATH
+   docker compose --env-file .env.prod \
+       -f docker-compose.yml -f docker-compose.prod.yml \
+       run --rm -T api sh -c '
+         umask 077; cat > /tmp/oob_key
+         exec wg-manager bootstrap-host --hostname X \
+           --ssh-user USER --ssh-key /tmp/oob_key' \
+       < PATH
    ```
 
-   Use a temporary operator SSH key (separate from the wg-manager
+   Run it inside the stack so it signs with the new Vault CA (see
+   [Path B](../deploy/single-host-prod.md#path-b--cli-for-scripted--ci-use)
+   for why the key is piped in). Use a temporary operator SSH key (separate from the wg-manager
    trust chain) because the new CA is not yet trusted. Repeat for
    every row in `wg-manager servers list`.
 3. Treat every server in the fleet as potentially-rooted. The
