@@ -60,6 +60,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   and fails against the prod stack with "Access denied". The deploy
   doc and host-migration runbook now use `make prod-db-backup`.
 
+### Security
+
+- **urllib3 2.7.0 → 2.8.0** (transitive, via `requests` for `hvac` and
+  the OTLP exporter). Fixes PYSEC-2026-4175, PYSEC-2026-4176 and
+  PYSEC-2026-4177, which failed the `pip-audit` gate.
+
 ## [v0.7.0] - 2026-09-27
 
 ### Added
