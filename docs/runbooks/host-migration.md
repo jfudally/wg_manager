@@ -23,9 +23,11 @@ Companion docs:
 Two facts about the prod stack rule out the logical backup tools as
 the migration path:
 
-- **Vault uses `storage "file"`** (`docker/vault/vault.hcl`), not
-  raft, so `vault operator raft snapshot` doesn't work. The only way
-  to move Vault is to copy its storage volume.
+- **Vault and MySQL must move together, at one consistent point.**
+  Vault now uses raft storage (Phase 3d cycle 5), so a raft snapshot
+  can capture Vault on its own. But a snapshot taken separately from
+  the MySQL copy can disagree with it, for example on cert serials
+  issued in between. Copying both stopped volumes avoids that.
 - **The encrypted DB dump can only be decrypted by *this* Vault.**
   `wg-manager db backup --encrypt` wraps its data key with Vault
   Transit. Without the same Vault, the dump is unreadable.
@@ -41,7 +43,8 @@ won't restore onto a different commit or compose project name.
 | Item | Carried by | Notes |
 |---|---|---|
 | `wg_manager_mysql_data` volume | `host-export` | Every row. |
-| `wg_manager_vault_data` volume | `host-export` | PKI, SSH CA, Transit key. Losing it breaks trust with every managed host. |
+| `wg_manager_vault_raft` volume | `host-export` | The live Vault (raft storage): PKI, SSH CA, Transit key. Losing it breaks trust with every managed host. |
+| `wg_manager_vault_data` volume | `host-export` | Pre-raft file storage, kept as the rollback copy ([`vault-raft-migration.md`](vault-raft-migration.md)). |
 | `wg_manager_vault_audit_logs` volume | `host-export` | Audit trail. |
 | `.env.prod`, `vault-init.json`, `tls/`, `backups/` | `host-export` (`files.tar`) | `vault-init.json` holds the unseal keys for *that* Vault data. The two only work together. |
 | `wg_manager_valkey_data` volume | **not moved** | Celery queue only. Drain it in step 2 and it rebuilds empty. |

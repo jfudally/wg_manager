@@ -363,7 +363,8 @@ visible.
 |---|---|---|
 | `wg_manager_mysql_data` | mysql | Schema + all rows. **Back this up.** |
 | `wg_manager_valkey_data` | valkey | Celery broker queue (transient — ok to rebuild). |
-| `wg_manager_vault_data` | vault | **Vault file storage backend** — PKI hierarchy, SSH CA keypair, Transit master key, every secret the substrate engines hold. **Back this up.** |
+| `wg_manager_vault_raft` | vault | **Vault raft storage** — PKI hierarchy, SSH CA keypair, Transit master key, every secret the substrate engines hold. **Back this up.** |
+| `wg_manager_vault_data` | vault | Pre-raft Vault file storage. Not written since the raft migration; the rollback copy ([`vault-raft-migration.md`](../runbooks/vault-raft-migration.md)). Empty on hosts that started on raft. |
 | `wg_manager_vault_audit_logs` | vault, vector | Vault file audit device output. |
 
 Three operator-managed files on the host:
@@ -389,7 +390,10 @@ The box rebooting brings the stack back up unattended provided:
    `/v1/sys/unseal` until threshold is met. No operator action
    required. State (PKI hierarchy, SSH CA keypair, Transit master
    key, audit device) is preserved across restarts because Vault
-   uses **file storage**, not in-memory.
+   uses **raft storage**, not in-memory. Hosts set up before Phase
+   3d cycle 5 used file storage and convert once with
+   `make vault-migrate-raft`
+   ([`vault-raft-migration.md`](../runbooks/vault-raft-migration.md)).
 
 ### Known limitations (vs. fully production-ready)
 
@@ -431,11 +435,13 @@ with the dev `.env` settings and can't reach this stack's MySQL.
 The dump can only be decrypted by this stack's Vault, so it's a guard
 against bad data or a bad migration, not against losing the host.
 
-Encrypted DB dumps go in `backups/`. `make backup-vault` doesn't work
-against this stack: its Vault uses `storage "file"`, which has no raft
-snapshots. To capture Vault, stop the stack and copy the
-`wg_manager_vault_data` volume together with `vault-init.json`.
-`make host-export` does exactly that.
+Encrypted DB dumps go in `backups/`. This stack's Vault uses raft
+storage, so `vault operator raft snapshot save` works against it.
+`make backup-vault` doesn't yet: it targets the dev stack and dev
+token. A prod snapshot target arrives with the warm-standby work
+(Phase 3d cycle 5c). Until then, the full capture is a stopped-stack
+copy of the Vault volumes together with `vault-init.json`, which is
+what `make host-export` does.
 
 ### Moving to a new host
 

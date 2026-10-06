@@ -105,6 +105,22 @@ echo "    state: initialized=${initialized} sealed=${sealed}"
 # ----- State #1: Uninitialized. Run `vault operator init`. Write
 #       the JSON output to ${VAULT_INIT_FILE} (umask 077 → 0600).
 if [[ "${initialized}" == "False" ]]; then
+    # An uninitialized Vault next to a NON-EMPTY init file is not a
+    # first boot: the storage this file's keys belong to is missing
+    # (raft migration skipped, wrong volume, `down -v`). Initializing
+    # would overwrite the only copy of the real Vault's unseal keys +
+    # root token and mint a new SSH CA no managed host trusts. Stop.
+    # (`make prod-up` touches an EMPTY file before first boot, so -s
+    # still lets a genuine first init through.)
+    if [[ -s "${VAULT_INIT_FILE}" ]]; then
+        echo "ERROR: Vault reports uninitialized, but ${VAULT_INIT_FILE} already" >&2
+        echo "       holds keys for an existing Vault. Refusing to re-init." >&2
+        echo "       If this host predates raft storage, stop the stack and run" >&2
+        echo "       'make vault-migrate-raft' (docs/runbooks/vault-raft-migration.md)." >&2
+        echo "       Otherwise restore the Vault volume from backup. Only if you" >&2
+        echo "       really mean to start a NEW Vault, move ${VAULT_INIT_FILE} aside." >&2
+        exit 1
+    fi
     echo "==> Vault is uninitialized — running operator init (key-shares=${VAULT_KEY_SHARES}, key-threshold=${VAULT_KEY_THRESHOLD})..."
     # The HTTP API equivalent of `vault operator init -format=json`:
     # POST /v1/sys/init with the share / threshold knobs.

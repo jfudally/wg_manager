@@ -10,6 +10,28 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Prod Vault now uses raft storage** (Phase 3d cycle 5a, the first
+  step toward a warm standby). `docker/vault/vault.hcl` switches from
+  `storage "file"` to `storage "raft"` on a new `wg_manager_vault_raft`
+  volume. That makes `vault operator raft snapshot save/restore`
+  available, which is how the standby host will stay current.
+  **Existing prod hosts must migrate once before `make prod-up`:**
+  `make prod-down`, then `make vault-migrate-raft`, then `make
+  prod-up`. Full procedure, verification and rollback are in
+  `docs/runbooks/vault-raft-migration.md`. The migration never writes
+  to the old file volume, so rolling back means reverting `vault.hcl`.
+  `make host-export` now also carries the raft volume.
+
+### Fixed
+
+- **`prod-up` can no longer silently replace an existing Vault.** If
+  Vault came up empty (missing volume, skipped migration, `down -v`),
+  `scripts/vault_init_unseal.sh` used to run `vault operator init` and
+  overwrite `vault-init.json`. That destroyed the only copy of the real
+  Vault's unseal keys and root token, and minted an SSH CA that no
+  managed host trusts. It now refuses whenever `vault-init.json`
+  already holds keys, and points at the raft migration runbook.
+
 ## [v0.8.0] - 2026-10-05
 
 ### Added

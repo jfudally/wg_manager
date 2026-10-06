@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -67,6 +67,7 @@ help:
 	@echo "  host-export o=DIR  Bundle the STOPPED prod stack's volumes + secrets for a host move (docs/runbooks/host-migration.md)"
 	@echo "  host-import i=DIR  Restore a host-export bundle onto this host (refuses to overwrite existing state)"
 	@echo "  db-counts      Print exact per-table row counts from the prod MySQL (diff before/after a host move)"
+	@echo "  vault-migrate-raft  One-shot: convert the STOPPED prod Vault from file to raft storage (docs/runbooks/vault-raft-migration.md)"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
 	@echo "  npm-audit      Run npm audit --omit=dev against the dashboard deps"
@@ -253,6 +254,12 @@ host-import:
 
 db-counts:
 	@COMPOSE_BASE="$(PROD_COMPOSE_BASE)" scripts/migrate_host.sh counts
+
+# One-shot file -> raft storage conversion for a prod Vault that predates
+# Phase 3d cycle 5. Stack must be stopped. See
+# docs/runbooks/vault-raft-migration.md.
+vault-migrate-raft:
+	@COMPOSE_BASE="$(PROD_COMPOSE_BASE)" scripts/vault_migrate_raft.sh
 
 migrate:
 	$(ALEMBIC) upgrade head

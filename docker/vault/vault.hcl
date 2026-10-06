@@ -5,7 +5,7 @@
 # Replaces the dev compose's `vault server -dev` (in-memory + auto-
 # unsealed + fixed root token) with a real production posture:
 #
-#   * File storage backend → Vault data persists across container
+#   * Raft storage backend → Vault data persists across container
 #     restarts. The dev-mode regression class (CA keypair regenerated
 #     on every `docker restart vault`, breaking every host that had
 #     `bootstrap-host` install the old CA pubkey) is closed.
@@ -40,13 +40,26 @@
 #     from a local `vault-init.json` — documented limitation.
 # ===========================================================================
 
-# Storage: file backend persists Vault state across container
-# restarts. The compose overlay mounts the `wg_manager_vault_data`
-# named volume at `/vault/file` — losing that volume means losing
-# Vault (recoverable from `vault operator raft snapshot` backups if
-# the operator set them up; see docs/runbooks/backup-restore.md).
-storage "file" {
-  path = "/vault/file"
+# Storage: integrated raft storage (Phase 3d cycle 5). Persists Vault
+# state across container restarts like the old file backend did, and
+# adds `vault operator raft snapshot save/restore` — the mechanism the
+# warm-standby node uses to stay current. The compose overlay mounts
+# the `wg_manager_vault_raft` named volume at `/vault/raft`; losing it
+# means losing Vault unless a raft snapshot exists
+# (docs/runbooks/backup-restore.md).
+#
+# Hosts that ran the pre-raft file backend convert ONCE, offline, with
+# `make vault-migrate-raft` (docs/runbooks/vault-raft-migration.md).
+# The old `wg_manager_vault_data` volume stays mounted at /vault/file
+# but is never written again — it's the rollback copy.
+#
+# node_id must match docker/vault/migrate-raft.hcl: the migration
+# records raft membership under that id. It's the same on every host
+# because each host is its own single-node cluster; the standby gets
+# its data by snapshot restore, never by joining.
+storage "raft" {
+  path    = "/vault/raft"
+  node_id = "wg-manager-vault"
 }
 
 # Listener: cleartext HTTP on the docker-network. mTLS is enforced
@@ -63,8 +76,8 @@ listener "tcp" {
 # redirects (rare in single-node, would matter on HA).
 api_addr = "http://vault:8200"
 
-# Cluster addr is irrelevant for a single-node deploy but Vault
-# logs a warning if it's unset.
+# Cluster addr: raft refuses to start without one, even on a
+# single node. Must match docker/vault/migrate-raft.hcl.
 cluster_addr = "http://vault:8201"
 
 # UI on. Tiny operational win for operators inspecting state.

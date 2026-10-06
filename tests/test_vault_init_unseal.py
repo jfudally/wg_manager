@@ -22,8 +22,11 @@ up uses the existing keys to unseal).
 
 from __future__ import annotations
 
+import json
 import os
 import stat
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -201,3 +204,127 @@ class TestUnsealStep:
             "${VAULT_INIT_FILE} (the `unseal_keys_b64` or "
             "`unseal_keys_hex` field) on a sealed restart."
         )
+
+
+# ---------------------------------------------------------------------------
+# Behavioural tests against a fake Vault HTTP API.
+# ---------------------------------------------------------------------------
+
+
+class _FakeVault:
+    """Tiny in-thread HTTP server speaking the four Vault endpoints the
+    script touches (sys/health, sys/init, sys/seal-status, sys/unseal).
+
+    It starts uninitialized + sealed. ``puts`` records every PUT path
+    so tests can assert whether ``sys/init`` was called.
+    """
+
+    def __init__(self) -> None:
+        import http.server
+        import threading
+
+        self.initialized = False
+        self.sealed = True
+        self.puts: list[str] = []
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_args) -> None:  # silence test output
+                pass
+
+            def _json(self, code: int, body: dict) -> None:
+                data = json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:
+                if self.path.startswith("/v1/sys/health"):
+                    self._json(501 if not fake.initialized else 503, {})
+                elif self.path == "/v1/sys/init":
+                    self._json(200, {"initialized": fake.initialized})
+                elif self.path == "/v1/sys/seal-status":
+                    self._json(200, {"sealed": fake.sealed, "t": 3, "progress": 0})
+                else:
+                    self._json(404, {})
+
+            def do_PUT(self) -> None:
+                length = int(self.headers.get("Content-Length", 0))
+                self.rfile.read(length)
+                fake.puts.append(self.path)
+                if self.path == "/v1/sys/init":
+                    fake.initialized = True
+                    self._json(200, {"keys_base64": ["k1", "k2", "k3"], "root_token": "new-root"})
+                elif self.path == "/v1/sys/unseal":
+                    fake.sealed = False
+                    self._json(200, {"sealed": False, "progress": 0})
+                else:
+                    self._json(404, {})
+
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        self.addr = f"http://127.0.0.1:{self.server.server_port}"
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+
+
+@pytest.fixture
+def fake_vault():
+    fv = _FakeVault()
+    yield fv
+    fv.close()
+
+
+def _run_script(fake_vault: _FakeVault, init_file: Path) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        "VAULT_ADDR": fake_vault.addr,
+        "VAULT_INIT_FILE": str(init_file),
+        "PYTHON": sys.executable,
+    }
+    return subprocess.run(
+        ["bash", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=30
+    )
+
+
+class TestRefusesToReinitialize:
+    """An uninitialized Vault next to a non-empty vault-init.json means
+    the storage went missing (skipped raft migration, wrong volume,
+    `down -v`), not a first boot. Initializing would overwrite the only
+    copy of the real Vault's unseal keys + root token and mint a new
+    SSH CA that no managed host trusts. The script must stop instead.
+    """
+
+    def test_refuses_when_init_file_has_keys(
+        self, fake_vault: _FakeVault, tmp_path: Path
+    ) -> None:
+        init_file = tmp_path / "vault-init.json"
+        original = '{"unseal_keys_b64": ["old"], "root_token": "old-root"}'
+        init_file.write_text(original)
+
+        proc = _run_script(fake_vault, init_file)
+
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+        assert "/v1/sys/init" not in fake_vault.puts, "must not call sys/init"
+        assert init_file.read_text() == original, "init file was overwritten"
+        assert "vault-migrate-raft" in proc.stderr, (
+            "the refusal must point the operator at the raft migration"
+        )
+
+    def test_initializes_when_init_file_is_empty(
+        self, fake_vault: _FakeVault, tmp_path: Path
+    ) -> None:
+        # First-ever prod-up: the Makefile touches an empty file so the
+        # bind mount is a file, not a directory. That must still init.
+        init_file = tmp_path / "vault-init.json"
+        init_file.write_text("")
+
+        proc = _run_script(fake_vault, init_file)
+
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "/v1/sys/init" in fake_vault.puts
+        assert json.loads(init_file.read_text())["root_token"] == "new-root"

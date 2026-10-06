@@ -563,6 +563,32 @@ class TestDataTierOverrides:
             f"{key}={val!r}."
         )
 
+    def test_vault_mounts_raft_volume(
+        self, services: dict, overlay_doc: dict
+    ) -> None:
+        # vault.hcl's raft storage writes to /vault/raft. Without a
+        # named volume there, every container recreate would start an
+        # empty Vault and bootstrap-substrate would re-init it.
+        volumes = [str(v) for v in services["vault"].get("volumes", []) or []]
+        assert "wg_manager_vault_raft:/vault/raft" in volumes, (
+            "vault must mount wg_manager_vault_raft at /vault/raft; "
+            f"got volumes={volumes!r}."
+        )
+        assert "wg_manager_vault_raft" in (overlay_doc.get("volumes") or {}), (
+            "docker-compose.prod.yml must declare the "
+            "wg_manager_vault_raft volume."
+        )
+
+    def test_vault_keeps_legacy_file_volume(self, services: dict) -> None:
+        # The pre-raft file storage stays mounted (and untouched) so
+        # `make vault-migrate-raft` can read it and a rollback is just
+        # reverting vault.hcl.
+        volumes = [str(v) for v in services["vault"].get("volumes", []) or []]
+        assert "wg_manager_vault_data:/vault/file" in volumes, (
+            "vault must keep wg_manager_vault_data at /vault/file — "
+            "it is the migration source and the rollback copy."
+        )
+
     def test_vault_keeps_audit_log_mount(self, services: dict) -> None:
         # The Phase 2e audit cycle 1 volume mount (the vector sidecar
         # tails this) must survive the prod overlay — losing it would

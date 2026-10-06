@@ -3,11 +3,12 @@
 The prod overlay swaps the dev compose's ``vault server -dev`` for
 ``vault server -config=/vault/config/vault.hcl``. The dev `-dev` mode
 is in-memory + auto-unsealed + ships a fixed root token; the file
-under test runs a real Vault with **file storage**, a TCP listener
+under test runs a real Vault with **raft storage**, a TCP listener
 on the docker network, and a UI on. State persists across container
 restarts (no more "every `make prod-down -v` regenerates the SSH CA
 keypair and breaks bootstrap-host-installed targets" — the class of
-bug that motivated this rewrite).
+bug that motivated this rewrite), and raft snapshots feed the warm
+standby (Phase 3d cycle 5).
 
 Pure parse-and-assert: walks the HCL text rather than spinning up
 Vault. Live behaviour is exercised by the rv.vpn end-to-end smoke.
@@ -35,39 +36,57 @@ def hcl_body() -> str:
 
 
 class TestStorageBackend:
-    """Vault must use file storage so state survives container
-    restarts. Without persistence, every restart wipes the SSH CA
-    keypair and bootstrap-host-installed target hosts stop trusting
-    the running api — the exact bug class that motivated this work.
+    """Vault must use integrated (raft) storage.
+
+    Raft keeps the persistence file storage gave us (no CA keypair
+    regenerated on restart) and adds ``vault operator raft snapshot
+    save/restore`` — the mechanism the warm-standby node uses to stay
+    current (Phase 3d cycle 5). File storage can't be snapshotted.
     """
 
-    def test_uses_file_storage(self, hcl_body: str) -> None:
-        # The block shape is `storage "file" { path = "..." }`.
+    def test_uses_raft_storage(self, hcl_body: str) -> None:
         assert re.search(
-            r"^\s*storage\s+\"file\"\s*\{",
+            r"^\s*storage\s+\"raft\"\s*\{",
             hcl_body,
             re.MULTILINE,
         ), (
-            "vault.hcl must declare `storage \"file\" { ... }` so "
-            "Vault data persists across container restarts. Without "
-            "this, the dev-mode bug class (CA regenerated on every "
-            "restart → target hosts trust the wrong CA) comes back."
+            "vault.hcl must declare `storage \"raft\" { ... }` so the "
+            "standby node can be fed raft snapshots."
         )
 
-    def test_file_storage_path_under_vault_data_volume(
+    def test_no_file_storage(self, hcl_body: str) -> None:
+        # Two storage stanzas is a Vault config error, and a leftover
+        # file stanza means the server would ignore the raft data.
+        assert not re.search(
+            r"^\s*storage\s+\"file\"", hcl_body, re.MULTILINE
+        ), "vault.hcl must not keep a `storage \"file\"` stanza."
+
+    def test_raft_path_is_dedicated_volume(self, hcl_body: str) -> None:
+        # Raft gets its own volume (wg_manager_vault_raft at
+        # /vault/raft) so the legacy file-storage volume stays
+        # untouched — rollback is "revert vault.hcl".
+        assert re.search(r"path\s*=\s*\"/vault/raft\"", hcl_body), (
+            "raft storage must write to /vault/raft — the mount point "
+            "of the dedicated wg_manager_vault_raft volume."
+        )
+
+    def test_raft_node_id_matches_migrate_config(
         self, hcl_body: str
     ) -> None:
-        # The compose overlay mounts `wg_manager_vault_data` at
-        # `/vault/file`. The HCL must write to a path under that
-        # mount so the persistence is actually persistent.
+        # `vault operator migrate` records raft membership under the
+        # node_id in its own config. The server must boot with the
+        # same id or it won't find itself in the voter list.
         assert re.search(
-            r"path\s*=\s*\"/vault/file\"?",
+            r"node_id\s*=\s*\"wg-manager-vault\"", hcl_body
+        ), "raft storage must pin node_id = \"wg-manager-vault\"."
+
+    def test_cluster_addr_set(self, hcl_body: str) -> None:
+        # Raft refuses to start without a cluster_addr.
+        assert re.search(
+            r"^\s*cluster_addr\s*=\s*\"http://vault:8201\"",
             hcl_body,
-        ), (
-            "vault.hcl's `storage \"file\" { path = ... }` must "
-            "point at `/vault/file` — the bind-mount path the prod "
-            "overlay's `wg_manager_vault_data` volume already uses."
-        )
+            re.MULTILINE,
+        ), "raft storage needs cluster_addr = \"http://vault:8201\"."
 
 
 class TestListener:
