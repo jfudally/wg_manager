@@ -28,6 +28,11 @@ services:
     #   relay-log-recovery=ON       crash-safe replica: after an unclean
     #                               stop, discard the possibly-torn relay
     #                               log and re-fetch from the source.
+    #   relay-log=relay-bin         fixed relay-log name. The default
+    #                               derives from the hostname, i.e. the
+    #                               container ID, so a RECREATED container
+    #                               can't find its relay logs and mysqld
+    #                               fails to start (found in the 5d drill).
     #
     # Deliberately NOT a flag: super-read-only. Under it, the image's
     # first-boot init can't set the root password or create the database
@@ -47,3 +52,4 @@ services:
       - "--enforce-gtid-consistency=ON"
       - "--binlog-expire-logs-seconds=604800"
       - "--relay-log-recovery=ON"
+      - "--relay-log=relay-bin"
