@@ -40,6 +40,9 @@ PROJECT = "wg_manager"
 STATEFUL_KEYS = (
     "wg_manager_mysql_data",
     "wg_manager_vault_data",
+    # Raft storage (Phase 3d cycle 5). The legacy file volume above is
+    # still carried: it's the rollback copy until it's retired.
+    "wg_manager_vault_raft",
     "wg_manager_vault_audit_logs",
 )
 ALL_KEYS = (*STATEFUL_KEYS, "wg_manager_valkey_data")

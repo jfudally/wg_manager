@@ -4,9 +4,9 @@
 # Entry point for ``make host-export`` / ``make host-import`` /
 # ``make db-counts``; the procedure is docs/runbooks/host-migration.md.
 #
-# Why a cold volume copy: Vault runs ``storage "file"`` (no raft
-# snapshots), and the encrypted DB dump can only be unwrapped by *this*
-# Vault's Transit key. So the only lossless move is a byte-for-byte copy
+# Why a cold volume copy: it moves Vault (raft storage since Phase 3d
+# cycle 5) and MySQL together at one consistent point, and the
+# encrypted DB dump can only be unwrapped by *this* Vault's Transit key. So the only lossless move is a byte-for-byte copy
 # of the stopped volumes plus the operator files that unlock them.
 #
 #   export DIR   Source host, stack stopped. Writes into DIR:
@@ -40,7 +40,9 @@ HELPER_IMAGE="${HELPER_IMAGE:-alpine:3.20}"
 # Every volume key in the compose config must be in exactly one list, so
 # a volume added later fails the export loudly instead of being left
 # behind on the old host.
-MIGRATE_VOLUMES=(wg_manager_mysql_data wg_manager_vault_data wg_manager_vault_audit_logs)
+# wg_manager_vault_raft is the live Vault; wg_manager_vault_data is the
+# pre-raft file storage, carried as the rollback copy until it is retired.
+MIGRATE_VOLUMES=(wg_manager_mysql_data wg_manager_vault_data wg_manager_vault_raft wg_manager_vault_audit_logs)
 # Valkey holds only the Celery queue; drained before export, rebuilt empty.
 SKIP_VOLUMES=(wg_manager_valkey_data)
 

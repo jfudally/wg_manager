@@ -174,12 +174,14 @@ services:
       # The production HCL config — read-only so a compromised
       # Vault can't rewrite its own storage path or listener addr.
       - ./docker/vault/vault.hcl:/vault/config/vault.hcl:ro
-      # File storage backend writes here. `wg_manager_vault_data`
-      # is what carries Vault state across container restarts —
-      # losing this volume means losing every secret Vault holds
-      # (recoverable via `vault operator raft snapshot` if the
-      # operator set up periodic snapshots; see
-      # docs/runbooks/backup-restore.md).
+      # Raft storage (Phase 3d cycle 5) writes here.
+      # `wg_manager_vault_raft` carries Vault state across container
+      # restarts — losing it means losing every secret Vault holds
+      # unless a raft snapshot exists (docs/runbooks/backup-restore.md).
+      - wg_manager_vault_raft:/vault/raft
+      # Pre-raft file storage. Never written once vault.hcl uses raft;
+      # kept mounted as the `make vault-migrate-raft` source and the
+      # rollback copy (docs/runbooks/vault-raft-migration.md).
       - wg_manager_vault_data:/vault/file
       # Audit log volume — keeps the Phase 2e cycle 1 vector-
       # sidecar flow working.
@@ -688,13 +690,11 @@ services:
       - "${WG_MANAGER_WEB_BIND_ADDR:-0.0.0.0}:${WG_MANAGER_WEB_BIND_PORT:-3000}:3100"
 
 # ===========================================================================
-# Volume declarations — the overlay adds one new volume reserved for
-# the Phase 2e production-Vault cycle.
+# Volume declarations — the overlay adds the two Vault storage volumes.
 # ===========================================================================
 volumes:
-  # Reserved for Vault file storage when the Phase 2e production-Vault
-  # cycle swaps `server -dev` for `server -config=/vault/config/vault.hcl`.
-  # Today the volume is mounted but unused (dev mode ignores it).
-  # Pre-declaring lets the operator know the volume name they'll need
-  # to back up once the file-storage flip lands.
+  # Pre-raft Vault file storage. Read-only in practice since the raft
+  # flip: the migration source and the rollback copy.
   wg_manager_vault_data:
+  # Vault raft storage (Phase 3d cycle 5) — the live Vault.
+  wg_manager_vault_raft:

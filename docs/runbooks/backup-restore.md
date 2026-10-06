@@ -30,12 +30,15 @@ Companion docs:
   the stack to a new machine. Use that runbook, not this one:
   it copies the stopped volumes byte-for-byte.
 
-> **Single-host Compose stack (`make prod-up`):** its Vault uses
-> `storage "file"`, not raft, so the `vault operator raft snapshot`
-> commands below don't work against it. Back up that Vault by copying
-> the stopped `wg_manager_vault_data` volume (`make host-export` does
-> this, see [`host-migration.md`](host-migration.md)), together with
-> `vault-init.json`.
+> **Single-host Compose stack (`make prod-up`):** its Vault uses raft
+> storage since Phase 3d cycle 5, so the `vault operator raft snapshot`
+> commands below work when run inside the `vault` container. Hosts set
+> up earlier must first run `make vault-migrate-raft`
+> ([`vault-raft-migration.md`](vault-raft-migration.md)). A snapshot
+> is only useful together with `vault-init.json`, which holds that
+> Vault's unseal keys. For a copy of Vault *and* MySQL taken at one
+> consistent point, use `make host-export` on the stopped stack
+> ([`host-migration.md`](host-migration.md)).
 
 ---
 
