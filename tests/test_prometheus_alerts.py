@@ -15,6 +15,8 @@ These tests pin the file's shape so a hand-edit can't drop a rule.
 
 from __future__ import annotations
 
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -138,3 +140,75 @@ class TestHostCertRotationAlerts:
         assert rule["annotations"]["runbook"].startswith(
             "docs/deploy/single-host-prod.md"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3d cycle 5e — warm-standby rules.
+# ---------------------------------------------------------------------------
+
+STANDBY_ALERTS = (
+    "WgStandbyReplicationBroken",
+    "WgStandbyReplicationLagging",
+    "WgStandbyBundleStale",
+    "WgStandbyCodeDrift",
+    "WgStandbyMetricsStale",
+    "WgStandbyDrillFailed",
+    "WgStandbyDrillOverdue",
+)
+PROMTOOL_IMAGE = "prom/prometheus:v3.5.0"
+RULES_TEST = REPO_ROOT / "docs" / "observability" / "prometheus-alerts.test.yaml"
+
+
+def _standby_rules(alerts: dict) -> list[dict]:
+    for group in alerts.get("groups", []) or []:
+        if group.get("name") == "wg-manager.standby":
+            return group.get("rules", []) or []
+    return []
+
+
+class TestStandbyAlerts:
+    def test_group_has_every_rule(self, alerts: dict) -> None:
+        names = {r.get("alert") for r in _standby_rules(alerts)}
+        assert names == set(STANDBY_ALERTS)
+
+    def test_rules_use_standby_metrics_and_never_absent(self, alerts: dict) -> None:
+        # absent() would fire on every single-host install, which has no
+        # standby series at all.
+        for rule in _standby_rules(alerts):
+            assert "wg_manager_standby_" in rule["expr"], rule["alert"]
+            assert "absent(" not in rule["expr"], rule["alert"]
+
+    def test_labels_and_runbook(self, alerts: dict) -> None:
+        for rule in _standby_rules(alerts):
+            assert rule["labels"]["component"] == "standby", rule["alert"]
+            assert rule["labels"]["severity"] in ("warning", "critical"), rule["alert"]
+            assert rule["annotations"]["runbook"].startswith("docs/"), rule["alert"]
+
+    def test_broken_replication_is_critical(self, alerts: dict) -> None:
+        rule = next(r for r in _standby_rules(alerts) if r["alert"] == "WgStandbyReplicationBroken")
+        assert rule["labels"]["severity"] == "critical"
+
+
+def _promtool_available() -> bool:
+    if not shutil.which("docker"):
+        return False
+    probe = subprocess.run(
+        ["docker", "image", "inspect", PROMTOOL_IMAGE], capture_output=True, check=False
+    )
+    return probe.returncode == 0
+
+
+@pytest.mark.skipif(not _promtool_available(), reason=f"needs docker + {PROMTOOL_IMAGE}")
+def test_promtool_check_and_unit_tests() -> None:
+    """The real promtool, via scripts/alerts_check.sh (= `make alerts-check`)."""
+    import sys
+
+    assert RULES_TEST.is_file()
+    proc = subprocess.run(
+        ["bash", str(REPO_ROOT / "scripts" / "alerts_check.sh")],
+        env={**__import__("os").environ, "PYTHON": sys.executable,
+             "PROMTOOL_IMAGE": PROMTOOL_IMAGE},
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "SUCCESS" in proc.stdout

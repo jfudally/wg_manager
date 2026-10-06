@@ -82,6 +82,21 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
     answers as a writable primary. It refuses, naming the transactions,
     if this host has writes HOST never received.
 
+- **Alerting and a weekly drill for the warm standby** (Phase 3d
+  cycle 5e). Setup is in `docs/observability.md` → Warm standby and
+  `docs/deploy/systemd-timer.md`.
+  - **Metrics:** `make standby-metrics` (every minute) writes
+    `wg_manager_standby_*` metrics as a node_exporter textfile.
+  - **Alerts:** the new `wg-manager.standby` rule group in
+    `docs/observability/prometheus-alerts.yaml` covers replication
+    broken or lagging, a stale bundle, code drift, stale metrics, and
+    a failed or overdue drill.
+  - **Drill:** `make standby-drill` (weekly) restores the latest Vault
+    snapshot into an isolated throwaway Vault through the failover
+    restore path, and checks replication.
+  - **Rule tests:** `make alerts-check` validates the rules and runs
+    their promtool unit tests. A new CI job runs it too.
+
 ### Changed
 
 - **The prod MySQL now runs with GTIDs on** (`--gtid-mode=ON`,
@@ -92,6 +107,11 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   so the default is unchanged.
 
 ### Fixed
+
+- **`make standby-up` now builds the wg-manager image.** Before,
+  nothing built it on a standby, so the first `make failover` had to
+  build it mid-outage, which takes minutes and needs network access to
+  the package indexes.
 
 - **The standby's MySQL replica no longer breaks when its container is
   recreated.** Relay-log names defaulted to the container's hostname,

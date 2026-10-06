@@ -160,3 +160,141 @@ groups:
             host's out-of-band SSH key and its recorded
             ``ssh_username``, then rotate the row.
           runbook: docs/deploy/single-host-prod.md#path-b--cli-for-scripted--ci-use
+
+  # ===================================================================
+  # Warm standby (Phase 3d cycle 5e).
+  #
+  # The standby runs no API, so these metrics come from a node_exporter
+  # textfile-collector file written every minute by `make standby-metrics`
+  # (docs/observability.md → Warm standby). They're timestamps, not ages,
+  # so `time() - x` keeps growing even if that timer dies.
+  #
+  # No rule uses absent(): a single-host install has no standby series at
+  # all and must stay quiet. Losing node_exporter itself makes every
+  # series go stale (nothing here fires), so keep your usual
+  # `up{job="node"} == 0` alert for the standby host.
+  #
+  # promtool unit tests: prometheus-alerts.test.yaml (`make alerts-check`).
+  # ===================================================================
+  - name: wg-manager.standby
+    interval: 1m
+    rules:
+      - alert: WgStandbyReplicationBroken
+        # A failover from here would lose everything since the break.
+        expr: >-
+          wg_manager_standby_replication_io_running == 0
+          or wg_manager_standby_replication_sql_running == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: standby
+        annotations:
+          summary: "Standby {{ $labels.instance }}: MySQL replication is not running"
+          description: |
+            The warm standby's MySQL replica on {{ $labels.instance }} is not
+            replicating. Run `make standby-status` there: Last_IO_Error /
+            Last_SQL_Error say why (primary down or unreachable, an expired
+            certificate, a diverged replica that needs re-seeding).
+          runbook: docs/runbooks/standby-replication.md#troubleshooting
+
+      - alert: WgStandbyReplicationLagging
+        expr: wg_manager_standby_replication_lag_seconds > 300
+        for: 10m
+        labels:
+          severity: warning
+          component: standby
+        annotations:
+          summary: "Standby {{ $labels.instance }}: replica {{ $value }}s behind"
+          description: |
+            The replica on {{ $labels.instance }} is more than 5 minutes
+            behind the primary. A failover now would lose that window.
+            Check the standby's disk and CPU and the link to the primary.
+          runbook: docs/runbooks/standby-replication.md#day-2
+
+      - alert: WgStandbyBundleStale
+        # No bundle at all, or the last one is over an hour old: the
+        # standby's Vault (and tls/, .env.prod) would be that old on
+        # failover.
+        expr: >-
+          wg_manager_standby_bundle_present == 0
+          or (time() - wg_manager_standby_bundle_created_timestamp_seconds) > 3600
+        for: 15m
+        labels:
+          severity: warning
+          component: standby
+        annotations:
+          summary: "Standby {{ $labels.instance }}: Vault bundle from the primary is stale"
+          description: |
+            The standby hasn't installed a fresh bundle from the primary in
+            over an hour. Check `systemctl status wg-manager-standby-pull.timer`
+            and `journalctl -u wg-manager-standby-pull` on {{ $labels.instance }}.
+          runbook: docs/runbooks/standby-replication.md#troubleshooting
+
+      - alert: WgStandbyCodeDrift
+        expr: wg_manager_standby_bundle_commit_drift == 1
+        for: 1h
+        labels:
+          severity: warning
+          component: standby
+        annotations:
+          summary: "Standby {{ $labels.instance }} runs a different commit than the primary"
+          description: |
+            A failover would run different code than the primary. Check out
+            the primary's commit on {{ $labels.instance }} (`make standby-status`
+            shows both), then `make standby-up` to rebuild its image.
+          runbook: docs/runbooks/standby-replication.md#day-2
+
+      - alert: WgStandbyMetricsStale
+        # The standby-metrics timer stopped; every other standby alert is
+        # blind until it runs again.
+        expr: (time() - wg_manager_standby_metrics_generated_timestamp_seconds) > 600
+        for: 5m
+        labels:
+          severity: warning
+          component: standby
+        annotations:
+          summary: "Standby {{ $labels.instance }}: metrics not refreshed for 10m"
+          description: |
+            `make standby-metrics` hasn't run on {{ $labels.instance }} for
+            over 10 minutes, so the other standby alerts can't see it. Check
+            `systemctl status wg-manager-standby-metrics.timer`.
+          runbook: docs/deploy/systemd-timer.md#warm-standby-metrics-and-drill-phase-3d-cycle-5e
+
+      - alert: WgStandbyDrillFailed
+        # The most recent drill failed: a real failover would probably
+        # fail the same way.
+        expr: >-
+          wg_manager_standby_drill_last_failure_timestamp_seconds
+            > on(instance) wg_manager_standby_drill_last_success_timestamp_seconds
+          or (wg_manager_standby_drill_last_failure_timestamp_seconds
+            unless on(instance) wg_manager_standby_drill_last_success_timestamp_seconds)
+        for: 1m
+        labels:
+          severity: warning
+          component: standby
+        annotations:
+          summary: "Standby {{ $labels.instance }}: the failover drill failed"
+          description: |
+            The last `make standby-drill` on {{ $labels.instance }} failed, so
+            a real failover would likely fail too. Run it by hand and read
+            the output: `journalctl -u wg-manager-standby-drill`.
+          runbook: docs/runbooks/failover.md#the-weekly-drill
+
+      - alert: WgStandbyDrillOverdue
+        # No successful drill in 8 days (the timer is weekly), or a
+        # standby that reports metrics but has never drilled.
+        expr: >-
+          (time() - wg_manager_standby_drill_last_success_timestamp_seconds) > 8 * 86400
+          or (wg_manager_standby_metrics_generated_timestamp_seconds
+            unless on(instance) wg_manager_standby_drill_last_success_timestamp_seconds)
+        for: 1h
+        labels:
+          severity: warning
+          component: standby
+        annotations:
+          summary: "Standby {{ $labels.instance }}: no successful failover drill in 8 days"
+          description: |
+            Nothing has proven the standby on {{ $labels.instance }} can take
+            over for over a week. Check `systemctl status
+            wg-manager-standby-drill.timer`, or run `make standby-drill` once.
+          runbook: docs/runbooks/failover.md#the-weekly-drill

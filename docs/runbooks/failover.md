@@ -43,6 +43,8 @@ Check these now, not during an outage:
   (firewalls, security groups, `sshd` `Match Address`).
 - [ ] Both hosts are on the **same commit** (`standby-status` reports
   `DRIFT` otherwise).
+- [ ] The weekly drill passes and the `wg-manager.standby` alerts are
+  loaded ([The weekly drill](#the-weekly-drill)).
 
 ---
 
@@ -83,10 +85,10 @@ current to the second.
 4. **Back on the old primary:** [rejoin](#rejoin-the-old-primary) it as
    the new standby.
 
-5. **Timers.** On the new primary, disable
-   `wg-manager-standby-pull.timer` and enable
-   `wg-manager-certs-rotate.timer`. On the new standby, do the reverse
-   ([`systemd-timer.md`](../deploy/systemd-timer.md)).
+5. **Timers.** On the new primary, disable the three standby timers
+   (`wg-manager-standby-pull`, `-standby-metrics`, `-standby-drill`)
+   and enable `wg-manager-certs-rotate.timer`. On the new standby, do
+   the reverse ([`systemd-timer.md`](../deploy/systemd-timer.md)).
 
 Failback (when `rv` should be primary again) is this same procedure in
 reverse.
@@ -219,6 +221,38 @@ the old primary took that never reached the new primary.
    ```
 
 ---
+
+## The weekly drill
+
+`make standby-drill` runs weekly on the standby, from
+`wg-manager-standby-drill.timer`. It proves the standby could take
+over, without touching anything real:
+
+1. **Vault.** It restores the latest shipped snapshot into a
+   **throwaway** Vault, using the same path `make failover` uses
+   (restore, restart, unseal with the shipped keys, check the
+   SSH/PKI/Transit engines). That throwaway Vault gets its own
+   internal Docker network and an anonymous volume, and is removed
+   afterwards. The standby's own compose project is only read, to
+   find the image names.
+2. **MySQL.** Replication must be running and within
+   `REPL_MAX_LAG_SECONDS`.
+
+Each run records its result in `standby/drill.last_success` or
+`standby/drill.last_failure`. `make standby-metrics` exports both,
+and the `WgStandbyDrillFailed` and `WgStandbyDrillOverdue` alerts
+watch them. A standby that reports metrics but has never drilled
+alerts after an hour, so run it once by hand at setup.
+
+**When it fails**, a real failover would most likely fail the same
+way. Read the output (`journalctl -u wg-manager-standby-drill`):
+
+| Output | Cause | Fix |
+|---|---|---|
+| *no Vault snapshot in standby/* | pulls aren't running | `make standby-pull`, check its timer |
+| *image wg-manager:prod is not built* | `standby-up` never ran on this commit | `make standby-up` (it builds the image) |
+| *the Vault restore failed* / *did not verify* | a damaged snapshot, or `vault-init.json` and the snapshot don't belong together | Run `make standby-pull` and re-run the drill. If it keeps failing, compare the primary's Vault with its own `vault-init.json`. |
+| *replication is not healthy* | see `make standby-status` | [`standby-replication.md`](standby-replication.md#troubleshooting) |
 
 ## If a step fails
 
