@@ -61,6 +61,27 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   Setup, including the forced-command SSH key on the primary, is in
   `docs/runbooks/standby-replication.md`.
 
+- **Failover to the warm standby** (Phase 3d cycle 5d). A switchover is
+  three commands; each can be re-run after a partial failure. The
+  procedure, including fencing and the DNS move, is in
+  `docs/runbooks/failover.md`.
+  - **`make demote`** (primary): removes the app containers and makes
+    MySQL read-only.
+  - **`make failover`** (standby): checks the primary's state over the
+    replication channel first.
+    - Still writable: refuses. There is no force flag.
+    - Demoted: takes a final bundle pull and waits for every primary
+      transaction, so nothing is lost.
+    - Unreachable: proceeds only with `confirm=primary-is-down`.
+
+    Then it restores Vault from the shipped snapshot with the new
+    `scripts/vault_restore.py`, flips the role, and brings the stack
+    up.
+  - **`make rejoin primary=HOST`** (old primary): turns it into a
+    replica of HOST without re-seeding. It does nothing unless HOST
+    answers as a writable primary. It refuses, naming the transactions,
+    if this host has writes HOST never received.
+
 ### Changed
 
 - **The prod MySQL now runs with GTIDs on** (`--gtid-mode=ON`,
@@ -71,6 +92,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   so the default is unchanged.
 
 ### Fixed
+
+- **The standby's MySQL replica no longer breaks when its container is
+  recreated.** Relay-log names defaulted to the container's hostname,
+  so after a recreate (image update, config change) mysqld couldn't
+  find its relay logs and failed to start. `docker-compose.standby.yml`
+  now pins `--relay-log=relay-bin`.
 
 - **`prod-up` can no longer silently replace an existing Vault.** If
   Vault came up empty (missing volume, skipped migration, `down -v`),

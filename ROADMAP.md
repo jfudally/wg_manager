@@ -1925,7 +1925,7 @@ Shipped:
   mode (was 901 on Phase 3b's close); vitest 57/57;
   ``tsc --noEmit`` clean.
 
-### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a–5c shipped)
+### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a–5d shipped)
 
 Two-replica FastAPI behind a load balancer; Celery workers
 horizontally scaled; MySQL primary + replica with failover.
@@ -2192,24 +2192,37 @@ behaviour in practice.
     caught installed snapshot files being world-readable (now 0600).
     Vault RPO = the 15-minute timer interval. That's plenty, since Vault
     data changes rarely (the CA and Transit keys essentially never).
-  - **5d `[ ]` — `make failover` / `make failback`.** On the standby:
-    fence first (refuse while the primary's API still answers, unless
-    forced; stop the primary's stack if reachable). Then promote the
-    replica, restore the latest Vault snapshot, unseal, re-mint the
-    API server cert with the shared DNS name in its SANs, and start
-    the full stack including beat. Print the DNS change for the
-    operator to make. The Vault restore needs a running, unsealed
-    Vault, so promotion first initializes a throwaway one. It has to
-    do that with a temporary init file: 5a's guard refuses to
-    initialize next to the shipped, non-empty `vault-init.json`. Then
-    it runs `raft snapshot restore -force` and unseals with the shipped
-    keys. The 5c drill proved this sequence. Promotion also sets `SET PERSIST
-    super_read_only=OFF`, flips `WG_MANAGER_ROLE`, and runs
-    `repl-primary-setup` on the new primary: `wg_repl` isn't in the
-    seed dump, which only covers the app database. Failback is the
-    same procedure in reverse once the old primary has been rebuilt as
-    a replica.
-  - **5e `[ ]` — Drill + alerting.** Failover/failback runbook,
+  - **5d `[x]` — promotion: `make demote` / `make failover` / `make
+    rejoin`.** Failback is the same switchover in reverse. `failover`
+    fences on the primary's state, seen over the replication channel:
+    - writable: refuse, with no force flag;
+    - demoted: final bundle pull, wait for every primary GTID, promote
+      with zero loss;
+    - unreachable: only with `confirm=primary-is-down`, promoting what
+      was received.
+
+    Then it restores Vault (`scripts/vault_restore.py`, the throwaway
+    init happening in memory), flips the role, `prod-up`,
+    `repl-primary-setup`. Every step resumes after a partial failure.
+    `rejoin` probes the new primary before touching anything, persists
+    read-only itself (an unplanned failover's old primary was never
+    demoted), and refuses, naming them, on errant GTIDs.
+
+    The full-lifecycle drill (two hosts; real MySQL 8.4, Vault and the
+    wg-manager image; real bootstrap-substrate) found:
+    - 5b's replica crashing when its container was recreated, because
+      relay-log names came from the container ID (now pinned);
+    - `rejoin` dead-ending after an unplanned failover (fixed as above);
+    - `promote` inferring "never seeded" from the table count instead
+      of the replication config;
+    - a freshly unsealed raft Vault rejecting the restore until it is
+      the active node (the script now waits for `sys/health` 200);
+    - after a restore, the *running* Vault keeping the old seal config
+      in memory and rejecting the snapshot's Shamir shares ("invalid
+      key size 33"). The 5a/5c drills missed it because both sides
+      used 1-of-1 keys. The restore is now restore → restart Vault →
+      unseal + verify.
+  - **5e `[ ]` — Drill + alerting.** (The failover runbook shipped with 5d.)
     Prometheus alerts on replication lag and snapshot age, and a
     scheduled failover drill.
 

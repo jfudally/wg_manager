@@ -133,6 +133,10 @@ class TestStandbyOverlay:
         # Crash-safe: discard a possibly-torn relay log on restart and
         # re-fetch from the source.
         assert f.get("relay-log-recovery") == "ON"
+        # Fixed relay-log name. The default derives from the hostname,
+        # i.e. the container ID, so a recreated container can't find its
+        # relay logs and mysqld fails to start (5d live drill).
+        assert f.get("relay-log") == "relay-bin"
 
     def test_primary_and_standby_share_binlog_retention(self, doc: dict) -> None:
         # After failover the standby IS the primary; its binlogs must be

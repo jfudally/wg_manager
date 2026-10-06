@@ -12,8 +12,8 @@ The **standby** (`general`) keeps two things current, so cycle 5d's
 
 Design and rationale:
 [`docs/deploy/ha-control-plane.md`](../deploy/ha-control-plane.md) →
-*Warm standby across hosts*. Not covered yet: promotion itself
-(cycle 5d).
+*Warm standby across hosts*. Promoting the standby, and bringing the
+old primary back, is in [`failover.md`](failover.md) (cycle 5d).
 
 > **The standby holds the primary's keys.** The pulled
 > `vault-init.json` plus `standby/vault.snap` are the whole Vault:
