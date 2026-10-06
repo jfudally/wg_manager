@@ -1925,7 +1925,7 @@ Shipped:
   mode (was 901 on Phase 3b's close); vitest 57/57;
   ``tsc --noEmit`` clean.
 
-### Phase 3d — HA control plane `[~]` (cycle 1 shipped)
+### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a shipped)
 
 Two-replica FastAPI behind a load balancer; Celery workers
 horizontally scaled; MySQL primary + replica with failover.
@@ -2110,6 +2110,71 @@ behaviour in practice.
   the read dep; ``/readyz`` extended to report replica reachability
   when configured. Compose primary→replica plumbing remains
   operator-provided.
+
+- **Cycle 5 `[~]`** — warm standby with manual failover. Goal: when
+  the prod host (first deployment: **rv**) is down, the control plane
+  keeps operating on a standby host (**general**), reached through a
+  DNS name the operator moves between them.
+
+  *Why manual, two nodes:* automatic failover needs a quorum. A raft
+  cluster and MySQL Group Replication each need 3 voters to survive
+  losing one, and two nodes can't fail over safely without risking
+  split-brain. Manual failover fits the real deadline easily. That
+  deadline is the SSH host-cert renewal window: managed hosts have
+  ≥12h left when the control plane stops (cycle 5d), and a promotion
+  takes minutes. Automatic 3-node failover stays a later option.
+
+  *Shape:* the primary runs the full stack. The standby runs a MySQL
+  replica and holds the primary's latest Vault raft snapshot plus its
+  `vault-init.json`, `.env.prod` and `tls/`. It runs **no** api,
+  worker or beat, so two `beat`s never race host-cert renewals.
+  `make failover` on the standby promotes it.
+
+  - **5a `[x]` — Vault raft storage.** `vault.hcl` moves from
+    `storage "file"` to `storage "raft"` on a new
+    `wg_manager_vault_raft` volume, because the standby stays current
+    via raft snapshots, which file storage can't produce. Existing
+    hosts convert once and offline with `make vault-migrate-raft`
+    (`docs/runbooks/vault-raft-migration.md`). The old file volume is
+    never written again, so rollback is just reverting `vault.hcl`.
+    `vault_init_unseal.sh` now refuses to initialize an empty Vault
+    when `vault-init.json` already holds keys. Before this, that
+    case silently re-initialized Vault: it overwrote the only copy of
+    the real unseal keys and minted a new SSH CA. Drilled live against
+    `hashicorp/vault:1.18`: migration, rollback, recovery from a
+    premature `prod-up`, and a snapshot restore into a separate Vault
+    (same SSH CA public key, and the primary's root token + unseal
+    keys apply after the restore).
+  - **5b `[ ]` — MySQL replication primary → standby.** GTID-based
+    async replica over the existing MySQL TLS, with a dedicated
+    replication user. A `make standby-up` profile on the standby runs
+    mysql (read-only replica) + vault (restored, sealed until
+    failover) and nothing else. `/readyz` / a metric reports
+    replication lag.
+  - **5c `[ ]` — Vault snapshot shipping.** A prod `make vault-snapshot`
+    (the existing `backup-vault` targets the dev stack) plus a systemd
+    timer on the primary that pushes the latest snapshot to the
+    standby over SSH. Shipped alongside: `vault-init.json`, `.env.prod`
+    and `tls/`. The restore drill showed the standby must hold the
+    *primary's* `vault-init.json`, not one of its own. RPO for Vault
+    = timer interval. Vault data changes rarely (the CA and Transit
+    keys essentially never), so 5–15 minutes is plenty.
+  - **5d `[ ]` — `make failover` / `make failback`.** On the standby:
+    fence first (refuse while the primary's API still answers, unless
+    forced; stop the primary's stack if reachable). Then promote the
+    replica, restore the latest Vault snapshot, unseal, re-mint the
+    API server cert with the shared DNS name in its SANs, and start
+    the full stack including beat. Print the DNS change for the
+    operator to make. Failback is the same procedure in reverse once
+    the old primary has been rebuilt as a replica.
+  - **5e `[ ]` — Drill + alerting.** Failover/failback runbook,
+    Prometheus alerts on replication lag and snapshot age, and a
+    scheduled failover drill.
+
+  *Operator prerequisites:* a DNS name for the control plane with a
+  low TTL; that name in `API_SERVER_SANS` and in enrollment userdata;
+  and managed hosts' SSH allowlists (firewalls, `sshd` `Match
+  Address`) admitting the standby's IP.
 
 ### Phase 3e — Helm chart / Terraform module `[ ]`
 

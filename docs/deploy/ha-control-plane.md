@@ -300,6 +300,42 @@ again.
   documented next to the `DATABASE_REPLICA_URL` setting once that
   lands.
 
+## Warm standby across hosts (Phase 3d cycle 5)
+
+Everything above makes the **app tier** replica-safe, but it all
+shares one MySQL, one Vault and one Valkey. On the single-host prod
+stack those live on the same box as the API, so losing the box loses
+the control plane. Cycle 5 adds a second host as a **warm standby
+with manual failover**:
+
+```
+   operators / enroll_node.sh ──► control-plane DNS name (low TTL)
+                                         │  moved by the operator
+                     ┌───────────────────┴──────────────────┐
+                     ▼                                      ▼
+          ┌─────────────────────┐                ┌─────────────────────┐
+          │ primary (rv)        │  MySQL repl.   │ standby (general)   │
+          │ full prod stack     │ ─────────────► │ mysql replica (RO)  │
+          │ api worker beat web │  Vault raft    │ latest Vault snap.  │
+          │ mysql vault valkey  │ ─────────────► │ no api/worker/beat  │
+          └─────────────────────┘  snapshots     └─────────────────────┘
+                                                   `make failover`
+                                                   promotes it
+```
+
+Why manual with two nodes: automatic failover needs a quorum. Raft
+and MySQL Group Replication each need 3 voters to survive losing one.
+The deadline that actually matters is the ~12h SSH host-cert renewal
+window (see [`host-migration.md`](../runbooks/host-migration.md#time-budget)),
+and a promotion takes minutes. The standby never runs `beat`, so two
+schedulers never race host-cert renewals.
+
+Shipped so far: **5a**, Vault on raft storage. Existing hosts convert
+with [`vault-raft-migration.md`](../runbooks/vault-raft-migration.md).
+The remaining cycles (MySQL replication, snapshot shipping,
+`make failover`, drill + alerts) are tracked in `ROADMAP.md` under
+Phase 3d cycle 5.
+
 ## What's next
 
 Phase 3d ships in cycles:
