@@ -15,6 +15,30 @@
 #                   server-id-1 (primary-flagged) mysqld, if replication
 #                   is already configured, if the local DB has tables,
 #                   or while app services run here.
+#   primary-state   On the STANDBY (cycle 5d). Probe the configured
+#                   source over the replication channel and print
+#                   state=writable|readonly|unreachable (+ host=, gtid=),
+#                   or state=not-a-replica (+ local_read_only=,
+#                   local_tables=). `make failover` fences on this.
+#   probe HOST      Anywhere (cycle 5d). Is HOST a writable primary? Prints
+#                   state=writable|readonly|unreachable (+ gtid=). Runs in
+#                   a ONE-OFF mysql container, so it works while this
+#                   host's own mysqld is down. `rejoin` gates on it.
+#   promote         On the STANDBY (cycle 5d). With WAIT_GTID, first wait
+#                   until every one of those (the demoted primary's)
+#                   transactions is applied here; then stop the IO
+#                   thread, apply everything already received, drop the
+#                   replication config and persist read-write. Re-running
+#                   on an already-promoted host is a no-op; an empty
+#                   (never seeded) database is refused.
+#   demote          On the PRIMARY (cycle 5d). Persist super_read_only=ON
+#                   and print gtid_executed.
+#   rejoin HOST     On the OLD PRIMARY after a failover (cycle 5d), running
+#                   with the standby flags. Persist read-only first (after
+#                   an unplanned failover it was never demoted), then
+#                   replicate from HOST without re-seeding, only if this
+#                   host has no transactions HOST lacks (GTID_SUBSET);
+#                   otherwise refuse, name them, and stay read-only.
 #   status          Replication health. Exit 0 healthy, 1 broken or not
 #                   configured, 2 lagging over REPL_MAX_LAG_SECONDS
 #                   (default 300), so a timer or monitor can call it.
@@ -70,6 +94,37 @@ check_repl_password() {
 TLS_CA=/etc/mysql/certs/ca.crt
 TLS_CERT=/etc/mysql/certs/client.crt
 TLS_KEY=/etc/mysql/certs/client.key
+# GTID sets as mysql -B prints them: strip the literal "\n" it puts
+# after each comma, and any whitespace.
+gtid_clean() { sed "s/\\\\n//g" | tr -d " \t\n"; }
+# Only GTID-set characters may be spliced into SQL.
+valid_gtid() { case "$1" in *[!0-9A-Za-z:,_-]*) return 1 ;; esac; }
+# Source host configured on this replica ("" when it is not one).
+source_host() { q "SELECT HOST FROM performance_schema.replication_connection_configuration WHERE CHANNEL_NAME = \"\""; }
+# Run one query on host $1 as wg_repl over mutual TLS.
+remote_q() {
+    MYSQL_PWD="$MYSQL_REPL_PASSWORD" mysql -h "$1" -u wg_repl --connect-timeout=5 \
+        --ssl-mode=VERIFY_IDENTITY --ssl-ca="$TLS_CA" --ssl-cert="$TLS_CERT" --ssl-key="$TLS_KEY" \
+        -N -B -e "$2"
+}
+# Point this server at $1 as its source and start replicating, with
+# mutual TLS (VERIFY_IDENTITY) and GTID auto-positioning. Shared by
+# `seed` and `rejoin`.
+start_replication_from() {
+    echo "==> Starting replication from $1 ..."
+    # Retry every 10s for ~10 days (binlogs are kept 7). MySQL'"'"'s defaults,
+    # 10 tries 60s apart, give up for good after a ~10 minute primary outage.
+    sql <<SQL
+CHANGE REPLICATION SOURCE TO
+  SOURCE_HOST='"'"'$1'"'"', SOURCE_PORT=3306,
+  SOURCE_USER='"'"'wg_repl'"'"', SOURCE_PASSWORD='"'"'$MYSQL_REPL_PASSWORD'"'"',
+  SOURCE_AUTO_POSITION=1,
+  SOURCE_CONNECT_RETRY=10, SOURCE_RETRY_COUNT=86400,
+  SOURCE_SSL=1, SOURCE_SSL_VERIFY_SERVER_CERT=1,
+  SOURCE_SSL_CA='"'"'$TLS_CA'"'"', SOURCE_SSL_CERT='"'"'$TLS_CERT'"'"', SOURCE_SSL_KEY='"'"'$TLS_KEY'"'"';
+START REPLICA;
+SQL
+}
 '
 
 # shellcheck disable=SC2016
@@ -122,20 +177,126 @@ fi
 echo "==> Loading the dump ..."
 sql < "$dump"
 
-echo "==> Starting replication from $PRIMARY ..."
-# Retry every 10s for ~10 days (binlogs are kept 7). MySQL'"'"'s defaults,
-# 10 tries 60s apart, give up for good after a ~10 minute primary outage.
-sql <<SQL
-CHANGE REPLICATION SOURCE TO
-  SOURCE_HOST='"'"'$PRIMARY'"'"', SOURCE_PORT=3306,
-  SOURCE_USER='"'"'wg_repl'"'"', SOURCE_PASSWORD='"'"'$MYSQL_REPL_PASSWORD'"'"',
-  SOURCE_AUTO_POSITION=1,
-  SOURCE_CONNECT_RETRY=10, SOURCE_RETRY_COUNT=86400,
-  SOURCE_SSL=1, SOURCE_SSL_VERIFY_SERVER_CERT=1,
-  SOURCE_SSL_CA='"'"'$TLS_CA'"'"', SOURCE_SSL_CERT='"'"'$TLS_CERT'"'"', SOURCE_SSL_KEY='"'"'$TLS_KEY'"'"';
-START REPLICA;
-SQL
+start_replication_from "$PRIMARY"
 echo "==> Seeded. Check with: make standby-status"
+'
+
+# shellcheck disable=SC2016
+PRIMARY_STATE='
+host="$(source_host)"
+if [ -z "$host" ]; then
+    ro="$(q "SELECT @@super_read_only")"
+    n="$(q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '"'"'$MYSQL_DATABASE'"'"'")"
+    echo "state=not-a-replica"
+    echo "local_read_only=$ro"
+    echo "local_tables=$n"
+    exit 0
+fi
+check_repl_password
+echo "host=$host"
+if out="$(remote_q "$host" "SELECT @@super_read_only, @@gtid_executed" 2>/dev/null)"; then
+    ro="$(printf "%s" "$out" | cut -f1)"
+    gtid="$(printf "%s" "$out" | cut -f2- | gtid_clean)"
+    if [ "$ro" = 1 ]; then echo "state=readonly"; else echo "state=writable"; fi
+    echo "gtid=$gtid"
+else
+    echo "state=unreachable"
+fi
+'
+
+# shellcheck disable=SC2016
+PROBE='
+check_repl_password
+if out="$(remote_q "$PROBE_HOST" "SELECT @@super_read_only, @@gtid_executed" 2>/dev/null)"; then
+    ro="$(printf "%s" "$out" | cut -f1)"
+    if [ "$ro" = 1 ]; then echo "state=readonly"; else echo "state=writable"; fi
+    echo "gtid=$(printf "%s" "$out" | cut -f2- | gtid_clean)"
+else
+    echo "state=unreachable"
+fi
+'
+
+# shellcheck disable=SC2016
+PROMOTE='
+wait_s="${PROMOTE_WAIT_SECONDS:-300}"
+rs="$(q "SHOW REPLICA STATUS")"
+if [ -z "$rs" ]; then
+    # Not a replica: either promoted by an earlier run (resume), or never
+    # seeded. A never-seeded standby is writable too, so tell them apart
+    # by its (empty) database.
+    ro="$(q "SELECT @@super_read_only")"
+    n="$(q "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '"'"'$MYSQL_DATABASE'"'"'")"
+    [ "$n" != 0 ] || die "this MySQL is not a replica and its $MYSQL_DATABASE database is empty — the standby was never seeded, so there is nothing to promote."
+    if [ "$ro" = 0 ]; then
+        echo "==> MySQL is already promoted (no replication source, writable) — nothing to do."
+        exit 0
+    fi
+    die "this MySQL has no replication source but is read-only — neither a replica nor promoted. See docs/runbooks/failover.md."
+fi
+if [ -n "${WAIT_GTID:-}" ]; then
+    valid_gtid "$WAIT_GTID" || die "malformed WAIT_GTID."
+    echo "==> Waiting until every transaction of the primary ($WAIT_GTID) is applied here..."
+    r="$(q "SELECT WAIT_FOR_EXECUTED_GTID_SET('"'"'$WAIT_GTID'"'"', $wait_s)")"
+    [ "$r" = 0 ] || die "the replica did not catch up with the primary within ${wait_s}s — NOT promoting. Check make standby-status."
+fi
+q "STOP REPLICA IO_THREAD"
+raw="$(q "SELECT RECEIVED_TRANSACTION_SET FROM performance_schema.replication_connection_status WHERE CHANNEL_NAME = \"\"")"
+received="$(printf "%s" "$raw" | gtid_clean)"
+if [ -n "$received" ]; then
+    valid_gtid "$received" || die "unexpected received GTID set: $received"
+    echo "==> Applying every transaction already received..."
+    r="$(q "SELECT WAIT_FOR_EXECUTED_GTID_SET('"'"'$received'"'"', $wait_s)")"
+    [ "$r" = 0 ] || die "could not apply everything received within ${wait_s}s — NOT promoting. Replication is stopped; START REPLICA resumes it."
+fi
+q "STOP REPLICA"
+q "RESET REPLICA ALL"
+q "SET PERSIST super_read_only=OFF"
+q "SET PERSIST read_only=OFF"
+g="$(q "SELECT @@gtid_executed")"
+echo "==> Promoted: MySQL is writable. gtid_executed=$(printf "%s" "$g" | gtid_clean)"
+'
+
+# shellcheck disable=SC2016
+DEMOTE='
+q "SET PERSIST super_read_only=ON"
+g="$(q "SELECT @@gtid_executed")"
+echo "==> MySQL is read-only."
+echo "gtid=$(printf "%s" "$g" | gtid_clean)"
+'
+
+# shellcheck disable=SC2016
+REJOIN='
+check_repl_password
+sid="$(q "SELECT @@server_id")"
+[ "$sid" != 1 ] || die "this mysqld runs with the PRIMARY flags (server-id 1). Start it with make standby-up first."
+rs="$(q "SHOW REPLICA STATUS")"
+if [ -n "$rs" ]; then
+    cur="$(source_host)"
+    if [ "$cur" = "$NEW_PRIMARY" ]; then
+        echo "==> Already replicating from $NEW_PRIMARY — nothing to do."
+        exit 0
+    fi
+    die "this host already replicates from $cur, not $NEW_PRIMARY."
+fi
+# This host is a standby from here on, whatever the checks below find.
+# After an UNPLANNED failover it was never demoted, so it is writable.
+ro="$(q "SELECT @@super_read_only")"
+[ "$ro" = 1 ] || echo "==> MySQL here is writable (never demoted) — making it read-only."
+q "SET PERSIST super_read_only=ON"
+raw="$(remote_q "$NEW_PRIMARY" "SELECT @@gtid_executed")" \
+    || die "cannot query $NEW_PRIMARY as wg_repl. Did make failover finish there (it runs repl-primary-setup)?"
+theirs="$(printf "%s" "$raw" | gtid_clean)"
+m="$(q "SELECT @@gtid_executed")"
+mine="$(printf "%s" "$m" | gtid_clean)"
+valid_gtid "$theirs" || die "unexpected GTID set from $NEW_PRIMARY: $theirs"
+valid_gtid "$mine" || die "unexpected local GTID set: $mine"
+sub="$(q "SELECT GTID_SUBSET('"'"'$mine'"'"', '"'"'$theirs'"'"')")"
+if [ "$sub" != 1 ]; then
+    errant="$(q "SELECT GTID_SUBTRACT('"'"'$mine'"'"', '"'"'$theirs'"'"')")"
+    die "this host has transactions $NEW_PRIMARY does not ($errant): writes that never reached the standby before the failover. It cannot rejoin as-is (it stays read-only, not replicating) — follow docs/runbooks/failover.md, Re-seeding the old primary (it backs this data up first)."
+fi
+start_replication_from "$NEW_PRIMARY"
+echo "==> Rejoined as a replica of $NEW_PRIMARY."
 '
 
 # ---------------------------------------------------------------------
@@ -181,6 +342,38 @@ cmd_seed() {
     in_mysql "$PRELUDE$SEED" -e "PRIMARY=$primary"
 }
 
+cmd_primary_state() {
+    wait_ready
+    in_mysql "$PRELUDE$PRIMARY_STATE"
+}
+
+cmd_probe() {
+    local host="${1:-}"
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
+        || die "invalid host '${host}' — expected a hostname or IP."
+    compose run --rm --no-deps -T -e "PROBE_HOST=$host" --entrypoint sh mysql -c "$PRELUDE$PROBE"
+}
+
+cmd_promote() {
+    local wait_gtid="${WAIT_GTID:-}"
+    [[ "$wait_gtid" =~ ^[0-9A-Za-z:,_-]*$ ]] || die "malformed WAIT_GTID '$wait_gtid'."
+    wait_ready
+    in_mysql "$PRELUDE$PROMOTE" -e "WAIT_GTID=$wait_gtid" -e "PROMOTE_WAIT_SECONDS=${PROMOTE_WAIT_SECONDS:-300}"
+}
+
+cmd_demote() {
+    wait_ready
+    in_mysql "$PRELUDE$DEMOTE"
+}
+
+cmd_rejoin() {
+    local new_primary="${1:-}"
+    [[ "$new_primary" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
+        || die "invalid primary host '${new_primary}' — expected a hostname or IP, e.g. general.vpn."
+    wait_ready
+    in_mysql "$PRELUDE$REJOIN" -e "NEW_PRIMARY=$new_primary"
+}
+
 cmd_status() {
     local max="${REPL_MAX_LAG_SECONDS:-300}" out
     # shellcheck disable=SC2016
@@ -221,8 +414,13 @@ case "${1:-}" in
     primary-setup) cmd_primary_setup ;;
     seed) shift; cmd_seed "${1:-}" ;;
     status) cmd_status ;;
+    primary-state) cmd_primary_state ;;
+    probe) shift; cmd_probe "${1:-}" ;;
+    promote) cmd_promote ;;
+    demote) cmd_demote ;;
+    rejoin) shift; cmd_rejoin "${1:-}" ;;
     *)
-        echo "usage: $(basename "$0") primary-setup | seed HOST | status" >&2
+        echo "usage: $(basename "$0") primary-setup | seed HOST | status | primary-state | probe HOST | promote | demote | rejoin HOST" >&2
         echo "See docs/runbooks/standby-replication.md." >&2
         exit 2 ;;
 esac

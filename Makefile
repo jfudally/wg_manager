@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status standby-bundle standby-pull gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status standby-bundle standby-pull demote failover rejoin gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -74,6 +74,9 @@ help:
 	@echo "  standby-status Replication + bundle health on the standby (exit 0 ok / 1 broken / 2 degraded)"
 	@echo "  standby-bundle o=FILE|-  On the primary: Vault snapshot + vault-init.json/.env.prod/tls bundle for the standby"
 	@echo "  standby-pull   On the warm standby (timer): fetch, verify and install the primary's bundle"
+	@echo "  demote         On the primary: stop the app, make MySQL read-only (planned switchover, docs/runbooks/failover.md)"
+	@echo "  failover       On the standby: fence, promote MySQL, restore Vault, become the primary [confirm=primary-is-down]"
+	@echo "  rejoin primary=HOST  On the old primary: become a replica of HOST without re-seeding"
 	@echo "  vault-migrate-raft  One-shot: convert the STOPPED prod Vault from file to raft storage (docs/runbooks/vault-raft-migration.md)"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
@@ -351,6 +354,28 @@ standby-bundle:
 standby-pull:
 	$(require_standby_role)
 	@COMPOSE="$(STANDBY_COMPOSE)" scripts/standby_pull.sh pull
+
+# ---------------------------------------------------------------------------
+# Promotion (Phase 3d cycle 5d) — docs/runbooks/failover.md.
+# A switchover is: `demote` (old primary) -> `failover` (standby) ->
+# `rejoin primary=HOST` (old primary). After an outage, skip `demote` and
+# pass confirm=primary-is-down to `failover`.
+# ---------------------------------------------------------------------------
+demote:
+	@if [ "$(HOST_ROLE)" != primary ]; then \
+		echo "ERROR: demote runs on the primary (WG_MANAGER_ROLE=primary in .env.host)."; \
+		exit 2; \
+	fi
+	@COMPOSE="$(PROD_COMPOSE)" MAKE="$(MAKE)" scripts/failover.sh demote
+
+failover:
+	$(require_standby_role)
+	@COMPOSE="$(STANDBY_COMPOSE)" MAKE="$(MAKE)" CONFIRM="$(confirm)" scripts/failover.sh failover
+
+rejoin:
+	@if [ -z "$(primary)" ]; then echo "usage: make rejoin primary=<the new primary's MySQL host, e.g. general.vpn>"; exit 2; fi
+	@if [ -z "$(HOST_ROLE)" ]; then echo "ERROR: rejoin needs .env.host (a primary/standby pair)."; exit 2; fi
+	@COMPOSE="$(PROD_COMPOSE)" MAKE="$(MAKE)" scripts/failover.sh rejoin "$(primary)"
 
 # One-shot file -> raft storage conversion for a prod Vault that predates
 # Phase 3d cycle 5. Stack must be stopped. See
