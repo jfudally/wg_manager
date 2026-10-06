@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status standby-bundle standby-pull gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -71,7 +71,9 @@ help:
 	@echo "  standby-up     On the warm standby: run MySQL only, as a read-only replica"
 	@echo "  standby-down   On the warm standby: stop the replica"
 	@echo "  standby-seed primary=HOST  On the warm standby, once: copy the primary's DB and start replicating"
-	@echo "  standby-status Replication health on the standby (exit 0 ok / 1 broken / 2 lagging)"
+	@echo "  standby-status Replication + bundle health on the standby (exit 0 ok / 1 broken / 2 degraded)"
+	@echo "  standby-bundle o=FILE|-  On the primary: Vault snapshot + vault-init.json/.env.prod/tls bundle for the standby"
+	@echo "  standby-pull   On the warm standby (timer): fetch, verify and install the primary's bundle"
 	@echo "  vault-migrate-raft  One-shot: convert the STOPPED prod Vault from file to raft storage (docs/runbooks/vault-raft-migration.md)"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
@@ -316,10 +318,39 @@ standby-seed:
 	@if [ -z "$(primary)" ]; then echo "usage: make standby-seed primary=<primary MySQL host, as named in MYSQL_SERVER_EXTRA_SANS>"; exit 2; fi
 	@COMPOSE="$(STANDBY_COMPOSE)" scripts/mysql_replication.sh seed "$(primary)"
 
-# On the STANDBY: replication health. Exit 0 healthy, 1 broken, 2 lagging
-# more than REPL_MAX_LAG_SECONDS (default 300) — usable from a timer.
+# On the STANDBY: replication health + the last pulled bundle. Exit 0
+# healthy; 1 broken (replication down, nothing pulled); 2 degraded
+# (replication lag over REPL_MAX_LAG_SECONDS, default 300; bundle older
+# than STANDBY_MAX_BUNDLE_AGE_SECONDS, default 3600; or code drift from
+# the primary). 1 wins over 2. Usable from a timer or monitor.
 standby-status:
-	@COMPOSE="$(STANDBY_COMPOSE)" REPL_MAX_LAG_SECONDS="$(REPL_MAX_LAG_SECONDS)" scripts/mysql_replication.sh status
+	@rc=0; \
+	for check in "scripts/mysql_replication.sh status" "scripts/standby_pull.sh status"; do \
+		COMPOSE="$(STANDBY_COMPOSE)" REPL_MAX_LAG_SECONDS="$(REPL_MAX_LAG_SECONDS)" $$check; r=$$?; \
+		if [ $$r = 1 ]; then rc=1; elif [ $$r = 2 ] && [ $$rc = 0 ]; then rc=2; elif [ $$r -gt 2 ]; then rc=1; fi; \
+		echo; \
+	done; \
+	exit $$rc
+
+# ---------------------------------------------------------------------------
+# Warm standby — shipping Vault + operator files (Phase 3d cycle 5c).
+# ---------------------------------------------------------------------------
+
+# On the PRIMARY (stack up): the bundle the standby pulls. o=- writes the
+# tar to stdout, which is how `standby-pull` reads it over ssh. Every
+# message from this target goes to stderr so stdout stays a clean tar.
+standby-bundle:
+	@if [ "$(HOST_ROLE)" = standby ]; then \
+		echo "ERROR: standby-bundle runs on the primary, and this host is the standby." >&2; \
+		exit 2; \
+	fi
+	@if [ -z "$(o)" ]; then echo "usage: make standby-bundle o=FILE|-" >&2; exit 2; fi
+	@COMPOSE="$(PROD_COMPOSE)" scripts/standby_bundle.sh "$(o)"
+
+# On the STANDBY (from a timer): fetch + verify + install the bundle.
+standby-pull:
+	$(require_standby_role)
+	@COMPOSE="$(STANDBY_COMPOSE)" scripts/standby_pull.sh pull
 
 # One-shot file -> raft storage conversion for a prod Vault that predates
 # Phase 3d cycle 5. Stack must be stopped. See

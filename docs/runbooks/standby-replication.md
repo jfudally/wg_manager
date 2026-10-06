@@ -1,14 +1,24 @@
-# Runbook — Set up and run the warm-standby MySQL replica
+# Runbook — Set up and run the warm standby
 
-Phase 3d cycle 5b. The **primary** (first deployment: `rv`) runs the
-full prod stack. The **standby** (`general`) runs MySQL only, as a
-read-only GTID replica of the primary, so cycle 5d's `make failover`
-can promote it with at most seconds of lost writes. Design and
-rationale: [`docs/deploy/ha-control-plane.md`](../deploy/ha-control-plane.md)
-→ *Warm standby across hosts*.
+The **primary** (first deployment: `rv`) runs the full prod stack.
+The **standby** (`general`) keeps two things current, so cycle 5d's
+`make failover` can promote it:
 
-Not covered yet: Vault on the standby (cycle 5c ships raft snapshots
-plus `vault-init.json`/`tls/`), and promotion itself (cycle 5d).
+- **The database (cycle 5b):** a read-only GTID replica of the
+  primary's MySQL. A promotion loses at most seconds of writes.
+- **Vault and the shared files (cycle 5c):** a timer pulls a bundle
+  from the primary every 15 minutes. It contains a Vault raft
+  snapshot plus `vault-init.json`, `.env.prod` and `tls/`.
+
+Design and rationale:
+[`docs/deploy/ha-control-plane.md`](../deploy/ha-control-plane.md) →
+*Warm standby across hosts*. Not covered yet: promotion itself
+(cycle 5d).
+
+> **The standby holds the primary's keys.** The pulled
+> `vault-init.json` plus `standby/vault.snap` are the whole Vault:
+> unseal keys, root token, SSH CA, Transit key. Secure `general`
+> exactly like `rv`.
 
 Prerequisite: the primary is on raft Vault (cycle 5a,
 [`vault-raft-migration.md`](vault-raft-migration.md)).
@@ -19,7 +29,8 @@ Prerequisite: the primary is on raft Vault (cycle 5a,
 
 | | Primary (`rv`) | Standby (`general`) |
 |---|---|---|
-| `.env.prod` | shared, same file on both | copied from the primary |
+| `.env.prod`, `vault-init.json`, `tls/` | the source | pulled from the primary by `make standby-pull` (timer) |
+| Vault | running, the live one | the latest raft snapshot in `standby/vault.snap` (restored at failover) |
 | `.env.host` (gitignored, per host) | `WG_MANAGER_ROLE=primary`, `MYSQL_BIND_ADDR=<rv private/VPN IP>` | `WG_MANAGER_ROLE=standby`, `MYSQL_BIND_ADDR=<general private/VPN IP>` |
 | Runs | `make prod-up`: full stack, mysqld `--server-id=1` | `make standby-up`: mysql only, `--server-id=2`, read-only |
 | Refuses | `make standby-up` (would restart its mysqld read-only) | `make prod-up` (a second `beat` would race host-cert renewals) |
@@ -93,31 +104,53 @@ hosts' names and stays valid after failover.
 1. **Clone the repo at the primary's commit**, into a directory with
    the same name (`wg_manager`). Compose derives volume names from it.
 
-2. **Copy the shared files from the primary** over SSH, keeping them
-   private:
+2. **Create `.env.host`:**
 
    ```bash
-   # on general
-   scp rv:wg_manager/.env.prod .
-   rsync -a rv:wg_manager/tls/ tls/
-   chmod 600 .env.prod
+   WG_MANAGER_ROLE=standby
+   MYSQL_BIND_ADDR=<general's private/VPN IP>
+   STANDBY_PRIMARY_SSH=ops@rv.vpn       # user@host the pull logs in as
+   STANDBY_PRIMARY_DIR=wg_manager       # the checkout on rv (relative to that home, or absolute)
+   STANDBY_SSH_KEY=/home/ops/.ssh/wg-standby
+   ```
+
+   The bind address matters after failover, when `rv` becomes the
+   replica of `general`.
+
+3. **Give the standby a pull-only SSH key on the primary.** On
+   general:
+
+   ```bash
+   ssh-keygen -t ed25519 -N '' -C wg-standby@general -f ~/.ssh/wg-standby
+   ```
+
+   On rv, add the public key to the pull user's
+   `~/.ssh/authorized_keys` with a **forced command**, so the key can
+   do nothing except produce the bundle. That user must be able to run
+   docker, as the operator who runs `make prod-up` does.
+
+   ```
+   restrict,command="cd /home/ops/wg_manager && make -s standby-bundle o=-" ssh-ed25519 AAAA... wg-standby@general
+   ```
+
+   Use the absolute path of the checkout on rv. `restrict` turns off
+   port, agent and X11 forwarding and the pty. The pull still sends
+   `cd ... && make ...` as its remote command; with a forced command
+   in place, sshd ignores it and runs the forced one.
+
+4. **First pull.** This installs `.env.prod`, `vault-init.json` and
+   `tls/` from rv, plus the first Vault snapshot:
+
+   ```bash
+   ssh -i ~/.ssh/wg-standby ops@rv.vpn true   # accept rv's host key once
+   make standby-pull
    ```
 
    The standby's mysqld uses the primary's `tls/mysql/` files: the
    same server cert (both names are on it) and the client cert it
    replicates with.
 
-3. **Create `.env.host`:**
-
-   ```bash
-   WG_MANAGER_ROLE=standby
-   MYSQL_BIND_ADDR=<general's private/VPN IP>
-   ```
-
-   The bind address matters after failover, when `rv` becomes the
-   replica of `general`.
-
-4. **Start the replica and seed it:**
+5. **Start the replica and seed it:**
 
    ```bash
    make standby-up
@@ -138,7 +171,12 @@ hosts' names and stays valid after failover.
    database already has tables, or while app services run on this
    host.
 
-`make standby-status` should end with `OK`:
+6. **Enable the pull timer.** Use `wg-manager-standby-pull.timer`,
+   every 15 minutes; the units are in
+   [`systemd-timer.md`](../deploy/systemd-timer.md#warm-standby-pull-phase-3d-cycle-5c).
+
+`make standby-status` should end with two `OK`s, one for replication
+and one for the bundle:
 
 ```
 Source_Host:           rv.vpn
@@ -146,29 +184,41 @@ Replica_IO_Running:    Yes
 Replica_SQL_Running:   Yes
 Seconds_Behind_Source: 0
 OK
+
+Bundle_Created:        2026-10-06T17:57:20Z (412 s ago)
+Bundle_Source_Host:    rv
+Bundle_Commit:         5af5b50...
+OK
 ```
 
 ---
 
 ## Day 2
 
-- **Watch it.** `make standby-status` exits **0** when healthy,
-  **1** when broken or not configured, and **2** when lagging more
-  than `REPL_MAX_LAG_SECONDS` (default 300). Run it from a systemd
-  timer or your monitoring and alert on non-zero. Prometheus alerts
-  arrive in cycle 5e.
-- **⚠️ Re-copy `tls/` after every cert rotation on the primary.**
-  MySQL certs last 30 days, and the primary rotates its own via
-  `certs-rotate`. The standby's copy doesn't update until cycle 5c
-  ships `tls/` automatically. After a rotation on `rv`:
+- **Watch it.** `make standby-status` exits:
+  - **0** when healthy;
+  - **1** when broken: replication down, or nothing pulled yet;
+  - **2** when degraded: replication lag over `REPL_MAX_LAG_SECONDS`
+    (default 300), a bundle older than
+    `STANDBY_MAX_BUNDLE_AGE_SECONDS` (default 3600), or **code
+    drift**, meaning the primary runs a different commit.
 
-  ```bash
-  # on general
-  rsync -a rv:wg_manager/tls/ tls/ && make standby-down && make standby-up
-  ```
+  Run it from your monitoring and alert on non-zero. Prometheus
+  alerts arrive in cycle 5e.
+- **Cert rotations on the primary are handled.** Each pull installs
+  rv's current `tls/`. When `tls/mysql` changed, the pull restarts the
+  replica so it loads the new certs.
+- **Upgrades:** check out the same commit on both hosts. Until you
+  do, `standby-status` reports `DRIFT`, and `standby-pull` warns but
+  still installs the data.
+- **What a pull refuses** (it leaves the installed state untouched):
+  - an SSH or bundle failure;
+  - a checksum mismatch;
+  - a bundle no newer than the installed one. A replayed or stale
+    bundle must not roll the standby back, so check rv's clock if
+    you see this.
 
-  If you forget, `standby-status` shows an `SSL` / certificate error
-  in `Last_IO_Error` once the copy expires.
+  The previous snapshot is kept as `standby/vault.snap.prev`.
 - **Primary reboots or outages.** The replica retries every 10s for
   up to ~10 days and resumes on its own once the primary is back,
   usually within 10s; the drill confirmed this. Binlogs are kept 7
@@ -201,5 +251,9 @@ Never run this on the primary.
 | `standby-seed`: *Access denied for user 'wg_repl'* | `repl-primary-setup` not run, a password mismatch, or no client cert | Primary: `make repl-primary-setup`. Check that both hosts have the same `.env.prod`. |
 | `standby-seed`: *runs with the PRIMARY flags (server-id 1)* | mysql was started by `prod-up` or plain compose | `make standby-down && make standby-up`. |
 | `make prod-up` on the standby: *this host is the warm standby* | Working as intended | Promotion is cycle 5d's `make failover`. |
-| `Last_IO_Error` mentions certificate/SSL after weeks of working | Standby's `tls/` copy expired | Re-copy `tls/` (see Day 2). |
+| `Last_IO_Error` mentions certificate/SSL after weeks of working | Standby's `tls/` expired because pulls stopped | Fix the pulls (`STALE` above), then `make standby-pull`. |
 | `Last_SQL_Error` set, `Replica_SQL_Running: No` | Replica diverged | Re-seed. |
+| `standby-pull`: *Permission denied (publickey)* | Key not in rv's `authorized_keys`, or the wrong `STANDBY_SSH_KEY` | Re-check setup step 3. |
+| `standby-pull`: *the Vault snapshot failed* (from rv) | rv's stack is down or Vault sealed, or rv's checkout predates cycle 5c (no `scripts/vault_snapshot.py`) | On rv: check out the same commit as general, and `make prod-up` if the stack is down. |
+| `standby-pull`: *not newer than the installed one* | rv's clock went backwards, or a replayed bundle | Fix rv's clock (NTP). The next pull with a newer timestamp installs. |
+| `standby-status`: `STALE` | Timer not running, or pulls failing | `systemctl status wg-manager-standby-pull.timer`; `journalctl -u wg-manager-standby-pull`. |

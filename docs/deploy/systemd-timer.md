@@ -369,3 +369,68 @@ If the backup timer hasn't run in a while:
 4. If the env file is the problem and rotating Vault credentials
    fixed it, restart the timer to pick up the change:
    ``sudo systemctl restart wg-manager-backup.timer``.
+
+## Warm standby pull (Phase 3d cycle 5c)
+
+This timer runs on the **standby** host only. Every 15 minutes it
+runs `make standby-pull`, which fetches the primary's bundle over
+SSH: a Vault raft snapshot plus `vault-init.json`, `.env.prod` and
+`tls/`. The pull verifies the bundle, installs it, and restarts the
+MySQL replica when `tls/mysql` changed. Setup, including the
+pull-only SSH key with a forced command on the primary, is in
+[`docs/runbooks/standby-replication.md`](../runbooks/standby-replication.md).
+
+The interval is the standby's Vault RPO. Vault data changes rarely:
+the CA and Transit keys essentially never change, and what does
+change is cert issuance. So 15 minutes leaves a wide margin.
+
+**`/etc/systemd/system/wg-manager-standby-pull.service`**
+
+```ini
+[Unit]
+Description=wg-manager — pull the primary's Vault snapshot + shared files
+Documentation=https://github.com/your-org/wg-manager/blob/main/docs/runbooks/standby-replication.md
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The standby's checkout (holds .env.host with STANDBY_PRIMARY_SSH).
+WorkingDirectory=/home/ops/wg_manager
+# The user whose STANDBY_SSH_KEY is authorized on the primary, and who
+# can run docker.
+User=ops
+ExecStart=/usr/bin/make standby-pull
+StandardOutput=journal
+StandardError=journal
+```
+
+**`/etc/systemd/system/wg-manager-standby-pull.timer`**
+
+```ini
+[Unit]
+Description=wg-manager — warm-standby pull every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+Persistent=true
+Unit=wg-manager-standby-pull.service
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wg-manager-standby-pull.timer
+sudo systemctl start wg-manager-standby-pull.service   # first run by hand
+sudo journalctl -u wg-manager-standby-pull.service -n 30
+```
+
+A failed pull leaves the previously installed bundle in place and
+puts the unit in `failed`. Alert on that, or on `make standby-status`
+returning non-zero. It reports `STALE` once the last bundle is older
+than `STANDBY_MAX_BUNDLE_AGE_SECONDS`, default one hour, i.e. four
+missed pulls.

@@ -39,6 +39,9 @@ Thumbs.db
 .env.prod
 # Per-host primary/standby settings (Phase 3d cycle 5b); see .env.host.example.
 .env.host
+# Warm-standby state pulled from the primary (Phase 3d cycle 5c): the
+# Vault snapshot. Together with vault-init.json it IS the Vault.
+/standby/
 *.pem
 *.key
 !.env.example
