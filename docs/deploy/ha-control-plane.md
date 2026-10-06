@@ -353,8 +353,14 @@ Shipped so far:
   It then restores Vault from the shipped snapshot. Runbook:
   [`failover.md`](../runbooks/failover.md).
 
-What remains (alerts, a scheduled drill) is tracked in `ROADMAP.md`
-under Phase 3d cycle 5e.
+- **5e** — watching it. The standby writes node_exporter textfile
+  metrics every minute, the `wg-manager.standby` Prometheus alerts
+  read them, and a weekly `make standby-drill` restores the latest
+  Vault snapshot into an isolated throwaway Vault to prove a failover
+  would work ([`observability.md`](../observability.md#warm-standby-phase-3d-cycle-5e)).
+
+Automatic (3-node) failover is not planned. See the reasoning at the
+top of this section.
 
 ## What's next
 
