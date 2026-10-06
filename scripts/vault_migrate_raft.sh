@@ -58,6 +58,8 @@ fi
 # and print `initialized=true|false|unknown`. Needed because ANY boot on
 # raft — even one that never gets initialized — writes vault.db/raft.db,
 # so "non-empty" alone can't tell a migrated Vault from leftovers.
+# The $ expressions must expand inside the container, not here.
+# shellcheck disable=SC2016
 RAFT_PROBE='
 vault server -config=/vault/config/vault.hcl >/tmp/probe.log 2>&1 &
 pid=$!
