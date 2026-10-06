@@ -60,13 +60,36 @@ services:
       MYSQL_DATABASE: ${MYSQL_DATABASE:-wg_manager}
       MYSQL_USER: ${MYSQL_APP_USER:-wg}
       MYSQL_PASSWORD: ${MYSQL_APP_PASSWORD:?MYSQL_APP_PASSWORD must be set in .env.prod}
-    # Drop the dev compose's `3307:3306` (which binds 0.0.0.0) and
-    # bind loopback-only so a misconfigured firewall doesn't expose
-    # MySQL. `!override` is required because Compose merges list-valued
-    # keys by concatenation — without it, BOTH the dev mapping and
-    # this one stay active and the second one fails to bind.
+      # Phase 3d cycle 5b: password of the `wg_repl` replication user.
+      # Only scripts/mysql_replication.sh reads it, from inside this
+      # container, so the host shell never handles it. Empty on
+      # single-host installs.
+      MYSQL_REPL_PASSWORD: ${MYSQL_REPL_PASSWORD:-}
+    # Phase 3d cycle 5b: GTIDs on, so the standby can be seeded from a
+    # dump and then replicate with SOURCE_AUTO_POSITION, and so a
+    # promoted standby needs no binlog coordinates. server-id 1 is the
+    # PRIMARY role's id; docker-compose.standby.yml uses 2. Ids follow
+    # the role, not the host: promotion restarts mysqld anyway, and
+    # GTIDs are keyed on server_uuid. Binlogs are kept 7 days so a
+    # standby can be down that long and still catch up.
+    command:
+      - "mysqld"
+      - "--server-id=1"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+      - "--binlog-expire-logs-seconds=604800"
+    # Drop the dev compose's `3307:3306` (which binds 0.0.0.0).
+    # Loopback by default so a misconfigured firewall doesn't expose
+    # MySQL. On a primary with a warm standby, .env.host sets
+    # MYSQL_BIND_ADDR to this host's private/VPN address so the
+    # standby can replicate. TLS + an X.509-only replication user
+    # still guard it, but keep it off public interfaces: Docker's
+    # published ports bypass ufw. `!override` is required because
+    # Compose merges list-valued keys by concatenation — without it,
+    # BOTH the dev mapping and this one stay active and the second one
+    # fails to bind.
     ports: !override
-      - "127.0.0.1:3306:3306"
+      - "${MYSQL_BIND_ADDR:-127.0.0.1}:3306:3306"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
@@ -258,6 +281,9 @@ services:
       # via the volume mount below.
       SCRIPT_DIR: /app/scripts
       TLS_DIR: /app/tls
+      # Phase 3d cycle 5b: extra MySQL server-cert SANs (comma list),
+      # e.g. both hosts' names so the standby can verify the primary.
+      MYSQL_SERVER_EXTRA_SANS: ${MYSQL_SERVER_EXTRA_SANS:-}
       # Forward the SSH-CA role allowlists from .env.prod so an
       # operator can extend ``allowed_users`` (e.g. adding a custom
       # login account beyond the stock cloud-image users) without
@@ -349,6 +375,9 @@ services:
       # demo; production override picks the public DNS name.
       API_SERVER_CN: ${API_SERVER_CN:-localhost}
       API_SERVER_SANS: ${API_SERVER_SANS:-localhost,127.0.0.1,api}
+      # Phase 3d cycle 5b: read by bootstrap_mysql_tls_files.py when
+      # `make certs-rotate` re-mints the MySQL server cert.
+      MYSQL_SERVER_EXTRA_SANS: ${MYSQL_SERVER_EXTRA_SANS:-}
       # WireGuard defaults — bootstrap-app runs `alembic upgrade head`,
       # and migration 0016 reads `Settings.default_subnet` AT
       # MIGRATION TIME to backfill the default tenant's

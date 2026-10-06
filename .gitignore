@@ -37,6 +37,8 @@ Thumbs.db
 # populated `.env.prod` carries real secrets and must never be
 # committed.
 .env.prod
+# Per-host primary/standby settings (Phase 3d cycle 5b); see .env.host.example.
+.env.host
 *.pem
 *.key
 !.env.example

@@ -22,6 +22,31 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   to the old file volume, so rolling back means reverting `vault.hcl`.
   `make host-export` now also carries the raft volume.
 
+- **Warm-standby MySQL replica** (Phase 3d cycle 5b). A second host
+  can now keep a read-only replica of the prod database, ready for
+  promotion. Setup and operations are in
+  `docs/runbooks/standby-replication.md`.
+  - **New targets:** `make repl-primary-setup` on the primary;
+    `make standby-up`, `standby-seed primary=HOST`, `standby-status`
+    and `standby-down` on the standby.
+  - **Transport:** replication uses mutual TLS. The standby verifies
+    the primary by name, and the primary accepts the replication user
+    only with a client cert from the stack's CA.
+  - **Per-host settings:** a new gitignored `.env.host` holds them
+    (`WG_MANAGER_ROLE`, `MYSQL_BIND_ADDR`). `make prod-up` refuses on
+    a host marked `standby`.
+  - **New `.env.prod` settings:** `MYSQL_REPL_PASSWORD`, and
+    `MYSQL_SERVER_EXTRA_SANS` for extra names on the MySQL server cert.
+
+### Changed
+
+- **The prod MySQL now runs with GTIDs on** (`--gtid-mode=ON`,
+  `--enforce-gtid-consistency=ON`, `--server-id=1`) and keeps binlogs
+  for 7 days. The next `make prod-up` recreates the `mysql` container,
+  causing a few seconds of DB unavailability. Existing data is
+  unchanged. Its host port is now `${MYSQL_BIND_ADDR:-127.0.0.1}:3306`,
+  so the default is unchanged.
+
 ### Fixed
 
 - **`prod-up` can no longer silently replace an existing Vault.** If
