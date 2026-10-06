@@ -1925,7 +1925,7 @@ Shipped:
   mode (was 901 on Phase 3b's close); vitest 57/57;
   ``tsc --noEmit`` clean.
 
-### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a shipped)
+### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a–5b shipped)
 
 Two-replica FastAPI behind a load balancer; Celery workers
 horizontally scaled; MySQL primary + replica with failover.
@@ -2145,17 +2145,40 @@ behaviour in practice.
     premature `prod-up`, and a snapshot restore into a separate Vault
     (same SSH CA public key, and the primary's root token + unseal
     keys apply after the restore).
-  - **5b `[ ]` — MySQL replication primary → standby.** GTID-based
-    async replica over the existing MySQL TLS, with a dedicated
-    replication user. A `make standby-up` profile on the standby runs
-    mysql (read-only replica) + vault (restored, sealed until
-    failover) and nothing else. `/readyz` / a metric reports
-    replication lag.
+  - **5b `[x]` — MySQL replication primary → standby.** The primary's
+    mysqld runs with GTIDs and `--server-id=1`, published on a per-host
+    `MYSQL_BIND_ADDR`. `docker-compose.standby.yml` gives the standby
+    `--server-id=2` with crash-safe relay-log recovery. A gitignored
+    `.env.host` carries the per-host role and bind address, and the
+    Makefile gates on it: `prod-up` refuses on a standby,
+    `standby-up` refuses elsewhere. `scripts/mysql_replication.sh`:
+    - `repl-primary-setup` creates the `wg_repl` user (password +
+      `REQUIRE X509`).
+    - `standby-seed` dumps the primary over mutual TLS with
+      `VERIFY_IDENTITY`, loads it with its GTID set, and starts
+      replication with auto-positioning.
+    - `standby-status` reports health with exit codes 0/1/2.
+
+    `MYSQL_SERVER_EXTRA_SANS` puts both hosts' names on the shared
+    MySQL server cert. The live drill (two real MySQL 8.4 servers)
+    turned up three bugs that unit tests couldn't:
+    - `--super-read-only` as a mysqld flag breaks the image's
+      first-boot init, so read-only is now persisted into the datadir
+      by `standby-seed`.
+    - `[ "$(q ...)" ]`-style guards swallowed query failures, so the
+      safety checks passed silently while root was rejected.
+    - MySQL's default retry policy gives up for good after a ~10 min
+      primary outage, so retries are now every 10s for ~10 days.
+
+    Replication lag is reported by `standby-status`. The Prometheus
+    alert moves to 5e.
   - **5c `[ ]` — Vault snapshot shipping.** A prod `make vault-snapshot`
     (the existing `backup-vault` targets the dev stack) plus a systemd
     timer on the primary that pushes the latest snapshot to the
     standby over SSH. Shipped alongside: `vault-init.json`, `.env.prod`
-    and `tls/`. The restore drill showed the standby must hold the
+    and `tls/`. `tls/` is the urgent one: until it's automated, the
+    standby's 30-day MySQL client cert must be re-copied by hand after
+    every rotation on the primary, or replication stops. The restore drill showed the standby must hold the
     *primary's* `vault-init.json`, not one of its own. RPO for Vault
     = timer interval. Vault data changes rarely (the CA and Transit
     keys essentially never), so 5–15 minutes is plenty.
@@ -2165,8 +2188,12 @@ behaviour in practice.
     replica, restore the latest Vault snapshot, unseal, re-mint the
     API server cert with the shared DNS name in its SANs, and start
     the full stack including beat. Print the DNS change for the
-    operator to make. Failback is the same procedure in reverse once
-    the old primary has been rebuilt as a replica.
+    operator to make. Promotion also sets `SET PERSIST
+    super_read_only=OFF`, flips `WG_MANAGER_ROLE`, and runs
+    `repl-primary-setup` on the new primary: `wg_repl` isn't in the
+    seed dump, which only covers the app database. Failback is the
+    same procedure in reverse once the old primary has been rebuilt as
+    a replica.
   - **5e `[ ]` — Drill + alerting.** Failover/failback runbook,
     Prometheus alerts on replication lag and snapshot age, and a
     scheduled failover drill.

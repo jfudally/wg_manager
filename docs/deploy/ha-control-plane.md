@@ -330,11 +330,17 @@ window (see [`host-migration.md`](../runbooks/host-migration.md#time-budget)),
 and a promotion takes minutes. The standby never runs `beat`, so two
 schedulers never race host-cert renewals.
 
-Shipped so far: **5a**, Vault on raft storage. Existing hosts convert
-with [`vault-raft-migration.md`](../runbooks/vault-raft-migration.md).
-The remaining cycles (MySQL replication, snapshot shipping,
-`make failover`, drill + alerts) are tracked in `ROADMAP.md` under
-Phase 3d cycle 5.
+Shipped so far:
+
+- **5a** — Vault on raft storage. Existing hosts convert with
+  [`vault-raft-migration.md`](../runbooks/vault-raft-migration.md).
+- **5b** — MySQL replication from the primary to the standby over
+  mutual TLS, with per-host roles in `.env.host` that keep the
+  standby from running the app stack. Setup and day-2:
+  [`standby-replication.md`](../runbooks/standby-replication.md).
+
+The remaining cycles (snapshot shipping, `make failover`, drill +
+alerts) are tracked in `ROADMAP.md` under Phase 3d cycle 5.
 
 ## What's next
 
