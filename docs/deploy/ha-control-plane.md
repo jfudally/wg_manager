@@ -342,8 +342,19 @@ Shipped so far:
   `.env.prod`, `tls/`) pulled from the primary every 15 minutes over a
   pull-only SSH key. Same runbook.
 
-The remaining cycles (`make failover`, drill + alerts) are tracked in
-`ROADMAP.md` under Phase 3d cycle 5.
+- **5d** — promotion. A switchover is `make demote` (old primary), then
+  `make failover` (standby), then `make rejoin primary=HOST` (old
+  primary). `make failover` fences on the primary's state, seen over
+  the replication channel:
+  - writable: refuse;
+  - demoted (read-only): zero-loss promotion;
+  - unreachable: only with `confirm=primary-is-down`.
+
+  It then restores Vault from the shipped snapshot. Runbook:
+  [`failover.md`](../runbooks/failover.md).
+
+What remains (alerts, a scheduled drill) is tracked in `ROADMAP.md`
+under Phase 3d cycle 5e.
 
 ## What's next
 
