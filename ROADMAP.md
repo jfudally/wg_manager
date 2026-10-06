@@ -1925,7 +1925,7 @@ Shipped:
   mode (was 901 on Phase 3b's close); vitest 57/57;
   ``tsc --noEmit`` clean.
 
-### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a–5b shipped)
+### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a–5c shipped)
 
 Two-replica FastAPI behind a load balancer; Celery workers
 horizontally scaled; MySQL primary + replica with failover.
@@ -2172,23 +2172,38 @@ behaviour in practice.
 
     Replication lag is reported by `standby-status`. The Prometheus
     alert moves to 5e.
-  - **5c `[ ]` — Vault snapshot shipping.** A prod `make vault-snapshot`
-    (the existing `backup-vault` targets the dev stack) plus a systemd
-    timer on the primary that pushes the latest snapshot to the
-    standby over SSH. Shipped alongside: `vault-init.json`, `.env.prod`
-    and `tls/`. `tls/` is the urgent one: until it's automated, the
-    standby's 30-day MySQL client cert must be re-copied by hand after
-    every rotation on the primary, or replication stops. The restore drill showed the standby must hold the
-    *primary's* `vault-init.json`, not one of its own. RPO for Vault
-    = timer interval. Vault data changes rarely (the CA and Transit
-    keys essentially never), so 5–15 minutes is plenty.
+  - **5c `[x]` — Vault snapshot shipping.** Shipped as a pull:
+    general's timer runs `make standby-pull`. That ssh'es to rv with
+    a key that rv's `authorized_keys` locks to one forced command,
+    `make -s standby-bundle o=-`. The bundle is a raft snapshot
+    (`scripts/vault_snapshot.py`, run in a `bootstrap-app` container
+    so the root token never reaches the host) plus `vault-init.json`,
+    `.env.prod` and `tls/`, with a MANIFEST and SHA256SUMS. The pull:
+    - verifies the bundle;
+    - refuses one no newer than the installed bundle;
+    - installs it, keeping the previous snapshot;
+    - restarts the replica only when `tls/mysql` changed.
+
+    This retires 5b's manual `tls/` re-copy. `standby-status` now also
+    reports bundle age and code drift. Drilled with a real raft Vault
+    and real helper containers: a snapshot shipped through the full
+    make → ssh → make chain restored into a fresh Vault, unsealed with
+    the shipped keys, and had an identical SSH CA. The drill also
+    caught installed snapshot files being world-readable (now 0600).
+    Vault RPO = the 15-minute timer interval. That's plenty, since Vault
+    data changes rarely (the CA and Transit keys essentially never).
   - **5d `[ ]` — `make failover` / `make failback`.** On the standby:
     fence first (refuse while the primary's API still answers, unless
     forced; stop the primary's stack if reachable). Then promote the
     replica, restore the latest Vault snapshot, unseal, re-mint the
     API server cert with the shared DNS name in its SANs, and start
     the full stack including beat. Print the DNS change for the
-    operator to make. Promotion also sets `SET PERSIST
+    operator to make. The Vault restore needs a running, unsealed
+    Vault, so promotion first initializes a throwaway one. It has to
+    do that with a temporary init file: 5a's guard refuses to
+    initialize next to the shipped, non-empty `vault-init.json`. Then
+    it runs `raft snapshot restore -force` and unseals with the shipped
+    keys. The 5c drill proved this sequence. Promotion also sets `SET PERSIST
     super_read_only=OFF`, flips `WG_MANAGER_ROLE`, and runs
     `repl-primary-setup` on the new primary: `wg_repl` isn't in the
     seed dump, which only covers the app database. Failback is the

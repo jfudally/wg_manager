@@ -338,9 +338,12 @@ Shipped so far:
   mutual TLS, with per-host roles in `.env.host` that keep the
   standby from running the app stack. Setup and day-2:
   [`standby-replication.md`](../runbooks/standby-replication.md).
+- **5c** — Vault snapshots and the shared files (`vault-init.json`,
+  `.env.prod`, `tls/`) pulled from the primary every 15 minutes over a
+  pull-only SSH key. Same runbook.
 
-The remaining cycles (snapshot shipping, `make failover`, drill +
-alerts) are tracked in `ROADMAP.md` under Phase 3d cycle 5.
+The remaining cycles (`make failover`, drill + alerts) are tracked in
+`ROADMAP.md` under Phase 3d cycle 5.
 
 ## What's next
 

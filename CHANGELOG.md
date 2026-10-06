@@ -38,6 +38,29 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   - **New `.env.prod` settings:** `MYSQL_REPL_PASSWORD`, and
     `MYSQL_SERVER_EXTRA_SANS` for extra names on the MySQL server cert.
 
+- **The warm standby now keeps the primary's Vault and shared files**
+  (Phase 3d cycle 5c).
+  - **Primary:** `make standby-bundle` builds a bundle of a Vault raft
+    snapshot plus `vault-init.json`, `.env.prod` and `tls/`, with
+    checksums.
+  - **Standby:** `make standby-pull`, run from the new
+    `wg-manager-standby-pull.timer` every 15 minutes, fetches the
+    bundle over SSH, verifies it and installs it. It refuses stale or
+    replayed bundles, and restarts the MySQL replica when the
+    primary's certs rotated. This replaces 5b's manual `tls/`
+    re-copy.
+  - **Status:** `make standby-status` also reports bundle age and
+    whether the primary runs a different commit.
+  - **Settings:** the new `.env.host` keys `STANDBY_PRIMARY_SSH`,
+    `STANDBY_PRIMARY_DIR` and `STANDBY_SSH_KEY`.
+  - **Upgrading:** check out the release on the primary before the
+    first pull. `scripts/vault_snapshot.py` reaches `bootstrap-app`
+    through the existing `./scripts` bind mount, so no image rebuild
+    is needed.
+
+  Setup, including the forced-command SSH key on the primary, is in
+  `docs/runbooks/standby-replication.md`.
+
 ### Changed
 
 - **The prod MySQL now runs with GTIDs on** (`--gtid-mode=ON`,
