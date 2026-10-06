@@ -1,0 +1,49 @@
+# ===========================================================================
+# Warm-standby overlay (Phase 3d cycle 5b).
+# ===========================================================================
+#
+# Layered on top of docker-compose.yml + docker-compose.prod.yml on the
+# STANDBY host only (`make standby-up`, which refuses unless .env.host
+# says WG_MANAGER_ROLE=standby). On the standby only `mysql` runs, as
+# a read-only GTID replica of the primary. api / worker / beat / web
+# stay down, so two `beat`s never race host-cert renewals. Vault joins
+# in cycle 5c (snapshot shipping).
+#
+# Setup and day-2 checks: docs/runbooks/standby-replication.md.
+# Promotion (`make failover`) lands in cycle 5d and restarts mysqld with
+# the PRIMARY flags from docker-compose.prod.yml.
+# ===========================================================================
+
+services:
+  mysql:
+    # Replaces the prod overlay's primary flags.
+    #
+    #   server-id=2                 the STANDBY role's id (primary = 1);
+    #                               replication refuses equal ids.
+    #   gtid-mode / enforce-...     must match the source.
+    #   binlog-expire-logs-seconds  same 7 days as the primary: after
+    #                               failover this host IS the primary,
+    #                               and the rebuilt old primary has to
+    #                               catch up from these binlogs.
+    #   relay-log-recovery=ON       crash-safe replica: after an unclean
+    #                               stop, discard the possibly-torn relay
+    #                               log and re-fetch from the source.
+    #
+    # Deliberately NOT a flag: super-read-only. Under it, the image's
+    # first-boot init can't set the root password or create the database
+    # (ERROR 1290) and crash-loops. `make standby-seed` instead runs
+    # `SET PERSIST super_read_only=ON`, which lives in the datadir
+    # (mysqld-auto.cnf). From then on nothing but the replication applier
+    # writes, not even root, across restarts. A stray app/CLI write would
+    # otherwise make the replica diverge silently.
+    #
+    # Replication settings (source host, TLS files, credentials) aren't
+    # flags either. `make standby-seed` stores them in the replica's
+    # crash-safe metadata tables, so they survive restarts.
+    command:
+      - "mysqld"
+      - "--server-id=2"
+      - "--gtid-mode=ON"
+      - "--enforce-gtid-consistency=ON"
+      - "--binlog-expire-logs-seconds=604800"
+      - "--relay-log-recovery=ON"

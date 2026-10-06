@@ -31,6 +31,10 @@ set -euo pipefail
 TLS_DIR="${TLS_DIR:-/app/tls}"
 MYSQL_CERT_CN="${MYSQL_CERT_CN:-localhost}"
 MYSQL_CLIENT_CN="${MYSQL_CLIENT_CN:-wg-manager-app}"
+# Extra MySQL server-cert SANs (comma list). The warm standby (Phase 3d
+# cycle 5b) lists both hosts' names so the replica can verify the
+# primary and the same cert verifies after failover.
+MYSQL_SERVER_EXTRA_SANS="${MYSQL_SERVER_EXTRA_SANS:-}"
 SCRIPT_DIR="${SCRIPT_DIR:-/app/scripts}"
 PYTHON="${PYTHON:-python}"
 WG_MANAGER="${WG_MANAGER:-wg-manager}"
@@ -70,13 +74,19 @@ if [[ -f "${TLS_DIR}/mysql/server.crt" && -f "${TLS_DIR}/mysql/server.key" ]]; t
     echo "==> MySQL server cert already exists at ${TLS_DIR}/mysql/server.crt — skipping mint"
 else
     echo "==> Minting MySQL server cert (--type mysql, CN=${MYSQL_CERT_CN})..."
+    MYSQL_SAN_FLAGS=(--san localhost --san 127.0.0.1 --san mysql --san wg_manager_mysql)
+    IFS=',' read -ra _extra_sans <<< "${MYSQL_SERVER_EXTRA_SANS}"
+    for s in "${_extra_sans[@]}"; do
+        s="${s// /}"
+        if [[ -n "${s}" ]]; then MYSQL_SAN_FLAGS+=(--san "${s}"); fi
+    done
     # `|| true` because the audit-row insert FAILS here (MySQL isn't up
     # yet) but the file writes complete first. Phase 2 backfills the
     # audit row by re-issuing if needed.
     ${WG_MANAGER} certs issue \
         --type mysql \
         --cn "${MYSQL_CERT_CN}" \
-        --san localhost --san 127.0.0.1 --san mysql --san wg_manager_mysql \
+        "${MYSQL_SAN_FLAGS[@]}" \
         --ttl-days 30 \
         --out-cert "${TLS_DIR}/mysql/server.crt" \
         --out-key "${TLS_DIR}/mysql/server.key" \

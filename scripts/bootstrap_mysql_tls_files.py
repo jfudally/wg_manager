@@ -32,11 +32,14 @@ Outputs (overwrites if present):
 Server cert covers the SANs the compose service is reachable at
 (``localhost``, ``127.0.0.1``, ``mysql``, ``wg_manager_mysql``) so
 both an in-container call and a host-side smoke (``mysql -h 127.0.0.1
--P 3307 ...``) verify cleanly.
+-P 3307 ...``) verify cleanly. ``MYSQL_SERVER_EXTRA_SANS`` (comma list)
+appends more — the warm standby (Phase 3d cycle 5b) lists both hosts'
+names so one cert verifies on either.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -53,10 +56,25 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 _TLS_DIR = _REPO_ROOT / "tls" / "mysql"
 
 _SERVER_CN = "localhost"
-_SERVER_SANS = ["localhost", "127.0.0.1", "mysql", "wg_manager_mysql"]
+_BASE_SERVER_SANS = ["localhost", "127.0.0.1", "mysql", "wg_manager_mysql"]
 _CLIENT_CN = "wg-manager-app"
 _CLIENT_SANS = ["wg-manager-app"]
 _TTL_SECONDS = 30 * 24 * 60 * 60  # 30 days; matches the CLI default
+
+
+def server_sans() -> list[str]:
+    """Return the MySQL server cert SANs: the compose-network names plus
+    any in ``MYSQL_SERVER_EXTRA_SANS``.
+
+    The extra list is comma-separated; blanks and surrounding spaces
+    are dropped. The warm standby (Phase 3d cycle 5b) sets it to both
+    hosts' names, so the replica can verify the primary with
+    VERIFY_IDENTITY and the same cert keeps verifying after failover.
+
+    :return: SANs in order, base names first.
+    """
+    extra = os.environ.get("MYSQL_SERVER_EXTRA_SANS", "")
+    return _BASE_SERVER_SANS + [s.strip() for s in extra.split(",") if s.strip()]
 
 
 def _to_pkcs8_pem(pem: str) -> str:
@@ -96,7 +114,7 @@ def main() -> int:
     print("Minting MySQL server cert ...")
     server = backend.issue_server_cert(
         common_name=_SERVER_CN,
-        sans=_SERVER_SANS,
+        sans=server_sans(),
         ttl_seconds=_TTL_SECONDS,
     )
     _write(_TLS_DIR / "server.crt", server.cert_pem)

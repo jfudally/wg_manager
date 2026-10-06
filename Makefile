@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -67,6 +67,11 @@ help:
 	@echo "  host-export o=DIR  Bundle the STOPPED prod stack's volumes + secrets for a host move (docs/runbooks/host-migration.md)"
 	@echo "  host-import i=DIR  Restore a host-export bundle onto this host (refuses to overwrite existing state)"
 	@echo "  db-counts      Print exact per-table row counts from the prod MySQL (diff before/after a host move)"
+	@echo "  repl-primary-setup  On the primary: create/refresh the MySQL replication user (docs/runbooks/standby-replication.md)"
+	@echo "  standby-up     On the warm standby: run MySQL only, as a read-only replica"
+	@echo "  standby-down   On the warm standby: stop the replica"
+	@echo "  standby-seed primary=HOST  On the warm standby, once: copy the primary's DB and start replicating"
+	@echo "  standby-status Replication health on the standby (exit 0 ok / 1 broken / 2 lagging)"
 	@echo "  vault-migrate-raft  One-shot: convert the STOPPED prod Vault from file to raft storage (docs/runbooks/vault-raft-migration.md)"
 	@echo "  gitleaks       Run gitleaks secret scan (Phase 2e CI gate)"
 	@echo "  pip-audit      Run pip-audit against the synced Python deps"
@@ -166,13 +171,30 @@ ha-logs:
 #
 # The targets explicitly load .env.prod via --env-file so the variables
 # resolve regardless of the operator's shell state.
+#
+# .env.host (optional, gitignored, see .env.host.example) holds the
+# settings that differ per host in a primary/standby pair (Phase 3d
+# cycle 5b): WG_MANAGER_ROLE and MYSQL_BIND_ADDR. .env.prod is shared
+# between the two hosts. When .env.host exists it's layered after
+# .env.prod, so its values win.
 # ---------------------------------------------------------------------------
-PROD_COMPOSE := docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml
+HOST_ENV := $(wildcard .env.host)
+PROD_COMPOSE := docker compose --env-file .env.prod $(if $(HOST_ENV),--env-file .env.host) -f docker-compose.yml -f docker-compose.prod.yml
+# primary | standby | empty (single-host install).
+HOST_ROLE := $(shell sed -n 's/^WG_MANAGER_ROLE=//p' .env.host 2>/dev/null | tr -d '"\047 ')
 # Same stack without --env-file, for scripts that choose the env file
 # themselves (migrate_host.sh import reads it from the bundle).
 PROD_COMPOSE_BASE := docker compose -f docker-compose.yml -f docker-compose.prod.yml
 
 prod-up:
+	@# A standby runs mysql only. The full stack here would start a second
+	@# beat racing the primary's host-cert renewals, and app writes would
+	@# hit the read-only replica. Promotion is `make failover` (cycle 5d).
+	@if [ "$(HOST_ROLE)" = standby ]; then \
+		echo "ERROR: this host is the warm standby (WG_MANAGER_ROLE=standby in .env.host)."; \
+		echo "       Use 'make standby-up'. To take over from the primary, use the failover runbook."; \
+		exit 2; \
+	fi
 	@if [ ! -f .env.prod ]; then \
 		echo "ERROR: .env.prod is missing — copy .env.prod.example and fill in secrets first."; \
 		echo "       See docs/deploy/single-host-prod.md for the bootstrap order."; \
@@ -254,6 +276,50 @@ host-import:
 
 db-counts:
 	@COMPOSE_BASE="$(PROD_COMPOSE_BASE)" scripts/migrate_host.sh counts
+
+# ---------------------------------------------------------------------------
+# Warm standby — MySQL replication primary -> standby (Phase 3d cycle 5b).
+# See docs/runbooks/standby-replication.md. Role-gated via .env.host:
+# running the standby overlay on the primary would restart its mysqld
+# read-only (an outage); running prod-up on the standby is refused above.
+# ---------------------------------------------------------------------------
+STANDBY_COMPOSE = $(PROD_COMPOSE) -f docker-compose.standby.yml
+
+define require_standby_role
+	@if [ "$(HOST_ROLE)" != standby ]; then \
+		echo "ERROR: $@ runs on the warm standby only — set WG_MANAGER_ROLE=standby in .env.host there."; \
+		exit 2; \
+	fi
+endef
+
+# On the PRIMARY: create/refresh the X.509-only `wg_repl` user.
+repl-primary-setup:
+	@if [ "$(HOST_ROLE)" = standby ]; then \
+		echo "ERROR: repl-primary-setup runs on the primary, and this host is the standby."; \
+		exit 2; \
+	fi
+	@COMPOSE="$(PROD_COMPOSE)" scripts/mysql_replication.sh primary-setup
+
+# On the STANDBY: run mysql only, as a read-only replica.
+standby-up:
+	$(require_standby_role)
+	@if [ ! -f .env.prod ]; then echo "ERROR: .env.prod is missing — copy it from the primary."; exit 2; fi
+	$(STANDBY_COMPOSE) up -d --no-deps --wait mysql
+
+standby-down:
+	$(require_standby_role)
+	$(STANDBY_COMPOSE) stop mysql
+
+# On the STANDBY, once: copy the primary's DB and start replicating.
+standby-seed:
+	$(require_standby_role)
+	@if [ -z "$(primary)" ]; then echo "usage: make standby-seed primary=<primary MySQL host, as named in MYSQL_SERVER_EXTRA_SANS>"; exit 2; fi
+	@COMPOSE="$(STANDBY_COMPOSE)" scripts/mysql_replication.sh seed "$(primary)"
+
+# On the STANDBY: replication health. Exit 0 healthy, 1 broken, 2 lagging
+# more than REPL_MAX_LAG_SECONDS (default 300) — usable from a timer.
+standby-status:
+	@COMPOSE="$(STANDBY_COMPOSE)" REPL_MAX_LAG_SECONDS="$(REPL_MAX_LAG_SECONDS)" scripts/mysql_replication.sh status
 
 # One-shot file -> raft storage conversion for a prod Vault that predates
 # Phase 3d cycle 5. Stack must be stopped. See

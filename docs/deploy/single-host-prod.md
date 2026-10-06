@@ -17,6 +17,7 @@ stack running on a fresh box, plus the day-2 operational reference
 |---|---|
 | `make ha-up` (Phase 3d cycle 4a) | You want to verify the HA topology — 2 API replicas + nginx passthrough LB — on a single host. **Dev posture** (TLS off, dev cert reuse). |
 | `make prod-up` (this guide) | You want a hardened single-host stack to actually serve traffic — TLS on, MySQL TLS on, all backends pinned to Vault, secrets sourced from `.env.prod`. **Non-HA, one of everything.** |
+| + a warm standby (Phase 3d cycle 5) | You want a second host that can take over when this one is down. It keeps a MySQL replica now, with Vault snapshots and `make failover` to follow. Set up with [`standby-replication.md`](../runbooks/standby-replication.md). |
 
 ## What you need before the first boot
 
