@@ -133,3 +133,65 @@ class TestIngressListener:
             "port mapping (127.0.0.1:8443 → container 8443) reaches "
             "the right listener."
         )
+
+
+# ---------------------------------------------------------------------------
+# Enrollment port (Phase 3f hardening)
+# ---------------------------------------------------------------------------
+
+
+def _blocks(body: str, keyword: str) -> list[str]:
+    """Return the bodies of every ``<keyword> ... { ... }`` block (brace-matched)."""
+    out: list[str] = []
+    for match in re.finditer(rf"\b{keyword}\b[^{{;]*\{{", body):
+        depth, i = 1, match.end()
+        while depth and i < len(body):
+            depth += {"{": 1, "}": -1}.get(body[i], 0)
+            i += 1
+        out.append(body[match.start() : i])
+    return out
+
+
+def _uncommented(body: str) -> str:
+    return "\n".join(line.split("#", 1)[0] for line in body.splitlines())
+
+
+class TestEnrollStream:
+    """The enroll port is passed through like the API, plus PROXY protocol.
+
+    Without PROXY protocol every enrolling host would share nginx's
+    address in the enroll listener's per-IP rate limiter, so one
+    attacker's bad tokens would lock out every host.
+    """
+
+    @pytest.fixture()
+    def servers(self, conf_body: str) -> dict[str, str]:
+        """Map each stream server's ``listen`` port to its block."""
+        out = {}
+        for block in _blocks(_uncommented(conf_body), "server"):
+            port = re.search(r"\blisten\s+(\d+)", block)
+            if port:
+                out[port.group(1)] = block
+        return out
+
+    def test_enroll_upstream_lists_both_replicas(self, conf_body: str) -> None:
+        [upstream] = [
+            b for b in _blocks(_uncommented(conf_body), "upstream")
+            if "wg_manager_enroll" in b.split("{", 1)[0]
+        ]
+        assert "enroll1:8001" in upstream
+        assert "enroll2:8001" in upstream
+        assert re.search(r"max_fails\s*=\s*\d+", upstream)
+
+    def test_enroll_server_listens_on_8444(self, servers: dict[str, str]) -> None:
+        assert "8444" in servers
+        assert re.search(r"proxy_pass\s+wg_manager_enroll\s*;", servers["8444"])
+
+    def test_enroll_server_sends_proxy_protocol(self, servers: dict[str, str]) -> None:
+        assert re.search(r"\bproxy_protocol\s+on\s*;", servers["8444"])
+
+    def test_operator_server_does_not_send_proxy_protocol(
+        self, servers: dict[str, str]
+    ) -> None:
+        """The operator listener doesn't parse PROXY headers; one would break mTLS."""
+        assert not re.search(r"\bproxy_protocol\s+on", servers["8443"])
