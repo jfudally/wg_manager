@@ -158,6 +158,17 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Fixed
 
+- **`make install` works on a fresh clone.** It ran
+  `uv pip install -e ".[dev]"`, which needs an existing virtualenv, so it
+  failed with `No virtual environment found`. The fallback without uv
+  was broken the same way: it called `.venv/bin/python` before that
+  existed. Now:
+  - with uv, it runs `uv sync --extra dev --frozen`, the same command as
+    CI, which creates `.venv` and installs the versions pinned in
+    `uv.lock` (the old command ignored the lockfile);
+  - without uv, it creates `.venv` with `python3 -m venv` if it's
+    missing, then pip-installs. The versions aren't locked on that path.
+
 - **`make standby-up` now builds the wg-manager image.** Before,
   nothing built it on a standby, so the first `make failover` had to
   build it mid-outage, which takes minutes and needs network access to
