@@ -35,7 +35,7 @@ from wg_manager import db as db_module
 from wg_manager import enroll_app as enroll_app_module
 from wg_manager.db import get_session
 from wg_manager.enroll_app import ENROLL_PATH, create_enroll_app
-from wg_manager.enrollment import mint_token
+from wg_manager.enrollment import consume_token, mint_token
 from wg_manager.models import (
     AuditEvent,
     Client,
@@ -138,6 +138,13 @@ def _body(hostname: str = "ip-172-31-5-9", **over: Any) -> dict[str, Any]:
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _revoke_all() -> None:
+    with Session(db_module.engine) as s:
+        for row in s.exec(select(EnrollmentToken)).all():
+            row.revoked_at = datetime.now(timezone.utc)
+        s.commit()
 
 
 def _token_row() -> EnrollmentToken:
@@ -253,6 +260,35 @@ class TestTokenFailures:
         assert [r.status_code for r in responses] == [401] * 5
         assert len({r.text for r in responses}) == 1
         assert all(r.headers.get("www-authenticate") == "Bearer" for r in responses)
+
+    def test_revoked_token_gets_the_same_401(
+        self, enroll: TestClient, hub: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="wg_manager.audit")
+        baseline = self._post(enroll, _auth("wgmenr_nope"))
+        token = _mint(hub)
+        _revoke_all()
+        resp = self._post(enroll, _auth(token))
+        assert resp.status_code == 401
+        assert resp.text == baseline.text
+        assert _token_row().use_count == 0
+        lines = [r.getMessage() for r in caplog.records if r.name == "wg_manager.audit"]
+        assert any('"enroll.reject"' in m and '"revoked"' in m for m in lines)
+
+    def test_consume_refuses_a_revoked_row(self, engine: Any, hub: int) -> None:
+        """A revoke that commits after the lookup still wins.
+
+        consume_token()'s guarded UPDATE re-checks revocation, so a
+        redemption that already loaded the row can't take a use once
+        the token is revoked.
+        """
+        _mint(hub)
+        with Session(db_module.engine) as s:
+            row = s.exec(select(EnrollmentToken)).one()   # loaded while live
+            _revoke_all()                                  # revoked elsewhere
+            assert consume_token(s, row) is False
+            s.rollback()
+        assert _token_row().use_count == 0
 
     def test_reject_is_logged_without_token(
         self, enroll: TestClient, hub: int, caplog: pytest.LogCaptureFixture

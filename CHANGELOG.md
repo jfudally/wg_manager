@@ -10,6 +10,18 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **List and revoke enrollment tokens.** Admin only, scoped to the
+  tenants the caller administers.
+  - `GET /v1/enrollment-tokens` lists them newest first, with a derived
+    `status` (`active` / `revoked` / `expired` / `exhausted`) and
+    `?server_id=` / `?active=true` filters. It never returns the token
+    or its hash.
+  - `POST /v1/enrollment-tokens/{id}/revoke` is a soft, idempotent
+    revoke (Alembic 0021 adds `revoked_at` / `revoked_by_cn`), audited
+    as `enrollment_token.revoke`. Redeeming a revoked token gets the
+    usual uniform 401, and the guarded use-count `UPDATE` re-checks
+    revocation, so a revoke also stops a redemption already in flight.
+
 - **Prod Vault now uses raft storage** (Phase 3d cycle 5a, the first
   step toward a warm standby). `docker/vault/vault.hcl` switches from
   `storage "file"` to `storage "raft"` on a new `wg_manager_vault_raft`
