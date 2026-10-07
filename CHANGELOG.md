@@ -10,6 +10,26 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.9.0] - 2026-10-07
+
+**Upgrading an existing prod host from v0.8.0.** One step is required,
+and in this order:
+
+1. **Migrate Vault to raft storage before the next `make prod-up`:**
+   `make prod-down`, then `make vault-migrate-raft`, then `make prod-up`.
+   Full procedure, verification and rollback:
+   `docs/runbooks/vault-raft-migration.md`. If `prod-up` runs first, it
+   stops in `bootstrap-substrate` with an error pointing at the
+   runbook. Nothing is lost; migrate, then run `prod-up` again.
+2. That `prod-up` also recreates the `mysql` container with GTIDs on
+   (a few seconds of DB unavailability; data is unchanged), and applies
+   the new database migrations (0021, 0022) automatically.
+
+The warm standby (Phase 3d cycle 5) is opt-in. A single-host install
+needs nothing beyond the steps above.
+
+### Added
+
 - **`GET /v1/enrollment-tokens/{id}`.** Returns one token, in the same
   shape as a list row and never with the token itself. Admin on the
   token's tenant; 404 if unknown.
