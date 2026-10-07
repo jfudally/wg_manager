@@ -396,6 +396,25 @@ blocks nothing.
 
 The response carries `token` **once**. Only its SHA-256 is stored.
 
+### Minting from Terraform
+
+`deploy/terraform/wg-manager-enrollment-token` mints one token per
+instance as a Terraform resource: create mints it, destroy revokes it,
+and any input change replaces it. Its `token` output goes into the
+instance's userdata. `deploy/terraform/examples/aws-instance` shows a
+complete EC2 setup. Configure the `Mastercard/restapi` provider with an
+admin operator's client cert and `create_returns_object = true`.
+
+Keep in mind:
+
+- the token ends up in Terraform state;
+- set `lifecycle { ignore_changes = [user_data] }` on the instance, so
+  a re-minted token never replaces an enrolled host;
+- restapi is pinned to 2.x.
+
+The module's README explains each of these, and the autoscaling-group
+caveats.
+
 ### 3. Put it in userdata
 
 ```bash
