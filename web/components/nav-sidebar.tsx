@@ -14,6 +14,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/ssh-keys", label: "SSH Roles" },
   { href: "/servers", label: "Servers" },
   { href: "/clients", label: "Clients" },
+  { href: "/enrollment-tokens", label: "Enrollment tokens" },
   { href: "/discovered-peers", label: "Discovered Peers" },
   { href: "/crypto", label: "Crypto" },
   { href: "/certificates", label: "Certificates" },

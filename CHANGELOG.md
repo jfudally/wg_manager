@@ -10,6 +10,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Enrollment tokens dashboard page** (`/enrollment-tokens`).
+  - The list shows each token's status, uses, expiry and allowed
+    networks, with an "Active only" filter.
+  - Revoke asks for confirmation first.
+  - The mint form offers ready hubs only and takes optional allowed
+    networks, one per line.
+  - A new token is shown exactly once, with a copy button.
+
 - **`wg-manager enroll-tokens` CLI.** It has three commands, `create`,
   `list` and `revoke`, over `/v1/enrollment-tokens`.
   - `create` takes `--ttl` as seconds or `90s`/`15m`/`2h`/`1d`, and

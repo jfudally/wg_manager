@@ -620,3 +620,59 @@ export interface OperatorTenantAttachRequest {
   cn: string;
   role?: OperatorRole;
 }
+
+// --- Enrollment tokens (Phase 3f) ---
+
+/** Derived token state; see `EnrollmentTokenStatus` in the API. */
+export type EnrollmentTokenStatus = "active" | "revoked" | "expired" | "exhausted";
+
+/**
+ * One row of `GET /enrollment-tokens`. Never carries the token or its
+ * hash: the plaintext is only in {@link EnrollmentTokenCreateResponse}.
+ */
+export interface EnrollmentToken {
+  id: number;
+  tenant_id: number | null;
+  server_id: number;
+  ssh_key_id: number;
+  ssh_username: string;
+  name_prefix: string;
+  max_uses: number;
+  use_count: number;
+  expires_at: string;
+  created_by_cn: string | null;
+  created_at: string;
+  revoked_at: string | null;
+  revoked_by_cn: string | null;
+  /** Networks it may be redeemed from; `null` means anywhere. */
+  allowed_cidrs: string[] | null;
+  status: EnrollmentTokenStatus;
+}
+
+/** Body of `POST /enrollment-tokens`. Omitted fields use API defaults. */
+export interface EnrollmentTokenCreate {
+  server_id: number;
+  ssh_key_id: number;
+  ssh_username: string;
+  name_prefix?: string;
+  ttl_seconds?: number;
+  max_uses?: number;
+  allowed_cidrs?: string[];
+}
+
+/** 201 from `POST /enrollment-tokens`: the only time `token` is returned. */
+export interface EnrollmentTokenCreateResponse {
+  id: number;
+  token: string;
+  server_id: number;
+  tenant_id: number | null;
+  max_uses: number;
+  expires_at: string;
+}
+
+/** Filters for `GET /enrollment-tokens`. */
+export interface EnrollmentTokenListParams {
+  serverId?: number;
+  /** Only tokens redeemable right now. */
+  active?: boolean;
+}
