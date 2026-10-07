@@ -10,6 +10,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Expired-token sweeper.** A new Celery beat task,
+  `wg_manager.tasks.sweep_enrollment_tokens`, deletes enrollment tokens
+  that expired or were revoked more than `ENROLL_TOKEN_RETENTION_SECONDS`
+  ago (default 7 days). It runs every
+  `ENROLL_TOKEN_SWEEP_INTERVAL_SECONDS` (default 1 hour). Live tokens are
+  never touched, and the audit log keeps the history. Both settings are
+  passed through to `beat` in `docker-compose.prod.yml`.
+
 - **List and revoke enrollment tokens.** Admin only, scoped to the
   tenants the caller administers.
   - `GET /v1/enrollment-tokens` lists them newest first, with a derived
