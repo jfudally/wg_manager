@@ -127,6 +127,18 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   managed host trusts. It now refuses whenever `vault-init.json`
   already holds keys, and points at the raft migration runbook.
 
+### Security
+
+- **Dashboard (`web/`) dependencies, lockfile only.**
+  - **Shipped with the dashboard:** `sharp` 0.35.4 → 0.35.5
+    (GHSA-wq5f-xc86-pv6w, librsvg) and `source-map-js` 1.2.1 → 1.2.2
+    (GHSA-68fv-2mgg-jv7q). Both are transitive; these two failed the
+    `npm audit` gate.
+  - **Dev and test tooling only:** `undici` 7.27.0 → 7.30.0 (nine
+    advisories) and `vitest` 4.1.10 → 4.1.11 (GHSA-82fw-gwwq-j7x9).
+    The new `vitest` requires a newer `vite` (8.1.3 → 8.3.3) and
+    `rolldown`.
+
 ## [v0.8.0] - 2026-10-05
 
 ### Added
