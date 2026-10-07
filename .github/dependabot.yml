@@ -21,6 +21,10 @@
 # Open PR limit: 5 per ecosystem (Dependabot default). github-actions
 # capped at 3 since those mostly bump version pins.
 #
+# Holds: ``ignore`` entries pin a dependency below a version that is
+# known to break wg-manager. Each one says why and what lifts it, and
+# should be removed in the PR that does the lifting.
+#
 # Commit messages use the ``chore(deps):`` prefix matching the
 # existing manual bumps (e.g. ``fc6796f chore(deps): add pyyaml to
 # dev dependencies in uv.lock``) so the supply-chain audit trail in
@@ -48,6 +52,14 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # sqlmodel 0.0.45+ rejects naive datetimes ("Datetime values must
+      # have timezone information"), and wg-manager stores naive UTC, so
+      # host-cert rotation and DB-backup paths break. Held until the
+      # models are annotated with NaiveDatetime or moved to aware
+      # datetimes; remove this entry in that PR. See #141 / #160.
+      - dependency-name: "sqlmodel"
+        versions: [">=0.0.45"]
 
   # Next.js dashboard.
   - package-ecosystem: "npm"
@@ -69,6 +81,15 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # vitest 5 gives ``Assertion`` a second type parameter, and
+      # @testing-library/jest-dom (v6 and v7) still augments the
+      # one-parameter ``interface Assertion<T>``, so its matchers
+      # (``toBeInTheDocument`` etc.) vanish from the types: 53 tsc
+      # errors, although the tests pass at runtime. Held until jest-dom
+      # supports vitest 5; remove this entry then. See #140.
+      - dependency-name: "vitest"
+        versions: [">=5"]
 
   # GitHub Actions runners — version pins across the four workflows.
   - package-ecosystem: "github-actions"
