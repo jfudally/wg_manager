@@ -39,6 +39,19 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   second `stream {}` server on 8444 with `proxy_protocol on;`, in front
   of new `enroll1` / `enroll2` services in the dev `ha` compose profile.
 
+- **Enrollment metrics and alerts.** The operator API's mTLS `/metrics`
+  now includes:
+  - `wg_manager_enroll_responses_total{status}`;
+  - `wg_manager_enroll_rejects_total{reason}`;
+  - `wg_manager_enroll_rate_limited_total{bucket}`;
+  - `wg_manager_enroll_metrics_up`.
+
+  Each enroll replica counts into Valkey (`wg_manager.enroll_metrics`),
+  so the public enroll port still serves no `/metrics`, and one scrape
+  covers every replica. Recording never changes a response.
+  `prometheus-alerts.yaml` gains `WgEnrollTokenGuessing`,
+  `WgEnrollDeadTokens` and `WgEnrollMetricsDown`.
+
 - **Prod Vault now uses raft storage** (Phase 3d cycle 5a, the first
   step toward a warm standby). `docker/vault/vault.hcl` switches from
   `storage "file"` to `storage "raft"` on a new `wg_manager_vault_raft`
