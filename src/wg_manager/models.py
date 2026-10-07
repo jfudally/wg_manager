@@ -873,7 +873,7 @@ class EnrollmentToken(SQLModel, table=True):
     :ivar allowed_cidrs: Networks the token may be redeemed from, as
         canonical comma-separated CIDRs; ``None`` means anywhere. Read it
         through :func:`wg_manager.enrollment.allowed_networks`. Added in
-        Alembic 0021.
+        Alembic 0022.
     """
 
     id: int | None = Field(default=None, primary_key=True)
