@@ -208,6 +208,34 @@ def health_only_app() -> Generator[FastAPI, None, None]:
     yield app
 
 
+# How a client sees the operator listener refusing it for presenting no
+# client cert. Under TLS 1.3 the server rejects only after the client's
+# side of the handshake is done, so the refusal reaches the client in
+# whatever form its next socket operation hits: an SSL alert, a reset,
+# or, if it is still writing its request when the reset arrives, a broken
+# pipe. CI hit that third form (BrokenPipeError) on unrelated PRs.
+# ConnectionError covers ConnectionResetError, BrokenPipeError and
+# ConnectionAbortedError.
+_REFUSED = (ssl.SSLError, ConnectionError)
+
+
+def _split_write_get(port: int, ca: Path, pause: float) -> bytes:
+    """Cert-less GET sent in two writes with a pause in between.
+
+    The pause lets the server reject the handshake and close (with the
+    first half unread, so its kernel resets the connection) before the
+    second write: the timing CI hits by chance, made deterministic.
+    """
+    ctx = ssl.create_default_context(cafile=str(ca))
+    ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT  # see _get
+    raw = socket.create_connection(("127.0.0.1", port), timeout=5)
+    with ctx.wrap_socket(raw, server_hostname="127.0.0.1") as tls:
+        tls.sendall(b"GET /v1/healthz HTTP/1.1\r\n")
+        time.sleep(pause)
+        tls.sendall(b"Host: 127.0.0.1\r\n\r\n")
+        return tls.recv(1024)
+
+
 class TestHandshakePolicy:
     """Same server cert, two listeners, two client-cert policies."""
 
@@ -219,11 +247,24 @@ class TestHandshakePolicy:
             # TLS 1.3 sends the missing-cert alert after the client's
             # handshake completes, so it surfaces on the request as a
             # dropped connection (or an SSL alert), not on connect().
-            with pytest.raises((ssl.SSLError, ConnectionResetError)) as exc:
+            with pytest.raises(_REFUSED) as exc:
                 _get(port, tls_material["ca"], "/v1/healthz")
         # The client-side server-cert check must have passed; otherwise
         # this test would be proving nothing about client certs.
         assert not isinstance(exc.value, ssl.SSLCertVerificationError)
+
+    def test_refusal_while_still_writing_counts_as_refused(
+        self, tls_material: dict[str, Path], health_only_app: FastAPI
+    ) -> None:
+        """Regression: a client still writing when the refusal lands gets
+        BrokenPipeError, and that is the same refusal, not a different
+        failure. Forced deterministically here; CI hit it by chance."""
+        kwargs = api_ssl_kwargs(_settings_for(tls_material))
+        with _serve(health_only_app, kwargs) as port:
+            for _ in range(5):
+                with pytest.raises(_REFUSED) as exc:
+                    _split_write_get(port, tls_material["ca"], pause=0.3)
+                assert not isinstance(exc.value, ssl.SSLCertVerificationError)
 
     def test_operator_listener_accepts_valid_client_cert(
         self, tls_material: dict[str, Path], health_only_app: FastAPI

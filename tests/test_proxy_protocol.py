@@ -282,7 +282,10 @@ def _tls_get(
             except (ssl.SSLZeroReturnError, ssl.SSLEOFError):
                 break
         return response
-    except (ConnectionResetError, ssl.SSLError):
+    # ConnectionError: a reset, or a broken pipe if the server dropped us
+    # while we were still writing (same race as test_enroll_listener's
+    # _REFUSED).
+    except (ConnectionError, ssl.SSLError):
         return b""
     finally:
         sock.close()
@@ -310,10 +313,13 @@ def _json_body(response: bytes) -> dict[str, Any]:
 def _closed_without_reply(port: int, payload: bytes, wait: float = 3.0) -> bool:
     """Send ``payload`` and report whether the server hung up without replying."""
     with socket.create_connection(("127.0.0.1", port), timeout=wait) as sock:
-        sock.sendall(payload)
+        # The send is inside the try too: if the server has already hung
+        # up, sendall itself fails (BrokenPipeError), and that's the
+        # outcome this helper is looking for.
         try:
+            sock.sendall(payload)
             return sock.recv(1024) == b""
-        except ConnectionResetError:
+        except ConnectionError:
             return True
 
 
