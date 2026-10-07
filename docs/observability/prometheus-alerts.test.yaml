@@ -1,0 +1,211 @@
+# promtool unit tests for prometheus-alerts.yaml (Phase 3d cycle 5e).
+#
+#   make alerts-check     # runs `promtool check rules` + `promtool test rules`
+#
+# Each test feeds synthetic series and asserts which alerts fire at a
+# given time. They pin the warm-standby rules' behaviour, including the
+# cases that must NOT fire, such as a single-host install with no standby.
+# Series timestamps: `values: "a+bxN"` = a, a+b, ... every `interval`.
+
+rule_files:
+  - prometheus-alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ------------------------------------------------------------------
+  # Healthy standby: nothing fires. Timestamps track wall-clock time
+  # (60 s per minute), so every "age" stays small.
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_replication_io_running{instance="general"}'
+        values: '1x120'
+      - series: 'wg_manager_standby_replication_sql_running{instance="general"}'
+        values: '1x120'
+      - series: 'wg_manager_standby_replication_lag_seconds{instance="general"}'
+        values: '2x120'
+      - series: 'wg_manager_standby_bundle_present{instance="general"}'
+        values: '1x120'
+      - series: 'wg_manager_standby_bundle_created_timestamp_seconds{instance="general"}'
+        values: '0+60x120'
+      - series: 'wg_manager_standby_bundle_commit_drift{instance="general"}'
+        values: '0x120'
+      - series: 'wg_manager_standby_metrics_generated_timestamp_seconds{instance="general"}'
+        values: '0+60x120'
+      - series: 'wg_manager_standby_drill_last_success_timestamp_seconds{instance="general"}'
+        values: '0x120'
+    alert_rule_test:
+      - {eval_time: 2h, alertname: WgStandbyReplicationBroken, exp_alerts: []}
+      - {eval_time: 2h, alertname: WgStandbyReplicationLagging, exp_alerts: []}
+      - {eval_time: 2h, alertname: WgStandbyBundleStale, exp_alerts: []}
+      - {eval_time: 2h, alertname: WgStandbyCodeDrift, exp_alerts: []}
+      - {eval_time: 2h, alertname: WgStandbyMetricsStale, exp_alerts: []}
+      - {eval_time: 2h, alertname: WgStandbyDrillFailed, exp_alerts: []}
+      - {eval_time: 2h, alertname: WgStandbyDrillOverdue, exp_alerts: []}
+
+  # ------------------------------------------------------------------
+  # Single-host install: no standby series at all. No standby alert may
+  # fire (the rules must not rely on absent()).
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'up{job="wg-manager"}'
+        values: '1x30'
+    alert_rule_test:
+      - {eval_time: 30m, alertname: WgStandbyMetricsStale, exp_alerts: []}
+      - {eval_time: 30m, alertname: WgStandbyDrillOverdue, exp_alerts: []}
+      - {eval_time: 30m, alertname: WgStandbyBundleStale, exp_alerts: []}
+
+  # ------------------------------------------------------------------
+  # Replication breaks (IO thread down) → critical after 5 minutes.
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_replication_io_running{instance="general"}'
+        values: '1 0x20'
+      - series: 'wg_manager_standby_replication_sql_running{instance="general"}'
+        values: '1x20'
+    alert_rule_test:
+      - {eval_time: 3m, alertname: WgStandbyReplicationBroken, exp_alerts: []}
+      - eval_time: 10m
+        alertname: WgStandbyReplicationBroken
+        exp_alerts:
+          - exp_labels: {severity: critical, component: standby, instance: general}
+
+  # ------------------------------------------------------------------
+  # Lag over 300 s for 10 minutes.
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_replication_lag_seconds{instance="general"}'
+        values: '900x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: WgStandbyReplicationLagging
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # ------------------------------------------------------------------
+  # Pulls stop: the bundle timestamp freezes at 0 while time moves on.
+  # Older than 1 h (+15 m `for`) → fires.
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_bundle_present{instance="general"}'
+        values: '1x120'
+      - series: 'wg_manager_standby_bundle_created_timestamp_seconds{instance="general"}'
+        values: '0x120'
+    alert_rule_test:
+      - {eval_time: 50m, alertname: WgStandbyBundleStale, exp_alerts: []}
+      - eval_time: 90m
+        alertname: WgStandbyBundleStale
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # A standby that never pulled a bundle also counts as stale.
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_bundle_present{instance="general"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: WgStandbyBundleStale
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # ------------------------------------------------------------------
+  # Code drift for an hour.
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_bundle_commit_drift{instance="general"}'
+        values: '1x90'
+    alert_rule_test:
+      - {eval_time: 30m, alertname: WgStandbyCodeDrift, exp_alerts: []}
+      - eval_time: 80m
+        alertname: WgStandbyCodeDrift
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # ------------------------------------------------------------------
+  # The metrics timer dies: generated timestamp freezes.
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_metrics_generated_timestamp_seconds{instance="general"}'
+        values: '0x30'
+    alert_rule_test:
+      - {eval_time: 8m, alertname: WgStandbyMetricsStale, exp_alerts: []}
+      - eval_time: 20m
+        alertname: WgStandbyMetricsStale
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # ------------------------------------------------------------------
+  # The latest drill failed (failure newer than success) → fires.
+  # ------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_drill_last_success_timestamp_seconds{instance="general"}'
+        values: '100x10'
+      - series: 'wg_manager_standby_drill_last_failure_timestamp_seconds{instance="general"}'
+        values: '200x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: WgStandbyDrillFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # A failure followed by a newer success clears it.
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_drill_last_success_timestamp_seconds{instance="general"}'
+        values: '300x10'
+      - series: 'wg_manager_standby_drill_last_failure_timestamp_seconds{instance="general"}'
+        values: '200x10'
+    alert_rule_test:
+      - {eval_time: 5m, alertname: WgStandbyDrillFailed, exp_alerts: []}
+
+  # A standby that has never had a successful drill but did fail one.
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_drill_last_failure_timestamp_seconds{instance="general"}'
+        values: '200x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: WgStandbyDrillFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # ------------------------------------------------------------------
+  # Drill overdue: last success over 8 days ago...
+  # ------------------------------------------------------------------
+  # Samples every minute like the real timer: with sparser samples the
+  # 5-minute lookback leaves gaps that keep resetting `for:`.
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_drill_last_success_timestamp_seconds{instance="general"}'
+        values: '0x13500'
+      - series: 'wg_manager_standby_metrics_generated_timestamp_seconds{instance="general"}'
+        values: '0+60x13500'
+    alert_rule_test:
+      - {eval_time: 7d, alertname: WgStandbyDrillOverdue, exp_alerts: []}
+      - eval_time: 9d
+        alertname: WgStandbyDrillOverdue
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}
+
+  # ...or a standby that reports metrics but has never drilled. No
+  # grace period beyond `for: 1h`: setup ends with one `make
+  # standby-drill`, and an unfinished setup should surface quickly.
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_metrics_generated_timestamp_seconds{instance="general"}'
+        values: '0+60x200'
+    alert_rule_test:
+      - {eval_time: 30m, alertname: WgStandbyDrillOverdue, exp_alerts: []}
+      - eval_time: 2h
+        alertname: WgStandbyDrillOverdue
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, instance: general}

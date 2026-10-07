@@ -434,3 +434,91 @@ puts the unit in `failed`. Alert on that, or on `make standby-status`
 returning non-zero. It reports `STALE` once the last bundle is older
 than `STANDBY_MAX_BUNDLE_AGE_SECONDS`, default one hour, i.e. four
 missed pulls.
+
+## Warm standby metrics and drill (Phase 3d cycle 5e)
+
+Two more timers run on the **standby** only, next to
+`wg-manager-standby-pull.timer`. Both use the same `WorkingDirectory`
+and `User` as the pull unit above.
+
+- **Metrics, every minute.** `make standby-metrics` writes the
+  node_exporter textfile that the `wg-manager.standby` alerts read
+  ([`observability.md`](../observability.md#warm-standby-phase-3d-cycle-5e)).
+- **Drill, weekly.** `make standby-drill` restores the latest Vault
+  snapshot into an isolated throwaway Vault and checks replication
+  ([`failover.md`](../runbooks/failover.md#the-weekly-drill)). It
+  touches nothing real, so any time of day is fine.
+
+**`/etc/systemd/system/wg-manager-standby-metrics.service`**
+
+```ini
+[Unit]
+Description=wg-manager — write warm-standby metrics for node_exporter
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ops/wg_manager
+User=ops
+ExecStart=/usr/bin/make -s standby-metrics
+```
+
+**`/etc/systemd/system/wg-manager-standby-metrics.timer`**
+
+```ini
+[Unit]
+Description=wg-manager — warm-standby metrics every minute
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=5s
+Unit=wg-manager-standby-metrics.service
+
+[Install]
+WantedBy=timers.target
+```
+
+**`/etc/systemd/system/wg-manager-standby-drill.service`**
+
+```ini
+[Unit]
+Description=wg-manager — weekly warm-standby failover drill
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ops/wg_manager
+User=ops
+ExecStart=/usr/bin/make standby-drill
+StandardOutput=journal
+StandardError=journal
+```
+
+**`/etc/systemd/system/wg-manager-standby-drill.timer`**
+
+```ini
+[Unit]
+Description=wg-manager — weekly warm-standby failover drill
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+Unit=wg-manager-standby-drill.service
+
+[Install]
+WantedBy=timers.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now wg-manager-standby-metrics.timer wg-manager-standby-drill.timer
+sudo systemctl start wg-manager-standby-drill.service   # once now: a never-drilled standby alerts after 1h
+sudo journalctl -u wg-manager-standby-drill.service -n 40
+```
+
+After a failover, the new primary doesn't need these timers. Disable
+them there and enable them on the new standby, along with the pull
+timer.

@@ -175,6 +175,19 @@ hosts' names and stays valid after failover.
    every 15 minutes; the units are in
    [`systemd-timer.md`](../deploy/systemd-timer.md#warm-standby-pull-phase-3d-cycle-5c).
 
+7. **Monitoring and the weekly drill** (cycle 5e).
+   - Point node_exporter's textfile collector at
+     `STANDBY_METRICS_FILE`.
+   - Enable `wg-manager-standby-metrics.timer` and
+     `wg-manager-standby-drill.timer`, and load the `wg-manager.standby`
+     alert rules
+     ([`observability.md`](../observability.md#warm-standby-phase-3d-cycle-5e)).
+   - Run the drill once:
+
+     ```bash
+     make standby-drill
+     ```
+
 `make standby-status` should end with two `OK`s, one for replication
 and one for the bundle:
 
@@ -195,7 +208,8 @@ OK
 
 ## Day 2
 
-- **Watch it.** `make standby-status` exits:
+- **Watch it.** The `wg-manager.standby` Prometheus alerts cover all
+  of this (cycle 5e). By hand, `make standby-status` exits:
   - **0** when healthy;
   - **1** when broken: replication down, or nothing pulled yet;
   - **2** when degraded: replication lag over `REPL_MAX_LAG_SECONDS`
@@ -203,8 +217,8 @@ OK
     `STANDBY_MAX_BUNDLE_AGE_SECONDS` (default 3600), or **code
     drift**, meaning the primary runs a different commit.
 
-  Run it from your monitoring and alert on non-zero. Prometheus
-  alerts arrive in cycle 5e.
+  The weekly `make standby-drill` additionally proves a Vault restore
+  works ([`failover.md` → The weekly drill](failover.md#the-weekly-drill)).
 - **Cert rotations on the primary are handled.** Each pull installs
   rv's current `tls/`. When `tls/mysql` changed, the pull restarts the
   replica so it loads the new certs.

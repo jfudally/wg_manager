@@ -94,6 +94,32 @@ jobs:
       - name: shellcheck
         run: make shellcheck
 
+  # Alert-rule gate (Phase 3d cycle 5e). `promtool check rules` plus the
+  # promtool unit tests in docs/observability/prometheus-alerts.test.yaml,
+  # run from the Prometheus image (docker is on the runner). PyYAML from
+  # the dev sync strips annotations for the unit tests.
+  alerts:
+    name: Lint (promtool)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python 3.13
+        run: uv python install 3.13
+
+      - name: Sync dependencies (incl. dev)
+        run: uv sync --extra dev --frozen
+
+      - name: promtool
+        run: make alerts-check
+
   dashboard:
     name: Dashboard (tsc + vitest)
     runs-on: ubuntu-latest

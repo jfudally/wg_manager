@@ -1925,7 +1925,7 @@ Shipped:
   mode (was 901 on Phase 3b's close); vitest 57/57;
   ``tsc --noEmit`` clean.
 
-### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5a–5d shipped)
+### Phase 3d — HA control plane `[~]` (cycles 1–4a, 5 shipped)
 
 Two-replica FastAPI behind a load balancer; Celery workers
 horizontally scaled; MySQL primary + replica with failover.
@@ -2111,7 +2111,7 @@ behaviour in practice.
   when configured. Compose primary→replica plumbing remains
   operator-provided.
 
-- **Cycle 5 `[~]`** — warm standby with manual failover. Goal: when
+- **Cycle 5 `[x]`** — warm standby with manual failover. Goal: when
   the prod host (first deployment: **rv**) is down, the control plane
   keeps operating on a standby host (**general**), reached through a
   DNS name the operator moves between them.
@@ -2222,9 +2222,24 @@ behaviour in practice.
       key size 33"). The 5a/5c drills missed it because both sides
       used 1-of-1 keys. The restore is now restore → restart Vault →
       unseal + verify.
-  - **5e `[ ]` — Drill + alerting.** (The failover runbook shipped with 5d.)
-    Prometheus alerts on replication lag and snapshot age, and a
-    scheduled failover drill.
+  - **5e `[x]` — alerting + weekly drill.**
+    - **Metrics.** The standby runs no API, so `make standby-metrics`
+      (every minute) writes a node_exporter textfile: replication
+      state and lag, bundle timestamp and commit drift, drill results,
+      and when the file was generated. All times are timestamps, not
+      ages.
+    - **Alerts.** A new `wg-manager.standby` group covers replication
+      broken (critical) and lagging, bundle stale, code drift, metrics
+      stale, and drill failed or overdue. No rule uses `absent()`, so
+      single-host installs stay quiet. The rules are unit-tested with
+      the real `promtool` (`make alerts-check`, plus a new CI job).
+    - **Drill.** `make standby-drill` (weekly) restores the latest
+      snapshot into an isolated throwaway Vault, using the exact
+      failover restore path, and requires healthy replication. It
+      touches nothing real; verified live with a real 5-of-3-key
+      Vault, leaving zero leftovers.
+    - **5d gap closed.** `make standby-up` now builds the wg-manager
+      image, so `make failover` never has to build it mid-outage.
 
   *Operator prerequisites:* a DNS name for the control plane with a
   low TTL; that name in `API_SERVER_SANS` and in enrollment userdata;

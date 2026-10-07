@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status standby-bundle standby-pull demote failover rejoin gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status standby-bundle standby-pull demote failover rejoin standby-metrics standby-drill alerts-check gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -74,6 +74,9 @@ help:
 	@echo "  standby-status Replication + bundle health on the standby (exit 0 ok / 1 broken / 2 degraded)"
 	@echo "  standby-bundle o=FILE|-  On the primary: Vault snapshot + vault-init.json/.env.prod/tls bundle for the standby"
 	@echo "  standby-pull   On the warm standby (timer): fetch, verify and install the primary's bundle"
+	@echo "  standby-metrics  On the standby (timer): write node_exporter textfile metrics (docs/observability.md)"
+	@echo "  standby-drill  On the standby (weekly timer): restore the Vault snapshot into a throwaway Vault + check replication"
+	@echo "  alerts-check   Validate + unit-test docs/observability/prometheus-alerts.yaml with promtool (docker)"
 	@echo "  demote         On the primary: stop the app, make MySQL read-only (planned switchover, docs/runbooks/failover.md)"
 	@echo "  failover       On the standby: fence, promote MySQL, restore Vault, become the primary [confirm=primary-is-down]"
 	@echo "  rejoin primary=HOST  On the old primary: become a replica of HOST without re-seeding"
@@ -305,10 +308,14 @@ repl-primary-setup:
 	fi
 	@COMPOSE="$(PROD_COMPOSE)" scripts/mysql_replication.sh primary-setup
 
-# On the STANDBY: run mysql only, as a read-only replica.
+# On the STANDBY: run mysql only, as a read-only replica. Builds the
+# wg-manager image first (Phase 3d cycle 5e): `make failover` and
+# `make standby-drill` run it, and building it mid-outage would take
+# minutes and need network access to the package indexes.
 standby-up:
 	$(require_standby_role)
 	@if [ ! -f .env.prod ]; then echo "ERROR: .env.prod is missing — copy it from the primary."; exit 2; fi
+	$(STANDBY_COMPOSE) build bootstrap-app
 	$(STANDBY_COMPOSE) up -d --no-deps --wait mysql
 
 standby-down:
@@ -354,6 +361,25 @@ standby-bundle:
 standby-pull:
 	$(require_standby_role)
 	@COMPOSE="$(STANDBY_COMPOSE)" scripts/standby_pull.sh pull
+
+# ---------------------------------------------------------------------------
+# Watching + drilling the standby (Phase 3d cycle 5e).
+# ---------------------------------------------------------------------------
+
+# On the STANDBY, every minute (timer): node_exporter textfile metrics.
+standby-metrics:
+	$(require_standby_role)
+	@COMPOSE="$(STANDBY_COMPOSE)" scripts/standby_metrics.sh
+
+# On the STANDBY, weekly (timer): restore the latest Vault snapshot into an
+# isolated throwaway Vault + check replication. Touches nothing real.
+standby-drill:
+	$(require_standby_role)
+	@COMPOSE="$(STANDBY_COMPOSE)" scripts/standby_drill.sh
+
+# Anywhere: validate + unit-test the Prometheus alert rules with promtool.
+alerts-check:
+	@PYTHON="$(PYTHON)" scripts/alerts_check.sh
 
 # ---------------------------------------------------------------------------
 # Promotion (Phase 3d cycle 5d) — docs/runbooks/failover.md.

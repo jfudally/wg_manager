@@ -318,3 +318,61 @@ can render it as a clickable link in the page payload:
 {{- if .Annotations.runbook }}https://github.com/jfudally/wg_manager/blob/main/{{ .Annotations.runbook }}{{ end -}}
 {{- end }}
 ```
+
+## Warm standby (Phase 3d cycle 5e)
+
+The standby host runs no API, so there is no `/metrics` to scrape
+there. Instead `make standby-metrics`, run every minute by
+`wg-manager-standby-metrics.timer`, writes a **node_exporter
+textfile-collector** file. Prometheus scrapes it through the
+standby's node_exporter. The units are in
+[`systemd-timer.md`](deploy/systemd-timer.md#warm-standby-metrics-and-drill-phase-3d-cycle-5e).
+
+### Setup
+
+1. Run node_exporter on the standby with the textfile collector:
+   `--collector.textfile.directory=/var/lib/node_exporter/textfile_collector`.
+   The directory must be writable by the timer's user.
+2. If you use a different directory, set `STANDBY_METRICS_FILE` in the
+   standby's `.env.host`.
+3. Scrape the standby's node_exporter as usual (`job="node"`). Keep
+   an `up{job="node"} == 0` alert for it. If node_exporter itself
+   dies, every standby series goes stale and none of the rules below
+   can fire.
+4. Load the `wg-manager.standby` rule group from
+   [`observability/prometheus-alerts.yaml`](observability/prometheus-alerts.yaml)
+   along with the others.
+
+### Metrics
+
+All gauges. Times are Unix timestamps, not ages, so `time() - x`
+keeps growing even if the metrics timer stops.
+
+| Metric | Meaning |
+|---|---|
+| `wg_manager_standby_replication_configured` | 1 if this host is a configured MySQL replica |
+| `wg_manager_standby_replication_io_running` / `_sql_running` | 1 if the replica's IO / SQL thread runs |
+| `wg_manager_standby_replication_lag_seconds` | `Seconds_Behind_Source`; omitted when MySQL reports NULL |
+| `wg_manager_standby_bundle_present` | 1 once a bundle from the primary has been installed |
+| `wg_manager_standby_bundle_created_timestamp_seconds` | When the installed bundle (Vault snapshot + files) was created on the primary |
+| `wg_manager_standby_bundle_commit_drift` | 1 if the primary's commit differs from the standby's checkout |
+| `wg_manager_standby_drill_last_success_timestamp_seconds` / `_failure_` | Last passed / failed `make standby-drill` |
+| `wg_manager_standby_metrics_generated_timestamp_seconds` | When the file was written |
+
+### Alerts
+
+| Alert | Fires when | Severity |
+|---|---|---|
+| `WgStandbyReplicationBroken` | IO or SQL thread down for 5m | critical |
+| `WgStandbyReplicationLagging` | lag > 300s for 10m | warning |
+| `WgStandbyBundleStale` | no bundle, or the last one is > 1h old, for 15m | warning |
+| `WgStandbyCodeDrift` | the primary runs a different commit, for 1h | warning |
+| `WgStandbyMetricsStale` | the metrics file is > 10m old, for 5m | warning |
+| `WgStandbyDrillFailed` | the latest drill failed | warning |
+| `WgStandbyDrillOverdue` | no successful drill in 8 days, or never drilled (after 1h) | warning |
+
+None of these use `absent()`, so a single-host install (no standby
+series) stays quiet. `make alerts-check` validates the rules and
+runs their promtool unit tests
+([`observability/prometheus-alerts.test.yaml`](observability/prometheus-alerts.test.yaml)).
+CI runs it too.
