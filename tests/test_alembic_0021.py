@@ -1,4 +1,4 @@
-"""Tests for Alembic 0020: revocation columns on ``enrollmenttoken``.
+"""Tests for Alembic 0021: revocation columns on ``enrollmenttoken``.
 
 ``revoked_at`` / ``revoked_by_cn`` back ``POST /enrollment-tokens/{id}/revoke``.
 Both are nullable (NULL = not revoked), so existing tokens stay live
@@ -12,8 +12,8 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine, inspect
 
-_REVISION_BEFORE = "0019_server_reconfig_generations"
-_REVISION_AT = "0020_enrollment_token_revocation"
+_REVISION_BEFORE = "0020_host_cert_serial_unsigned"
+_REVISION_AT = "0021_enrollment_token_revocation"
 _COLUMNS = ("revoked_at", "revoked_by_cn")
 
 
@@ -29,7 +29,7 @@ def _alembic_config(database_url: str):
 def file_db_url(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
     from wg_manager.config import settings as live_settings
 
-    url = f"sqlite:///{tmp_path / 'wg_manager_0020.sqlite'}"
+    url = f"sqlite:///{tmp_path / 'wg_manager_0021.sqlite'}"
     monkeypatch.setattr(live_settings, "database_url", url)
     return url
 

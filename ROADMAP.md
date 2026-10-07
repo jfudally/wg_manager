@@ -2384,7 +2384,7 @@ from the operator's first SSH connection as the root of trust.
   - [ ] Token binding: optional expected source CIDR / instance ID.
   - [ ] HA: second `stream {}` server block in
         `docker/nginx/wg-manager.conf` for the enroll port.
-  - [x] **Token list/revoke endpoints** (2026-09-26, Alembic 0020).
+  - [x] **Token list/revoke endpoints** (2026-09-26, Alembic 0021).
         `GET /v1/enrollment-tokens` (derived `status`, `server_id` /
         `active` filters) and an idempotent soft
         `POST /v1/enrollment-tokens/{id}/revoke`. The guarded

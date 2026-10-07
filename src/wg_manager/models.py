@@ -868,7 +868,7 @@ class EnrollmentToken(SQLModel, table=True):
         ``TLS_REQUIRED=false`` dev posture).
     :ivar created_at: Mint time (UTC).
     :ivar revoked_at: When an admin revoked the token (UTC); ``None``
-        while it's not revoked. Added in Alembic 0020.
+        while it's not revoked. Added in Alembic 0021.
     :ivar revoked_by_cn: CN of the revoking operator.
     """
 

@@ -105,7 +105,7 @@ def test_model_matches_migrations_at_head(file_db_url: str) -> None:
     """The SQLModel table and the migration chain agree on the column set.
 
     Compared at ``head`` rather than at 0018, so later migrations that
-    add columns (0020's revocation columns) don't break this check.
+    add columns (0021's revocation columns) don't break this check.
     """
     from alembic.command import upgrade
 

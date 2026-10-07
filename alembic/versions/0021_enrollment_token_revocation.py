@@ -1,7 +1,7 @@
 """enroll: revocation columns on ``enrollmenttoken`` (Phase 3f hardening)
 
-Revision ID: 0020_enrollment_token_revocation
-Revises: 0019_server_reconfig_generations
+Revision ID: 0021_enrollment_token_revocation
+Revises: 0020_host_cert_serial_unsigned
 Create Date: 2026-09-26
 
 Backs ``POST /v1/enrollment-tokens/{id}/revoke``. Revocation is soft:
@@ -24,8 +24,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0020_enrollment_token_revocation"
-down_revision: Union[str, None] = "0019_server_reconfig_generations"
+revision: str = "0021_enrollment_token_revocation"
+down_revision: Union[str, None] = "0020_host_cert_serial_unsigned"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
