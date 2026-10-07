@@ -43,7 +43,7 @@ from wg_manager import audit
 from wg_manager.config import Settings, settings
 from wg_manager.db import get_session
 from wg_manager.enroll_metrics import EnrollMetrics, make_enroll_metrics
-from wg_manager.enrollment import consume_token, find_token, is_expired
+from wg_manager.enrollment import consume_token, find_token, is_expired, source_allowed
 from wg_manager.ipam import IPPoolExhausted, allocate_client_ip
 from wg_manager.locks import task_row_lock
 from wg_manager.models import Client, EnrollmentToken, NodeStatus, Server
@@ -151,8 +151,8 @@ def enroll(
     Runs as one transaction, serialised per hub by an advisory lock so
     concurrent redemptions can't be handed the same address:
 
-    1. Find the token by hash; reject if unknown, revoked, expired or
-       used up.
+    1. Find the token by hash; reject if unknown, revoked, expired,
+       used up, or bound to networks the caller isn't in.
        Only then is the body validated (422), so an unauthenticated
        caller gets the same 401 whatever it sends.
     2. Consume one use (guarded ``UPDATE``); reject if none are left.
@@ -188,6 +188,8 @@ def enroll(
     # 401. consume_token() below stays the authoritative, race-free guard.
     if row.use_count >= row.max_uses:
         _reject(request, "exhausted", row.id)
+    if not source_allowed(row, request.client.host if request.client else None):
+        _reject(request, "source_not_allowed", row.id)
     payload = _parse_body(body)
 
     token_id = int(row.id or 0)

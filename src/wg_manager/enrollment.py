@@ -16,6 +16,7 @@ Only :func:`hash_token` output is persisted.
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -74,6 +75,7 @@ def mint_token(
     ttl_seconds: int,
     max_uses: int,
     created_by_cn: str | None,
+    allowed_cidrs: list[str] | None = None,
 ) -> tuple[EnrollmentToken, str]:
     """Create an :class:`EnrollmentToken` row and return it with the plaintext.
 
@@ -91,6 +93,8 @@ def mint_token(
     :param ttl_seconds: Seconds until the token expires.
     :param max_uses: Number of hosts the token may enroll.
     :param created_by_cn: Minting operator's CN, for provenance.
+    :param allowed_cidrs: Networks the token may be redeemed from, already
+        normalised (see :func:`normalize_cidrs`); ``None`` means anywhere.
     :return: ``(row, plaintext_token)``. The plaintext exists only in
         this return value; it's never stored.
     """
@@ -106,6 +110,7 @@ def mint_token(
         use_count=0,
         expires_at=datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
         created_by_cn=created_by_cn,
+        allowed_cidrs=",".join(allowed_cidrs) if allowed_cidrs else None,
     )
     session.add(row)
     session.flush()
@@ -252,3 +257,56 @@ def delete_dead_tokens(
             delete(EnrollmentToken).where(col(EnrollmentToken.id).in_(ids))
         )
     return ids
+
+
+IPNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def normalize_cidrs(values: list[str]) -> list[str]:
+    """Validate and canonicalise the networks a token is bound to.
+
+    A bare address becomes a single-host network (``/32`` or ``/128``).
+    Host bits (``10.0.0.5/24``) are rejected rather than silently
+    masked, since that's usually a typo for a narrower network.
+
+    :param values: Networks as entered by the admin.
+    :return: Canonical strings, in input order, without duplicates.
+    :raises ValueError: On any malformed entry.
+    """
+    out: list[str] = []
+    for value in values:
+        text = str(ipaddress.ip_network(value.strip(), strict=True))
+        if text not in out:
+            out.append(text)
+    return out
+
+
+def allowed_networks(row: EnrollmentToken) -> list[IPNetwork] | None:
+    """Parse ``row.allowed_cidrs``; ``None`` means the token isn't bound."""
+    if not row.allowed_cidrs:
+        return None
+    return [ipaddress.ip_network(c) for c in row.allowed_cidrs.split(",")]
+
+
+def source_allowed(row: EnrollmentToken, host: str | None) -> bool:
+    """Return ``True`` if ``host`` may redeem ``row``.
+
+    An unbound token is redeemable from anywhere. A bound one fails
+    closed on a missing or unparseable address. IPv4-mapped IPv6 peers
+    (``::ffff:a.b.c.d``, from dual-stack sockets) are matched as IPv4.
+
+    :param row: Token row.
+    :param host: The caller's address (``request.client.host``). Behind a
+        proxy that's only the real client if the proxy passes it on (see
+        ``ENROLL_PROXY_PROTOCOL``).
+    """
+    networks = allowed_networks(row)
+    if networks is None:
+        return True
+    try:
+        addr = ipaddress.ip_address(host or "")
+    except ValueError:
+        return False
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    return any(addr in net for net in networks)

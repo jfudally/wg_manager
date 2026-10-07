@@ -457,3 +457,93 @@ class TestPrincipals:
         )
         assert resp.status_code == 201
         assert resp.json()["host_cert_principals"] == ["10.9.0.2"]
+
+
+# ---------------------------------------------------------------------------
+# Source-network binding
+# ---------------------------------------------------------------------------
+
+
+def _mint_bound(server_id: int, cidrs: str) -> str:
+    """Mint a token bound to ``cidrs`` (stored form: comma-separated)."""
+    token = _mint(server_id)
+    with Session(db_module.engine) as s:
+        row = s.exec(select(EnrollmentToken)).one()
+        row.allowed_cidrs = cidrs
+        s.commit()
+    return token
+
+
+@pytest.fixture()
+def enroll_from(engine: Any, dispatched: list[int]):
+    """Build enroll TestClients whose requests come from a given address."""
+    opened: list[TestClient] = []
+
+    def _make(host: str) -> TestClient:
+        app = create_enroll_app()
+
+        def _session() -> Generator[Session, None, None]:
+            with Session(engine) as s:
+                yield s
+
+        app.dependency_overrides[get_session] = _session
+        tc = TestClient(app, client=(host, 40000))
+        opened.append(tc)
+        return tc
+
+    yield _make
+    for tc in opened:
+        tc.close()
+
+
+class TestSourceBinding:
+    def test_allowed_source_enrolls(self, enroll_from, hub: int) -> None:
+        token = _mint_bound(hub, "203.0.113.0/24,198.51.100.7/32")
+        resp = enroll_from("203.0.113.7").post(ENROLL_PATH, json=_body(), headers=_auth(token))
+        assert resp.status_code == 201, resp.text
+
+    def test_other_source_gets_the_uniform_401_and_keeps_the_token(
+        self, enroll_from, hub: int, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        caplog.set_level(logging.INFO, logger="wg_manager.audit")
+        tc = enroll_from("192.0.2.50")
+        baseline = tc.post(ENROLL_PATH, json=_body(), headers=_auth("wgmenr_nope"))
+        token = _mint_bound(hub, "203.0.113.0/24")
+        resp = tc.post(ENROLL_PATH, json=_body(), headers=_auth(token))
+        assert resp.status_code == 401
+        assert resp.text == baseline.text
+        assert _token_row().use_count == 0
+        lines = [r.getMessage() for r in caplog.records if r.name == "wg_manager.audit"]
+        assert any('"source_not_allowed"' in m for m in lines)
+
+    def test_checked_before_the_body(self, enroll_from, hub: int) -> None:
+        """A leaked token used from elsewhere can't probe the schema either."""
+        token = _mint_bound(hub, "203.0.113.0/24")
+        resp = enroll_from("192.0.2.50").post(
+            ENROLL_PATH, json={"junk": 1}, headers=_auth(token)
+        )
+        assert resp.status_code == 401
+
+    def test_ipv6(self, enroll_from, hub: int) -> None:
+        token = _mint_bound(hub, "2001:db8::/32")
+        assert enroll_from("2001:db8::7").post(
+            ENROLL_PATH, json=_body(), headers=_auth(token)
+        ).status_code == 201
+
+    def test_ipv4_mapped_ipv6_peer_matches_ipv4_network(self, enroll_from, hub: int) -> None:
+        """A dual-stack socket reports IPv4 peers as ::ffff:a.b.c.d."""
+        token = _mint_bound(hub, "203.0.113.0/24")
+        assert enroll_from("::ffff:203.0.113.7").post(
+            ENROLL_PATH, json=_body(), headers=_auth(token)
+        ).status_code == 201
+
+    def test_unparseable_peer_fails_closed(self, enroll_from, hub: int) -> None:
+        token = _mint_bound(hub, "0.0.0.0/0")
+        resp = enroll_from("testclient").post(ENROLL_PATH, json=_body(), headers=_auth(token))
+        assert resp.status_code == 401
+
+    def test_unbound_token_enrolls_from_anywhere(self, enroll_from, hub: int) -> None:
+        token = _mint(hub)
+        assert enroll_from("192.0.2.50").post(
+            ENROLL_PATH, json=_body(), headers=_auth(token)
+        ).status_code == 201
