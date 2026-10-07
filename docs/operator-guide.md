@@ -360,6 +360,17 @@ curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
        "name_prefix": "web", "ttl_seconds": 3600, "max_uses": 1}'
 ```
 
+Or with the CLI (it talks to the same API; `--ttl` takes seconds or
+`s`/`m`/`h`/`d`):
+
+```bash
+wg-manager enroll-tokens create --server-id 1 --key-id 1 --ssh-user wgmgr \
+  --name-prefix web --ttl 1h --max-uses 1 --allow-cidr 203.0.113.0/24
+
+# Just the token, for a launch script:
+TOKEN=$(wg-manager enroll-tokens create -s 1 -k 1 -u wgmgr --token-only)
+```
+
 | Field | Meaning |
 | --- | --- |
 | `server_id` | Hub the host joins. Must be `ready`. |
@@ -528,6 +539,10 @@ curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
 # Revoke token 7. Safe to repeat.
 curl --cert ops.crt --key ops.key --cacert ca-bundle.crt \
   -X POST https://wg.example.com/v1/enrollment-tokens/7/revoke
+
+# The same with the CLI:
+wg-manager enroll-tokens list --active --server-id 1
+wg-manager enroll-tokens revoke 7
 ```
 
 Each row has a `status`: `active`, `revoked`, `expired` or `exhausted`

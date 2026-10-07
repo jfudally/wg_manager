@@ -73,6 +73,13 @@ tenants_app = typer.Typer(
     ),
     no_args_is_help=True,
 )
+enroll_tokens_app = typer.Typer(
+    help=(
+        "Mint, list and revoke zero-touch enrollment tokens (Phase 3f). "
+        "Admin only; the token goes into a new host's userdata."
+    ),
+    no_args_is_help=True,
+)
 app.add_typer(keys_app, name="keys")
 app.add_typer(servers_app, name="servers")
 app.add_typer(clients_app, name="clients")
@@ -83,6 +90,7 @@ app.add_typer(certs_app, name="certs")
 app.add_typer(operators_app, name="operators")
 app.add_typer(evidence_app, name="evidence")
 app.add_typer(tenants_app, name="tenants")
+app.add_typer(enroll_tokens_app, name="enroll-tokens")
 
 
 def _make_http_client(api_url: str) -> httpx.Client:
@@ -2674,6 +2682,109 @@ def evidence_pack(
         )
 
     typer.echo(f"evidence pack written to {output}")
+
+
+# ---------------------------------------------------------------------------
+# enroll-tokens (Phase 3f)
+# ---------------------------------------------------------------------------
+
+
+_DURATION_RE = _tenant_re.compile(r"^([1-9][0-9]*)([smhd]?)$")
+_DURATION_UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
+
+
+def _parse_duration(value: str) -> int:
+    """Parse ``600``, ``90s``, ``15m``, ``2h`` or ``1d`` into seconds.
+
+    :raises typer.BadParameter: On anything else (a usage error, exit 2).
+        The API enforces the actual 60 s to 7 day range.
+    """
+    match = _DURATION_RE.match(value.strip())
+    if match is None:
+        raise typer.BadParameter(
+            f"{value!r} is not a duration; use seconds or a number with s/m/h/d"
+        )
+    return int(match.group(1)) * _DURATION_UNITS[match.group(2)]
+
+
+@enroll_tokens_app.command("create")
+def enroll_tokens_create(
+    ctx: typer.Context,
+    server_id: int = typer.Option(..., "--server-id", "-s", help="Hub hosts will join."),
+    ssh_key_id: int = typer.Option(
+        ..., "--key-id", "-k", help="SSH key the worker will manage the hosts with."
+    ),
+    ssh_username: str = typer.Option(
+        ..., "--ssh-user", "-u", help="Account the worker logs in as on the hosts."
+    ),
+    name_prefix: str = typer.Option(
+        "node", "--name-prefix", help="Clients are named <prefix>-<hostname>."
+    ),
+    ttl: str = typer.Option(
+        "1h", "--ttl", help="Token lifetime: seconds, or a number with s/m/h/d (60s to 7d)."
+    ),
+    max_uses: int = typer.Option(
+        1, "--max-uses", help="Hosts the token may enroll (1 to 100)."
+    ),
+    allow_cidr: list[str] = typer.Option(
+        None,
+        "--allow-cidr",
+        help="Only redeemable from this network. Repeat for more (up to 16).",
+    ),
+    token_only: bool = typer.Option(
+        False,
+        "--token-only",
+        help="Print only the token, for $(...) in launch scripts.",
+    ),
+) -> None:
+    """Mint an enrollment token. The plaintext is shown once and never again.
+
+    By default prints the API response (the token plus its id, hub and
+    expiry) as JSON. With ``--token-only`` it prints just the token.
+    """
+    payload: dict[str, Any] = {
+        "server_id": server_id,
+        "ssh_key_id": ssh_key_id,
+        "ssh_username": ssh_username,
+        "name_prefix": name_prefix,
+        "ttl_seconds": _parse_duration(ttl),
+        "max_uses": max_uses,
+    }
+    if allow_cidr:
+        payload["allowed_cidrs"] = list(allow_cidr)
+    with _client(ctx) as http:
+        body = _handle(http.post("/enrollment-tokens", json=payload))
+    if token_only:
+        typer.echo(body["token"])
+    else:
+        _print_json(body)
+
+
+@enroll_tokens_app.command("list")
+def enroll_tokens_list(
+    ctx: typer.Context,
+    server_id: int | None = typer.Option(None, "--server-id", "-s", help="Only this hub."),
+    active: bool = typer.Option(
+        False, "--active", help="Only tokens that are redeemable right now."
+    ),
+) -> None:
+    """List enrollment tokens you administer, newest first (never the token itself)."""
+    params: dict[str, Any] = {}
+    if server_id is not None:
+        params["server_id"] = server_id
+    if active:
+        params["active"] = "true"
+    with _client(ctx) as http:
+        _print_json(_handle(http.get("/enrollment-tokens", params=params)))
+
+
+@enroll_tokens_app.command("revoke")
+def enroll_tokens_revoke(
+    ctx: typer.Context, token_id: int = typer.Argument(..., help="Token id from `list`.")
+) -> None:
+    """Revoke a token immediately. Safe to repeat; enrolled hosts stay enrolled."""
+    with _client(ctx) as http:
+        _print_json(_handle(http.post(f"/enrollment-tokens/{token_id}/revoke")))
 
 
 def main() -> None:  # pragma: no cover - thin entrypoint

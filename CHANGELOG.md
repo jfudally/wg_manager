@@ -10,6 +10,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`wg-manager enroll-tokens` CLI.** It has three commands, `create`,
+  `list` and `revoke`, over `/v1/enrollment-tokens`.
+  - `create` takes `--ttl` as seconds or `90s`/`15m`/`2h`/`1d`, and
+    `--allow-cidr` can be repeated.
+  - `create --token-only` prints just the token, for
+    `TOKEN=$(...)` in launch scripts.
+
 - **Enrollment tokens can be bound to source networks.** Mint with
   `allowed_cidrs` (1 to 16 networks; Alembic 0022) and the token is only
   redeemable from those addresses. Any other source gets the uniform
