@@ -690,3 +690,62 @@ class TestRunbook:
             "MYSQL_SERVER_EXTRA_SANS",
         ):
             assert needle in text, needle
+
+
+SYSTEMD_DOC = REPO_ROOT / "docs" / "deploy" / "systemd-timer.md"
+FAILOVER_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "failover.md"
+
+
+def _ini_block_after(text: str, marker: str) -> str:
+    """Return the first ```ini fenced block after ``marker`` in ``text``."""
+    start = text.index(marker)
+    match = re.search(r"```ini\n(.*?)```", text[start:], re.S)
+    assert match, f"no ```ini block after {marker!r}"
+    return match.group(1)
+
+
+class TestHostFirewallAndBootOrder:
+    """MySQL publishes on the WireGuard address, which brings two host
+    concerns the runbooks must cover, on both hosts:
+
+    * Docker-published ports bypass ufw, so only the *other* HA host may
+      reach 3306. That's a ``DOCKER-USER`` rule, re-added at each boot by
+      a template unit whose instance is the peer's IP. Each host allows
+      its peer whatever the role, so failover needs no firewall change.
+    * Docker must start after ``wg-quick@wg0``, or the bind to the
+      WireGuard address fails at boot.
+    """
+
+    def test_firewall_unit_is_documented_and_idempotent(self) -> None:
+        unit = _ini_block_after(
+            SYSTEMD_DOC.read_text(), "wg-manager-mysql-firewall@.service"
+        )
+        # Re-added whenever Docker (re)starts, and stopped with it.
+        assert "After=docker.service" in unit
+        assert "PartOf=docker.service" in unit
+        assert "WantedBy=docker.service" in unit
+        # The instance (%i) is the one source allowed; checked before
+        # inserted, so re-running never stacks duplicate rules.
+        assert "iptables -C DOCKER-USER -i wg0 -p tcp --dport 3306 ! -s %i -j DROP" in unit
+        assert "iptables -I DOCKER-USER -i wg0 -p tcp --dport 3306 ! -s %i -j DROP" in unit
+        assert "iptables -D DOCKER-USER" in unit
+
+    def test_docker_boot_order_drop_in_is_documented(self) -> None:
+        drop_in = _ini_block_after(
+            SYSTEMD_DOC.read_text(), "docker.service.d/after-wg.conf"
+        )
+        assert "After=wg-quick@wg0.service" in drop_in
+        assert "Wants=wg-quick@wg0.service" in drop_in
+
+    def test_runbook_sets_both_up_on_both_hosts(self) -> None:
+        text = RUNBOOK.read_text()
+        primary = text[text.index("### On the primary"):text.index("### On the standby")]
+        standby = text[text.index("### On the standby"):text.index("## Day 2")]
+        for section, peer in ((primary, "@10.8.0.1"), (standby, "@10.8.0.2")):
+            assert f"wg-manager-mysql-firewall{peer}" in section, peer
+            assert "after-wg.conf" in section
+
+    def test_failover_checklist_covers_both_hosts(self) -> None:
+        checklist = FAILOVER_RUNBOOK.read_text().split("## Planned switchover")[0]
+        assert "wg-manager-mysql-firewall@" in checklist
+        assert "after-wg.conf" in checklist

@@ -41,6 +41,13 @@ Check these now, not during an outage:
   on the primary.
 - [ ] Managed hubs and clients accept SSH from **both** hosts' IPs
   (firewalls, security groups, `sshd` `Match Address`).
+- [ ] Both hosts run the two host units from
+  [`systemd-timer.md`](../deploy/systemd-timer.md#warm-standby-host-setup-mysql-firewall-and-boot-order-phase-3d-cycle-5).
+  - `wg-manager-mysql-firewall@<the other host's WireGuard IP>`, so only
+    the peer reaches 3306. It covers both roles, so a failover needs no
+    firewall change.
+  - The `docker.service.d/after-wg.conf` drop-in, so MySQL's bind to
+    the WireGuard address survives a reboot.
 - [ ] Both hosts are on the **same commit** (`standby-status` reports
   `DRIFT` otherwise).
 - [ ] The weekly drill passes and the `wg-manager.standby` alerts are
