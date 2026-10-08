@@ -10,6 +10,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.10.0] - 2026-10-08
+
+**Upgrading from v0.9.0.** Deploy as usual (`make prod-up`); there are
+no database migrations or manual steps. The one visible change is that
+API timestamps now end in `Z` (see Changed).
+
 ### Changed
 
 - **sqlmodel 0.0.47; datetimes are timezone-aware end to end.** From
@@ -25,6 +31,11 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 - **Backup files** write datetimes with a UTC offset. Restore still
   accepts older backups (naive strings, read as UTC), plain or
   encrypted, version 1 or 2.
+- **Dependencies.** Python: fastapi 0.142.2, cryptography 50.0.2,
+  python-dotenv 1.2.4, OpenTelemetry 1.45.0 / 0.66b0, ruff 0.16.10.
+  Dashboard: next 16.3.8, @tanstack/react-query 5.104.1, and in tests
+  jsdom 30 and @testing-library/jest-dom 7. Dependabot now holds
+  vitest at 4 (vitest 5 breaks jest-dom's matcher typings).
 
 ### Fixed
 
