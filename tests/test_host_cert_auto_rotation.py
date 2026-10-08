@@ -27,10 +27,8 @@ from wg_manager.models import Client, NodeStatus, Server, SSHKey
 
 
 def _utc(hours_from_now: float) -> datetime:
-    """Naive-UTC timestamp ``hours_from_now`` away (DB column shape)."""
-    return (datetime.now(timezone.utc) + timedelta(hours=hours_from_now)).replace(
-        tzinfo=None
-    )
+    """Aware UTC timestamp ``hours_from_now`` away."""
+    return datetime.now(timezone.utc) + timedelta(hours=hours_from_now)
 
 
 @pytest.fixture

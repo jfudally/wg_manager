@@ -27,13 +27,14 @@ no monkeypatching of the module-level engine is needed.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 from sqlalchemy import select
 from sqlmodel import Session, SQLModel, create_engine
+from sqlmodel.sql.sqltypes import UTCDateTime
 from typer.testing import CliRunner
 
 from wg_manager import cli
@@ -51,7 +52,10 @@ from wg_manager.models import (
     Tenant,
 )
 
-NOW = datetime(2026, 9, 27, 12, 0, 0)
+NOW = datetime(2026, 9, 27, 12, 0, 0, tzinfo=timezone.utc)
+# What wg-manager wrote into backups before sqlmodel 0.0.45: the columns
+# read back naive, so their ISO strings carry no offset.
+NOW_NAIVE_ISO = NOW.replace(tzinfo=None).isoformat()
 
 
 def _make_db(path: Path) -> tuple[str, Any]:
@@ -159,6 +163,27 @@ def test_backup_includes_every_table(runner: CliRunner, tmp_path: Path) -> None:
         assert len(data["tables"][name]) >= 1, f"{name} has no rows"
 
 
+def test_backup_writes_datetimes_in_utc(runner: CliRunner, tmp_path: Path) -> None:
+    """Every datetime in the file carries an explicit UTC offset."""
+    url, engine = _make_db(tmp_path / "src.db")
+    _seed_every_table(engine)
+    out = tmp_path / "backup.json"
+
+    _run(runner, "db", "backup", "--output", str(out), "--database-url", url)
+
+    data = json.loads(out.read_text())
+    stamps = [
+        row[col.name]
+        for table in SQLModel.metadata.sorted_tables
+        for row in data["tables"][table.name]
+        for col in table.columns
+        if isinstance(col.type, UTCDateTime) and row.get(col.name) is not None
+    ]
+    assert stamps, "seed data should include datetimes"
+    for stamp in stamps:
+        assert datetime.fromisoformat(stamp).utcoffset() == timedelta(0), stamp
+
+
 def test_round_trip_into_empty_db_preserves_every_row(
     runner: CliRunner, tmp_path: Path
 ) -> None:
@@ -216,20 +241,24 @@ def test_drop_existing_over_fully_populated_db(
 def test_version_1_backup_still_restores(
     runner: CliRunner, tmp_path: Path
 ) -> None:
-    """Files written by v0.6.x and earlier carry only three tables."""
+    """Files written by v0.6.x and earlier carry only three tables.
+
+    Their datetimes are naive ISO strings (wg-manager read columns back
+    naive until sqlmodel 0.0.45); restore treats them as UTC.
+    """
     dst_url, dst = _make_db(tmp_path / "dst.db")
     v1 = {
         "version": 1,
         "tables": {
             "sshkey": [
-                {"id": 1, "name": "lab", "created_at": NOW.isoformat(),
+                {"id": 1, "name": "lab", "created_at": NOW_NAIVE_ISO,
                  "mode": "ca", "tenant_id": None},
             ],
             "server": [
                 {"id": 1, "hostname": "hub.example.com", "ssh_port": 22,
                  "ssh_username": "ubuntu", "ssh_key_id": 1,
                  "endpoint_host": "hub.example.com", "status": "ready",
-                 "created_at": NOW.isoformat()},
+                 "created_at": NOW_NAIVE_ISO},
             ],
             "client": [],
         },

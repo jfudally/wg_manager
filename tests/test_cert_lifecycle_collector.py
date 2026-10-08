@@ -18,11 +18,13 @@ are safe.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client.parser import text_string_to_metric_families
 from sqlmodel import Session
 
 
@@ -115,3 +117,31 @@ class TestCertLifecycleGauge:
         # database.
         assert 'cn="api.example.com"' in body
         assert 'cert_type="api"' in body
+
+    def test_value_is_utc_epoch_on_a_non_utc_host(
+        self, client_with_certs: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sample is ``not_after``'s UTC epoch whatever the host's TZ.
+
+        Regression: the collector called ``.timestamp()`` on the value
+        read back from the database. Before sqlmodel 0.0.45 that value
+        was naive, so ``.timestamp()`` read it as *local* time and the
+        gauge was off by the host's UTC offset (alerts early or late).
+        """
+        expected = (datetime.now(timezone.utc) + timedelta(days=3)).timestamp()
+        # New York's offset is never zero, so a local-time reading shows.
+        monkeypatch.setenv("TZ", "America/New_York")
+        time.tzset()
+        try:
+            body = client_with_certs.get("/metrics").text
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+
+        (family,) = [
+            f for f in text_string_to_metric_families(body)
+            if f.name == "wg_manager_cert_not_after_seconds"
+        ]
+        (value,) = [s.value for s in family.samples if s.labels["serial"] == "111"]
+        # Seeding and scraping take well under a minute; a TZ skew is hours.
+        assert abs(value - expected) < 60

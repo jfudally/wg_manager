@@ -200,6 +200,12 @@ class SSHKeyMode(str, Enum):
 def _utcnow() -> datetime:
     """Return the current UTC timestamp.
 
+    Every ``datetime`` field below maps to sqlmodel's ``UTCDateTime``
+    (0.0.45+): the column is a plain ``DATETIME`` holding UTC, writes
+    and query parameters must be timezone-aware (naive ones raise), and
+    reads come back aware UTC. Use this, or another aware value, for
+    anything written to or compared against those columns.
+
     :return: An aware ``datetime`` in UTC.
     :rtype: datetime
     """
@@ -862,8 +868,7 @@ class EnrollmentToken(SQLModel, table=True):
     :ivar token_hash: SHA-256 hex of the plaintext token; unique.
     :ivar max_uses: Number of hosts the token may enroll.
     :ivar use_count: Successful redemptions so far.
-    :ivar expires_at: Hard expiry (UTC). SQLite hands this back naive;
-        compare through :func:`wg_manager.enrollment.as_utc`.
+    :ivar expires_at: Hard expiry (UTC).
     :ivar created_by_cn: CN of the minting operator (``None`` in the
         ``TLS_REQUIRED=false`` dev posture).
     :ivar created_at: Mint time (UTC).

@@ -404,8 +404,6 @@ class HostCertCollector:
     """
 
     def collect(self):  # noqa: ANN201 — prometheus_client's protocol
-        from datetime import timezone
-
         from sqlmodel import Session, col, select
 
         from wg_manager import db as db_module
@@ -437,16 +435,14 @@ class HostCertCollector:
                 ).all()
         except Exception:  # noqa: BLE001 — never let a DB blip crash the scrape
             return
-        # Stored datetimes are naive UTC; .timestamp() on a naive value
-        # would use the process's local timezone.
+        # Read back aware UTC (sqlmodel's UTCDateTime), so .timestamp()
+        # is the UTC epoch regardless of the process's local timezone.
         for kind, rows in (("server", servers), ("client", clients)):
             for row in rows:
                 name = getattr(row, "name", None) or row.hostname
                 gauge.add_metric(
                     [kind, str(row.id), name, row.hostname],
-                    row.host_cert_valid_before.replace(
-                        tzinfo=timezone.utc
-                    ).timestamp(),
+                    row.host_cert_valid_before.timestamp(),
                 )
         yield gauge
 

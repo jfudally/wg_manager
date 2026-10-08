@@ -52,14 +52,6 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    ignore:
-      # sqlmodel 0.0.45+ rejects naive datetimes ("Datetime values must
-      # have timezone information"), and wg-manager stores naive UTC, so
-      # host-cert rotation and DB-backup paths break. Held until the
-      # models are annotated with NaiveDatetime or moved to aware
-      # datetimes; remove this entry in that PR. See #141 / #160.
-      - dependency-name: "sqlmodel"
-        versions: [">=0.0.45"]
 
   # Next.js dashboard.
   - package-ecosystem: "npm"

@@ -25,8 +25,8 @@ _DAY = 86400
 
 
 def _ago(seconds: float) -> datetime:
-    """Naive-UTC timestamp ``seconds`` in the past (DB column shape)."""
-    return (datetime.now(timezone.utc) - timedelta(seconds=seconds)).replace(tzinfo=None)
+    """Aware UTC timestamp ``seconds`` in the past."""
+    return datetime.now(timezone.utc) - timedelta(seconds=seconds)
 
 
 @pytest.fixture

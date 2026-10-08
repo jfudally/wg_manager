@@ -29,8 +29,8 @@ export function HostCertSummary({ node }: { node: HostCertFields }) {
   if (!node.host_cert_serial || !node.host_cert_valid_before) {
     return null;
   }
-  // parseApiDate, not new Date(): the API sends naive-UTC strings, which
-  // new Date() would read as local time and skew by the UTC offset.
+  // parseApiDate, not new Date(): older APIs send naive-UTC strings,
+  // which new Date() would read as local time and skew by the UTC offset.
   const msLeft =
     parseApiDate(node.host_cert_valid_before).getTime() - Date.now();
   const expired = msLeft < 0;
