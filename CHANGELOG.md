@@ -10,6 +10,20 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Fixed
+
+- **`make prod-up` failed on MySQL when upgrading to v0.9.0 or v0.10.0**,
+  at `bootstrap-app` with `Duplicate column name 'allowed_cidrs'`.
+  Migration 0022's revision id (`0022_enrollment_token_source_binding`,
+  36 characters) didn't fit `alembic_version.version_num` (`VARCHAR(32)`).
+  MySQL committed the `ADD COLUMN`, recording the version failed, and
+  each retry then hit the existing column. The id is now
+  `0022_enroll_token_source_binding`, and the upgrade skips the column
+  when a failed attempt already added it. **A stuck host needs nothing
+  manual:** check out this release and run `make prod-up` again. A guard
+  test now keeps every revision id within 32 characters (the SQLite test
+  suite can't see this; it ignores `VARCHAR` lengths).
+
 ## [v0.10.0] - 2026-10-08
 
 **Upgrading from v0.9.0.** Deploy as usual (`make prod-up`); there are
