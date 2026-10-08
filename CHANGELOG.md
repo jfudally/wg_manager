@@ -10,6 +10,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.10.1] - 2026-10-08
+
+**Upgrading.** If `make prod-up` to v0.9.0 or v0.10.0 failed at
+`bootstrap-app` with `Duplicate column name 'allowed_cidrs'`, check out
+this release and run `make prod-up` again; nothing else is needed. From
+v0.8.0, follow the v0.9.0 upgrade steps first (Vault raft migration).
+
 ### Fixed
 
 - **`make prod-up` failed on MySQL when upgrading to v0.9.0 or v0.10.0**,
