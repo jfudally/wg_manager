@@ -370,6 +370,86 @@ If the backup timer hasn't run in a while:
    fixed it, restart the timer to pick up the change:
    ``sudo systemctl restart wg-manager-backup.timer``.
 
+## Warm standby host setup: MySQL firewall and boot order (Phase 3d cycle 5)
+
+Install both of these on **both** HA hosts, at setup time. On each
+host, MySQL publishes on its WireGuard address (`MYSQL_BIND_ADDR` in
+`.env.host`, e.g. `10.8.0.2` on `rv`), and that brings two problems:
+
+- **Every VPN peer can reach 3306.** Docker-published ports bypass
+  `ufw`. Phones, laptops and the managed hosts all route through the
+  hub, so the only filter is a rule in `DOCKER-USER`, the chain Docker
+  leaves for you.
+- **The bind can fail at boot.** If Docker starts before `wg0` is up,
+  the address doesn't exist yet and MySQL can't publish its port.
+
+### `wg-manager-mysql-firewall@.service` (allow only the peer HA host)
+
+A template unit. The instance is the **other** HA host's WireGuard IP,
+the only source allowed to reach 3306 over `wg0`:
+
+| Host | Enable |
+|---|---|
+| `rv` (10.8.0.2) | `wg-manager-mysql-firewall@10.8.0.1` |
+| `general` (10.8.0.1) | `wg-manager-mysql-firewall@10.8.0.2` |
+
+Each host allows its peer **whatever the role**. The standby connects
+to the primary's 3306 today, and after a failover the roles swap, so
+neither `make failover` nor `make rejoin` needs a firewall change.
+MySQL on the Docker network (the app) and connections from the host
+itself don't go through `wg0` and aren't affected.
+
+Reboots flush iptables. The unit adds the rule each time Docker starts
+(`PartOf=`/`WantedBy=docker.service`), and it checks before inserting,
+so restarting it never stacks duplicates. Don't use
+`iptables-persistent` for this: it would also save and later restore
+Docker's own rules, which are stale by then.
+
+**`/etc/systemd/system/wg-manager-mysql-firewall@.service`**
+
+```ini
+[Unit]
+Description=wg-manager — allow only %i to reach MySQL over WireGuard
+Documentation=https://github.com/your-org/wg-manager/blob/main/docs/runbooks/standby-replication.md
+After=docker.service
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'iptables -C DOCKER-USER -i wg0 -p tcp --dport 3306 ! -s %i -j DROP 2>/dev/null || iptables -I DOCKER-USER -i wg0 -p tcp --dport 3306 ! -s %i -j DROP'
+ExecStop=/bin/sh -c 'iptables -D DOCKER-USER -i wg0 -p tcp --dport 3306 ! -s %i -j DROP 2>/dev/null || true'
+
+[Install]
+WantedBy=docker.service
+```
+
+The interface is `wg0`. If your VPN interface has another name, edit
+it here and in the drop-in below.
+
+### `docker.service.d/after-wg.conf` (start Docker after WireGuard)
+
+**`/etc/systemd/system/docker.service.d/after-wg.conf`**
+
+```ini
+[Unit]
+After=wg-quick@wg0.service
+Wants=wg-quick@wg0.service
+```
+
+### Install and check
+
+```bash
+# on rv; on general use @10.8.0.2
+sudo systemctl daemon-reload            # picks up both files
+sudo systemctl enable --now wg-manager-mysql-firewall@10.8.0.1.service
+sudo iptables -S DOCKER-USER            # exactly one 3306 DROP rule
+systemctl show docker.service -p After | grep -o wg-quick@wg0.service
+```
+
+`daemon-reload` doesn't restart Docker, so a running stack isn't
+touched. The new boot order first applies at the next reboot.
+
 ## Warm standby pull (Phase 3d cycle 5c)
 
 This timer runs on the **standby** host only. Every 15 minutes it

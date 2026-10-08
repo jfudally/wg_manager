@@ -66,9 +66,20 @@ hosts' names and stays valid after failover.
    MYSQL_BIND_ADDR=<rv's private/VPN IP>
    ```
 
-   Never use a public address. Docker-published ports bypass `ufw`.
-   Restrict 3306 on that interface to the standby's IP with your
-   firewall or VPN ACLs.
+   Never use a public address. Docker-published ports bypass `ufw`,
+   so every VPN peer can reach 3306 on that address. Install the two
+   host units from
+   [`systemd-timer.md`](../deploy/systemd-timer.md#warm-standby-host-setup-mysql-firewall-and-boot-order-phase-3d-cycle-5),
+   allowing only the standby's WireGuard IP:
+
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now wg-manager-mysql-firewall@10.8.0.1.service   # general's IP
+   ```
+
+   The other unit is the `docker.service.d/after-wg.conf` drop-in. It
+   starts Docker after `wg0`, so the bind to the WireGuard address
+   survives a reboot.
 
 3. **Recreate MySQL with GTIDs on:**
 
@@ -115,7 +126,17 @@ hosts' names and stays valid after failover.
    ```
 
    The bind address matters after failover, when `rv` becomes the
-   replica of `general`.
+   replica of `general`. For the same reason, install the same two
+   host units here, allowing only the primary's WireGuard IP: the
+   `docker.service.d/after-wg.conf` drop-in, and
+
+   ```bash
+   sudo systemctl enable --now wg-manager-mysql-firewall@10.8.0.2.service   # rv's IP
+   ```
+
+   ([`systemd-timer.md`](../deploy/systemd-timer.md#warm-standby-host-setup-mysql-firewall-and-boot-order-phase-3d-cycle-5)).
+   Each host allows its peer whatever the role, so a failover needs no
+   firewall change.
 
 3. **Give the standby a pull-only SSH key on the primary.** On
    general:
@@ -261,7 +282,7 @@ Never run this on the primary.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `standby-seed`: *the dump from rv.vpn failed*, `SSL ... certificate verify failed` | `rv.vpn` isn't a SAN on the primary's MySQL cert | Primary: add it to `MYSQL_SERVER_EXTRA_SANS`, then `make certs-rotate`. Standby: re-copy `tls/`. |
-| `standby-seed`: *Can't connect ... (111)* or a timeout | Primary's `MYSQL_BIND_ADDR`, firewall, or VPN route | `nc -vz rv.vpn 3306` from the standby. |
+| `standby-seed`: *Can't connect ... (111)* or a timeout | Primary's `MYSQL_BIND_ADDR`, firewall, or VPN route | `nc -vz rv.vpn 3306` from the standby. On the primary, `sudo iptables -S DOCKER-USER` must allow the standby's IP: check the `wg-manager-mysql-firewall@` instance. |
 | `standby-seed`: *Access denied for user 'wg_repl'* | `repl-primary-setup` not run, a password mismatch, or no client cert | Primary: `make repl-primary-setup`. Check that both hosts have the same `.env.prod`. |
 | `standby-seed`: *runs with the PRIMARY flags (server-id 1)* | mysql was started by `prod-up` or plain compose | `make standby-down && make standby-up`. |
 | `make prod-up` on the standby: *this host is the warm standby* | Working as intended | Promotion is cycle 5d's `make failover`. |

@@ -10,6 +10,17 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Warm standby host setup: MySQL firewall and boot order** in
+  `docs/deploy/systemd-timer.md`. Both HA hosts install them, and the
+  standby and failover runbooks now include them.
+  - `wg-manager-mysql-firewall@<peer IP>.service` lets only the other HA
+    host reach MySQL over WireGuard. Docker-published ports bypass ufw,
+    so before this every VPN peer could reach 3306. Each host allows its
+    peer whatever the role, so failover needs no firewall change.
+  - A `docker.service.d/after-wg.conf` drop-in starts Docker after
+    `wg-quick@wg0`, so MySQL's bind to the WireGuard address survives a
+    reboot.
+
 ## [v0.10.1] - 2026-10-08
 
 **Upgrading.** If `make prod-up` to v0.9.0 or v0.10.0 failed at
