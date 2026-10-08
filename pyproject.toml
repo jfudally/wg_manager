@@ -59,7 +59,7 @@ dev = [
     # Linter for ``make lint`` / ``make fmt`` and the CI lint job. Pinned
     # exactly: a ruff minor release can add rules or change fixes, and the
     # gate should only move when this pin does.
-    "ruff==0.16.9",
+    "ruff==0.16.10",
     # Shell linter for ``make shellcheck`` and the CI shellcheck job. The
     # wheel ships the upstream static binary, so it installs through uv
     # like everything else instead of via apt (whose version drifts with
