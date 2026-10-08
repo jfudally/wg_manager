@@ -10,6 +10,31 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Changed
+
+- **sqlmodel 0.0.47; datetimes are timezone-aware end to end.** From
+  0.0.45, sqlmodel maps `datetime` fields to `UTCDateTime`: writes and
+  query parameters must be aware (naive ones raise), and reads come back
+  aware UTC. Columns stay `DATETIME` holding UTC, so there is no
+  migration and existing rows read back unchanged. The minimum is now
+  `sqlmodel>=0.0.45`, and the Dependabot hold on it is lifted.
+- **API timestamps now carry an offset** (`"2026-10-08T12:00:00Z"`
+  rather than `"2026-10-08T12:00:00"`). The instants are the same; they
+  were always UTC. The dashboard reads both forms. Scripts that parse
+  the API's timestamps as naive strings may need adjusting.
+- **Backup files** write datetimes with a UTC offset. Restore still
+  accepts older backups (naive strings, read as UTC), plain or
+  encrypted, version 1 or 2.
+
+### Fixed
+
+- `wg_manager_cert_not_after_seconds` was off by the host's UTC offset
+  on any host not running in UTC: the collector called `.timestamp()`
+  on a naive value, which Python reads as local time. It now reports
+  the true UTC epoch, so `WgCertExpiringSoon` fires on time.
+- An encrypted backup's `created_at` was the host's local time with no
+  offset; it's now UTC with an offset.
+
 ## [v0.9.0] - 2026-10-07
 
 **Upgrading an existing prod host from v0.8.0.** One step is required,

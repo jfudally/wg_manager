@@ -28,8 +28,7 @@ from sqlmodel import Session
 
 _METRIC = "wg_manager_host_cert_valid_before_seconds"
 
-# Stored datetimes are naive UTC (MySQL DATETIME drops tzinfo).
-_EXPIRY = datetime(2026, 10, 6, 18, 4, 24)
+_EXPIRY = datetime(2026, 10, 6, 18, 4, 24, tzinfo=timezone.utc)
 
 
 @pytest.fixture()
@@ -111,9 +110,9 @@ class TestHostCertGauge:
             assert ("client", name) not in scraped, name
 
     def test_value_is_valid_before_as_utc_epoch(self, scraped) -> None:
-        """Naive stored datetimes are UTC, not the process's local time."""
+        """The sample is the UTC epoch of ``host_cert_valid_before``."""
         _labels, value = scraped[("server", "65.52.211.113")]
-        assert value == _EXPIRY.replace(tzinfo=timezone.utc).timestamp()
+        assert value == _EXPIRY.timestamp()
 
     def test_labels_identify_the_host(self, scraped) -> None:
         """Enough labels for the alert to say which host and how to reach it."""

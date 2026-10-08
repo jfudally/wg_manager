@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,20 @@ class TestEnvelopeShape:
         assert "created_at" in envelope
         # Plaintext dump is NOT present.
         assert "tables" not in envelope
+
+    def test_envelope_created_at_is_utc(
+        self, runner: CliRunner, backup_env: None, tmp_path: Path
+    ) -> None:
+        """The breadcrumb carries its zone, so it reads the same anywhere.
+
+        Regression: it used ``datetime.now()``, the host's local time
+        with no offset, unlike every other timestamp in the file.
+        """
+        out = tmp_path / "backup.enc.json"
+        result = _invoke(runner, "db", "backup", "--output", str(out), "--encrypt")
+        assert result.exit_code == 0, result.output
+        created = datetime.fromisoformat(json.loads(out.read_text())["created_at"])
+        assert created.utcoffset() == timedelta(0)
 
     def test_plaintext_backup_unchanged_no_encrypted_marker(
         self, runner: CliRunner, backup_env: None, tmp_path: Path

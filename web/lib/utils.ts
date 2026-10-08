@@ -14,12 +14,12 @@ export function cn(...inputs: ClassValue[]): string {
 /**
  * Parse an ISO timestamp string from the API into a `Date`.
  *
- * The backend stores aware-UTC instants but serializes them through
- * timezone-naive DB columns, so the JSON often lacks an offset
- * designator (e.g. "2026-06-18T18:00:00"). The browser would otherwise
- * interpret a naive string as *local* time, shifting timestamps into the
- * future for users behind UTC (showing negative "ago" durations). We
- * append "Z" when no timezone is present so naive values are read as UTC.
+ * The API sends UTC with an offset ("2026-06-18T18:00:00Z"). v0.9.0 and
+ * earlier sent naive strings ("2026-06-18T18:00:00"), which the
+ * browser would read as *local* time, shifting timestamps into the
+ * future for users behind UTC (negative "ago" durations). A dashboard can
+ * meet an older API mid-upgrade, so "Z" is appended when no timezone is
+ * present and naive values are still read as UTC.
  */
 export function parseApiDate(value: string): Date {
   const hasTimezone = /([zZ]|[+-]\d{2}:?\d{2})$/.test(value.trim());

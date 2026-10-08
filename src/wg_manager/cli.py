@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import re as _tenant_re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -570,9 +570,15 @@ def _deserialize_row(table: Any, row: dict[str, Any]) -> dict[str, Any]:
     persists the member *name*, and the two differ for some members
     (``CertificateType.mysql_client`` is ``"mysql-client"``), so they
     are mapped back to the enum member rather than passed as strings.
+
+    Datetime columns are sqlmodel's ``UTCDateTime``, a ``TypeDecorator``
+    over ``DateTime`` that refuses naive values. Backups written before
+    sqlmodel 0.0.45 hold naive ISO strings (columns read back naive
+    then); those were always UTC, so they're tagged UTC here.
     """
     from sqlalchemy import DateTime
     from sqlalchemy import Enum as SAEnum
+    from sqlalchemy.types import TypeDecorator
 
     out: dict[str, Any] = {}
     for col in table.columns:
@@ -580,8 +586,11 @@ def _deserialize_row(table: Any, row: dict[str, Any]) -> dict[str, Any]:
             continue
         val = row[col.key]
         if isinstance(val, str):
-            if isinstance(col.type, DateTime):
+            base = col.type.impl_instance if isinstance(col.type, TypeDecorator) else col.type
+            if isinstance(base, DateTime):
                 val = datetime.fromisoformat(val)
+                if val.tzinfo is None:
+                    val = val.replace(tzinfo=timezone.utc)
             elif isinstance(col.type, SAEnum) and col.type.enum_class:
                 val = col.type.enum_class(val)
         out[col.key] = val
@@ -681,7 +690,7 @@ def _envelope_encrypt(plaintext: bytes) -> dict[str, Any]:
     return {
         "version": _BACKUP_VERSION,
         "encrypted": True,
-        "created_at": datetime.now().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
         "context": context,
         "dek_ct": dek_ct,
         "nonce_b64": _b64(nonce),
@@ -1552,12 +1561,11 @@ def _renew_row(
 def _as_utc(dt: Any) -> Any:
     """Coerce ``dt`` to a tz-aware UTC datetime.
 
-    SQLite drops the tzinfo on round-trip, so a datetime that went in
-    as ``datetime(2026, 5, 31, tzinfo=UTC)`` comes back naive. The
-    walker has to subtract these against a ``datetime.now(UTC)`` which
-    is always tz-aware; without normalisation Python raises
-    ``TypeError: can't subtract offset-naive and offset-aware
-    datetimes``.
+    Rows read through the models are already aware UTC (sqlmodel's
+    ``UTCDateTime``, 0.0.45+). This still guards values built elsewhere:
+    the walker subtracts against ``datetime.now(UTC)``, and a naive
+    operand raises ``TypeError: can't subtract offset-naive and
+    offset-aware datetimes``.
     """
     from datetime import timezone as _tz
 

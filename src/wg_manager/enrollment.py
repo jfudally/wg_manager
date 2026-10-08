@@ -53,9 +53,9 @@ def hash_token(token: str) -> str:
 def as_utc(value: datetime) -> datetime:
     """Normalise ``value`` to an aware UTC datetime.
 
-    SQLite (tests, dev) returns ``DateTime`` columns naive even when an
-    aware value was written. Comparing naive against aware raises, so
-    every expiry comparison goes through this helper.
+    Columns read through the models are already aware UTC (sqlmodel's
+    ``UTCDateTime``, 0.0.45+); this also accepts a naive value, taken as
+    UTC, so a caller-built datetime can't make a comparison raise.
 
     :param value: A naive (assumed UTC) or aware datetime.
     :return: The same instant as an aware UTC datetime.
@@ -164,8 +164,8 @@ def active_filter(now: datetime | None = None) -> ColumnElement[bool]:
     now = now or datetime.now(timezone.utc)
     return and_(
         col(EnrollmentToken.revoked_at).is_(None),
-        # Compared naive: SQLite stores these naive (see as_utc).
-        col(EnrollmentToken.expires_at) > now.replace(tzinfo=None),
+        # Must be aware: UTCDateTime refuses naive query parameters.
+        col(EnrollmentToken.expires_at) > now,
         col(EnrollmentToken.use_count) < col(EnrollmentToken.max_uses),
     )
 
@@ -241,8 +241,8 @@ def delete_dead_tokens(
     :return: Ids of the deleted rows, ascending.
     """
     now = now or datetime.now(timezone.utc)
-    # Stored naive UTC (see as_utc), so compare naive.
-    cutoff = (now - timedelta(seconds=retention_seconds)).replace(tzinfo=None)
+    # Must be aware: UTCDateTime refuses naive query parameters.
+    cutoff = now - timedelta(seconds=retention_seconds)
     dead = or_(
         col(EnrollmentToken.expires_at) < cutoff,
         col(EnrollmentToken.revoked_at) < cutoff,

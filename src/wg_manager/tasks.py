@@ -685,8 +685,8 @@ def rotate_expiring_host_certs_task(self) -> dict[str, Any]:
     from wg_manager.db import engine
 
     settings = Settings()
-    # Stored datetimes are naive UTC (SQLite / MySQL DATETIME drop tzinfo).
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(
+    # Must be aware: UTCDateTime refuses naive query parameters.
+    cutoff = datetime.now(timezone.utc) + timedelta(
         seconds=settings.ssh_host_cert_renew_before_seconds
     )
 
