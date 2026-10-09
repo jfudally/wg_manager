@@ -957,6 +957,20 @@ class TestMakefile:
 
 
 class TestDocs:
+    def test_planned_switchover_covers_the_drill_findings(self) -> None:
+        # The first rv <-> general drill (2026-10-09) needed four steps the
+        # runbook didn't list. Each one breaks or stalls a switchover.
+        text = (REPO_ROOT / "docs" / "runbooks" / "failover.md").read_text()
+        start, end = text.index("## Planned switchover"), text.index("## Unplanned failover")
+        section = text[start:end].lower()
+        for needle in (
+            "configuration management",  # Chef/Ansible rewriting .env.host mid-failover
+            "pull key",                  # the failback needs the reverse pull path
+            "silence",                   # the standby alerts fire while roles are swapped
+            "ttl",                       # the DNS move takes effect only as fast as caches expire
+        ):
+            assert needle in section, needle
+
     def test_failover_runbook(self) -> None:
         text = (REPO_ROOT / "docs" / "runbooks" / "failover.md").read_text()
         for needle in (
