@@ -178,6 +178,21 @@ tests:
         exp_alerts:
           - exp_labels: {severity: warning, component: standby, instance: general}
 
+  # Real series carry job (here node_exporter's): the alert must keep it
+  # like every other standby alert. A matched comparison keeps only its
+  # on() labels, so on(instance) alone dropped job.
+  - interval: 1m
+    input_series:
+      - series: 'wg_manager_standby_drill_last_success_timestamp_seconds{job="node", instance="general"}'
+        values: '100x10'
+      - series: 'wg_manager_standby_drill_last_failure_timestamp_seconds{job="node", instance="general"}'
+        values: '200x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: WgStandbyDrillFailed
+        exp_alerts:
+          - exp_labels: {severity: warning, component: standby, job: node, instance: general}
+
   # ------------------------------------------------------------------
   # Drill overdue: last success over 8 days ago...
   # ------------------------------------------------------------------

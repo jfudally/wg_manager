@@ -273,10 +273,12 @@ groups:
 
       - alert: WgStandbyDrillFailed
         # The most recent drill failed: a real failover would probably
-        # fail the same way.
+        # fail the same way. Matches on(job, instance): a matched
+        # comparison keeps only its on() labels, so on(instance) alone
+        # would drop job from the alert.
         expr: >-
           wg_manager_standby_drill_last_failure_timestamp_seconds
-            > on(instance) wg_manager_standby_drill_last_success_timestamp_seconds
+            > on(job, instance) wg_manager_standby_drill_last_success_timestamp_seconds
           or (wg_manager_standby_drill_last_failure_timestamp_seconds
             unless on(instance) wg_manager_standby_drill_last_success_timestamp_seconds)
         for: 1m
