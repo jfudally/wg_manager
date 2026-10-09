@@ -10,6 +10,22 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Changed
+
+- **The dev stack has its own compose project, `wg_manager_dev`.** The
+  dev targets (`db-*`, `ha-*`, `vault-*`, `backup-vault`, `e2e-*`) and
+  the e2e fixture run `docker compose -p wg_manager_dev`. Before this,
+  compose named the project after the checkout directory. The dev and
+  prod checkouts are both called `wg_manager`, so on a host that also
+  runs prod, `make vault-up` or `make db-down` in the dev checkout acted
+  on prod's containers. Now they fail on the container-name or port
+  clash instead. The prod targets pin `-p wg_manager` (`PROD_PROJECT`),
+  the name prod always had, so prod's containers and volumes are
+  unchanged and no longer depend on the directory name. Dev data in the
+  old `wg_manager_wg_manager_*` volumes isn't carried over: the dev
+  stack starts on fresh `wg_manager_dev_*` volumes. Dev-stack commands
+  in the docs now pass `-p wg_manager_dev`.
+
 ## [v0.11.1] - 2026-10-09
 
 **Upgrading.** Check out this release and run `make prod-up`; upgrade

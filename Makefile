@@ -157,27 +157,35 @@ worker:
 beat:
 	$(CELERY) -A wg_manager.celery_app beat --loglevel=info --schedule /tmp/wg-manager-celerybeat-schedule
 
+# The dev stack's compose project. Without -p, compose names the project
+# after the checkout directory, and the dev and prod checkouts are both
+# called wg_manager: on a host that also runs prod, `make vault-up` or
+# `make db-down` here would act on prod's containers. With its own
+# project, a dev target on such a host fails on the container-name or
+# port clash instead.
+DEV_COMPOSE := docker compose -p wg_manager_dev
+
 db-up:
-	docker compose up -d
+	$(DEV_COMPOSE) up -d
 
 db-down:
-	docker compose down
+	$(DEV_COMPOSE) down
 
 db-logs:
-	docker compose logs -f mysql
+	$(DEV_COMPOSE) logs -f mysql
 
 # Phase 3d cycle 4a — HA control-plane demo profile. Brings up 2 API
 # replicas + nginx TCP-passthrough LB on top of the existing data
 # tier (mysql + valkey + vault + vector). See
 # docs/deploy/ha-control-plane.md "Running the ha profile locally".
 ha-up:
-	docker compose --profile ha up -d --build
+	$(DEV_COMPOSE) --profile ha up -d --build
 
 ha-down:
-	docker compose --profile ha down
+	$(DEV_COMPOSE) --profile ha down
 
 ha-logs:
-	docker compose --profile ha logs -f --tail=100
+	$(DEV_COMPOSE) --profile ha logs -f --tail=100
 
 # ---------------------------------------------------------------------------
 # Production-shaped single-host stack (docker-compose.prod.yml).
@@ -197,12 +205,16 @@ ha-logs:
 # .env.prod, so its values win.
 # ---------------------------------------------------------------------------
 HOST_ENV := $(wildcard .env.host)
-PROD_COMPOSE := docker compose --env-file .env.prod $(if $(HOST_ENV),--env-file .env.host) -f docker-compose.yml -f docker-compose.prod.yml
+# Pinned, not taken from the checkout's directory name: prod's
+# containers and wg_manager_wg_manager_* volumes are named after it,
+# and the dev stack (DEV_COMPOSE) must never share it.
+PROD_PROJECT := wg_manager
+PROD_COMPOSE := docker compose -p $(PROD_PROJECT) --env-file .env.prod $(if $(HOST_ENV),--env-file .env.host) -f docker-compose.yml -f docker-compose.prod.yml
 # primary | standby | empty (single-host install).
 HOST_ROLE := $(shell sed -n 's/^WG_MANAGER_ROLE=//p' .env.host 2>/dev/null | tr -d '"\047 ')
 # Same stack without --env-file, for scripts that choose the env file
 # themselves (migrate_host.sh import reads it from the bundle).
-PROD_COMPOSE_BASE := docker compose -f docker-compose.yml -f docker-compose.prod.yml
+PROD_COMPOSE_BASE := docker compose -p $(PROD_PROJECT) -f docker-compose.yml -f docker-compose.prod.yml
 
 prod-up:
 	@# A standby runs mysql only. The full stack here would start a second
@@ -491,13 +503,13 @@ VAULT_ADDR ?= http://127.0.0.1:8200
 VAULT_TOKEN ?= dev-only-root
 
 vault-up:
-	docker compose up -d vault
+	$(DEV_COMPOSE) up -d vault
 
 vault-down:
-	docker compose stop vault
+	$(DEV_COMPOSE) stop vault
 
 vault-logs:
-	docker compose logs -f vault
+	$(DEV_COMPOSE) logs -f vault
 
 vault-smoke:
 	VAULT_ADDR=$(VAULT_ADDR) VAULT_TOKEN=$(VAULT_TOKEN) \
@@ -522,10 +534,10 @@ vault-audit-bootstrap:
 backup-vault:
 	@mkdir -p backups/vault
 	@ts=$$(date -u +%Y%m%dT%H%M%SZ); \
-	docker compose exec -T -e VAULT_TOKEN=$(VAULT_TOKEN) vault \
+	$(DEV_COMPOSE) exec -T -e VAULT_TOKEN=$(VAULT_TOKEN) vault \
 		vault operator raft snapshot save /vault/logs/snap-$$ts.snap \
-		&& docker compose cp vault:/vault/logs/snap-$$ts.snap backups/vault/snap-$$ts.snap \
-		&& docker compose exec -T vault rm -f /vault/logs/snap-$$ts.snap \
+		&& $(DEV_COMPOSE) cp vault:/vault/logs/snap-$$ts.snap backups/vault/snap-$$ts.snap \
+		&& $(DEV_COMPOSE) exec -T vault rm -f /vault/logs/snap-$$ts.snap \
 		&& echo "snapshot written to backups/vault/snap-$$ts.snap"
 
 # ---------------------------------------------------------------------------
@@ -599,13 +611,13 @@ test-e2e-tls:
 	$(PYTEST) tests/e2e/tls -m e2e_tls --override-ini="addopts="
 
 e2e-up:
-	docker compose --profile e2e up -d --build sshd-e2e
+	$(DEV_COMPOSE) --profile e2e up -d --build sshd-e2e
 
 e2e-down:
-	docker compose --profile e2e down -v sshd-e2e
+	$(DEV_COMPOSE) --profile e2e down -v sshd-e2e
 
 e2e-logs:
-	docker compose --profile e2e logs -f sshd-e2e
+	$(DEV_COMPOSE) --profile e2e logs -f sshd-e2e
 
 # ---------------------------------------------------------------------------
 # Phase 2e — security gates

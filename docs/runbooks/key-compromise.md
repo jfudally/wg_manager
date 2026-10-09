@@ -175,7 +175,7 @@ backend was exfiltrated. Either way:
 > use`):
 >
 > ```bash
-> docker compose exec -e VAULT_TOKEN=dev-only-root vault sh -c '
+> docker compose -p wg_manager_dev exec -e VAULT_TOKEN=dev-only-root vault sh -c '
 >     vault secrets enable -path=transit transit
 >     vault write -f transit/keys/wg-manager
 > '
@@ -188,7 +188,7 @@ backend was exfiltrated. Either way:
    new version:
 
    ```bash
-   docker compose exec -e VAULT_TOKEN=dev-only-root vault \
+   docker compose -p wg_manager_dev exec -e VAULT_TOKEN=dev-only-root vault \
        vault write -f transit/keys/wg-manager/rotate
    ```
 
@@ -208,7 +208,7 @@ backend was exfiltrated. Either way:
 3. Disable the leaked Transit key version once rewrap is complete:
 
    ```bash
-   docker compose exec -e VAULT_TOKEN=dev-only-root vault \
+   docker compose -p wg_manager_dev exec -e VAULT_TOKEN=dev-only-root vault \
        vault write transit/keys/wg-manager/config min_decryption_version=2
    ```
 

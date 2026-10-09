@@ -133,7 +133,7 @@ restart is gone. You will need to:
   one-liner against the Vault container:
 
   ```bash
-  docker compose exec -e VAULT_TOKEN=dev-only-root vault sh -c '
+  docker compose -p wg_manager_dev exec -e VAULT_TOKEN=dev-only-root vault sh -c '
       vault secrets enable -path=transit transit
       vault write -f transit/keys/wg-manager
   '

@@ -96,7 +96,8 @@ def test_runs_encrypted_backup_inside_bootstrap_app(workdir: Path) -> None:
     assert result.returncode == 0, result.stdout + result.stderr
 
     args = _docker_args(workdir)
-    assert args[:3] == ["compose", "--env-file", ".env.prod"]
+    # Pinned prod project (Makefile PROD_PROJECT), then prod's env file.
+    assert args[:5] == ["compose", "-p", "wg_manager", "--env-file", ".env.prod"]
     assert "docker-compose.prod.yml" in args
     run_at = args.index("run")
     assert {"--rm", "-T"} <= set(args[run_at:])

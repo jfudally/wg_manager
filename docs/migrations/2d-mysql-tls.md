@@ -68,7 +68,7 @@ against the same CA the dashboard's browser cert chains to.
 ```bash
 make db-down
 make db-up
-docker compose logs mysql | grep -i "ssl"
+docker compose -p wg_manager_dev logs mysql | grep -i "ssl"
 ```
 
 The compose bind mount drops `docker/mysql/conf.d/wg-manager-tls.cnf`
@@ -161,7 +161,7 @@ It writes:
 After the script finishes:
 
 ```bash
-docker compose restart mysql
+docker compose -p wg_manager_dev restart mysql
 
 export DATABASE_TLS_REQUIRED=true
 export DATABASE_TLS_CA_PEM=tls/mysql/client-ca.crt
