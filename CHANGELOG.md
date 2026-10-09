@@ -10,6 +10,18 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Fixed
+
+- **`make standby-seed` failed with `ERROR 3056` after loading the dump**
+  when `MYSQL_REPL_PASSWORD` came from the documented `openssl rand -hex
+  32` (64 characters): MySQL caps a replication source password at 32.
+  `repl-primary-setup`, `standby-seed` and `rejoin` now refuse
+  an over-long password before touching anything, and the docs say
+  `openssl rand -hex 16`. Hosts with a 64-character password: set a new
+  one on the primary, `make prod-up`, `make repl-primary-setup`, then
+  `make standby-pull` and re-seed the standby (troubleshooting table in
+  `docs/runbooks/standby-replication.md`).
+
 ## [v0.11.0] - 2026-10-09
 
 **Upgrading.** Check out this release and run `make prod-up`. On the two

@@ -281,6 +281,13 @@ class TestEnvTemplates:
         assert "MYSQL_REPL_PASSWORD=" in text
         assert "MYSQL_SERVER_EXTRA_SANS=" in text
 
+    def test_password_recipe_fits_mysqls_32_character_limit(self) -> None:
+        # `openssl rand -hex N` prints 2N characters; 16 gives exactly 32.
+        for path in (REPO_ROOT / ".env.prod.example", RUNBOOK):
+            text = path.read_text()
+            assert "openssl rand -hex 32" not in text, path
+            assert "openssl rand -hex 16" in text, path
+
 
 # ---------------------------------------------------------------------------
 # MySQL server cert SANs
@@ -517,8 +524,40 @@ class TestPrimarySetup:
         assert proc.returncode != 0
         assert "CREATE USER" not in box.calls()
 
+    def test_refuses_password_longer_than_mysql_allows(self, box: Sandbox) -> None:
+        # CHANGE REPLICATION SOURCE TO caps SOURCE_PASSWORD at 32
+        # characters (ERROR 3056). Creating wg_repl with a longer one
+        # would leave a user no replica can ever log in as.
+        box.server_id = "1"
+        box.repl_password = "a" * 33
+        proc = box.run("primary-setup")
+        assert proc.returncode != 0
+        assert "32" in proc.stderr
+        assert "CREATE USER" not in box.calls()
+
+    def test_accepts_a_32_character_password(self, box: Sandbox) -> None:
+        box.server_id = "1"
+        box.repl_password = "a" * 32
+        proc = box.run("primary-setup")
+        assert proc.returncode == 0, proc.stderr
+        assert "CREATE USER" in box.calls()
+
 
 class TestSeed:
+    def test_refuses_overlong_password_before_touching_anything(
+        self, box: Sandbox
+    ) -> None:
+        # Regression: a 64-char password got as far as loading the dump,
+        # then CHANGE REPLICATION SOURCE TO failed with ERROR 3056 and
+        # left a populated replica that needed a full re-seed.
+        box.repl_password = "a" * 64
+        proc = box.run("seed", "rv.vpn")
+        assert proc.returncode != 0
+        assert "32" in proc.stderr
+        calls = box.calls()
+        assert "mysqldump" not in calls
+        assert "RESET BINARY LOGS AND GTIDS" not in calls
+
     def test_happy_path_order(self, box: Sandbox) -> None:
         proc = box.run("seed", "rv.vpn")
         assert proc.returncode == 0, proc.stderr

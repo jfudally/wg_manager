@@ -55,7 +55,7 @@ hosts' names and stays valid after failover.
 1. **Add the shared settings to `.env.prod`:**
 
    ```bash
-   MYSQL_REPL_PASSWORD=<openssl rand -hex 32>   # no quotes/backslashes
+   MYSQL_REPL_PASSWORD=<openssl rand -hex 16>   # no quotes/backslashes
    MYSQL_SERVER_EXTRA_SANS=rv.vpn,general.vpn   # the name EACH host is reached at
    ```
 
@@ -295,6 +295,7 @@ Never run this on the primary.
 | `standby-seed`: *Unknown MySQL server host 'rv.vpn'* | The mysql container can't resolve the primary's name | Set `MYSQL_PEER_HOST` / `MYSQL_PEER_ADDR` in the standby's `.env.host`, then `make standby-down && make standby-up`. |
 | `standby-seed`: *Can't connect ... (111)* or a timeout | Primary's `MYSQL_BIND_ADDR`, firewall, or VPN route | `nc -vz rv.vpn 3306` from the standby. On the primary, `sudo iptables -S DOCKER-USER` must allow the standby's IP: check the `wg-manager-mysql-firewall@` instance. |
 | `standby-seed`: *Access denied for user 'wg_repl'* | `repl-primary-setup` not run, a password mismatch, or no client cert | Primary: `make repl-primary-setup`. Check that both hosts have the same `.env.prod`. |
+| `standby-seed`: *ERROR 3056 ... exceeds the maximum length of 32 characters* | `MYSQL_REPL_PASSWORD` is longer than MySQL replication allows (the old docs said 32 random bytes in hex, which is 64 characters) | Primary: set a 32-character password (`openssl rand -hex 16`) in `.env.prod`, `make prod-up` to recreate mysql with it, then `make repl-primary-setup`. Standby: `make standby-pull`, then [re-seed](#re-seeding). |
 | `standby-seed`: *runs with the PRIMARY flags (server-id 1)* | mysql was started by `prod-up` or plain compose | `make standby-down && make standby-up`. |
 | `make prod-up` on the standby: *this host is the warm standby* | Working as intended | Promotion is cycle 5d's `make failover`. |
 | `Last_IO_Error` mentions certificate/SSL after weeks of working | Standby's `tls/` expired because pulls stopped | Fix the pulls (`STALE` above), then `make standby-pull`. |
