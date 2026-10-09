@@ -10,6 +10,16 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.11.0] - 2026-10-09
+
+**Upgrading.** Check out this release and run `make prod-up`. On the two
+HA hosts, first set `MYSQL_PEER_HOST` / `MYSQL_PEER_ADDR` in `.env.host`
+to the other host's `.vpn` name and WireGuard IP; the mysql container is
+recreated (a few seconds of DB restart). Single-host installs need no
+change.
+
+### Added
+
 - **`MYSQL_PEER_HOST` / `MYSQL_PEER_ADDR` in `.env.host`** map the other
   HA host's name into the mysql container (`extra_hosts`). Without them,
   `make standby-seed primary=rv.vpn` failed with `Unknown MySQL server
