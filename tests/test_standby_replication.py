@@ -108,6 +108,17 @@ class TestPrimaryMysql:
         env = mysql.get("environment") or {}
         assert "MYSQL_REPL_PASSWORD" in env
 
+    def test_peer_host_resolves_inside_the_container(self, mysql: dict) -> None:
+        # The seed's mysqldump and replication both run in this container
+        # and must reach the peer by the name on its cert (VERIFY_IDENTITY).
+        # Containers don't read the host's /etc/hosts, and the .vpn names
+        # aren't in public DNS, so .env.host maps the peer in. Unset, the
+        # entry maps a reserved .invalid name: single-host installs are
+        # unaffected.
+        assert mysql.get("extra_hosts") == [
+            "${MYSQL_PEER_HOST:-mysql-peer.invalid}=${MYSQL_PEER_ADDR:-127.0.0.1}"
+        ]
+
 
 class TestStandbyOverlay:
     @pytest.fixture(scope="class")
@@ -117,6 +128,11 @@ class TestStandbyOverlay:
 
     def test_only_overrides_mysql(self, doc: dict) -> None:
         assert set(doc["services"]) == {"mysql"}
+
+    def test_keeps_the_peer_host_mapping(self, doc: dict) -> None:
+        # The standby is the side that dials the peer today; overriding
+        # extra_hosts here would drop the prod overlay's mapping.
+        assert "extra_hosts" not in doc["services"]["mysql"]
 
     def test_replica_flags(self, doc: dict) -> None:
         f = _flags(doc["services"]["mysql"]["command"])
@@ -245,6 +261,13 @@ class TestEnvTemplates:
         text = (REPO_ROOT / ".env.host.example").read_text()
         assert "WG_MANAGER_ROLE=" in text
         assert "MYSQL_BIND_ADDR=" in text
+        assert "MYSQL_PEER_HOST=" in text
+        assert "MYSQL_PEER_ADDR=" in text
+
+    def test_runbook_sets_the_peer_host_on_both_hosts(self) -> None:
+        text = RUNBOOK.read_text()
+        assert "MYSQL_PEER_HOST=general.vpn" in text  # on the primary
+        assert "MYSQL_PEER_HOST=rv.vpn" in text  # on the standby
 
     def test_env_host_is_gitignored(self) -> None:
         proc = subprocess.run(

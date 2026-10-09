@@ -10,6 +10,16 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`MYSQL_PEER_HOST` / `MYSQL_PEER_ADDR` in `.env.host`** map the other
+  HA host's name into the mysql container (`extra_hosts`). Without them,
+  `make standby-seed primary=rv.vpn` failed with `Unknown MySQL server
+  host 'rv.vpn'` wherever the `.vpn` names live only in the host's
+  `/etc/hosts`: containers don't read it, and replication must use the
+  name on the peer's cert. Set them on both hosts (the primary needs its
+  standby's name after failover). Unset, the mapping is a reserved
+  `.invalid` name, so single-host installs are unchanged. Picking this up
+  recreates the mysql container (a few seconds of DB restart).
+
 - **Warm standby host setup: MySQL firewall and boot order** in
   `docs/deploy/systemd-timer.md`. Both HA hosts install them, and the
   standby and failover runbooks now include them.

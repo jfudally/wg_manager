@@ -31,7 +31,7 @@ Prerequisite: the primary is on raft Vault (cycle 5a,
 |---|---|---|
 | `.env.prod`, `vault-init.json`, `tls/` | the source | pulled from the primary by `make standby-pull` (timer) |
 | Vault | running, the live one | the latest raft snapshot in `standby/vault.snap` (restored at failover) |
-| `.env.host` (gitignored, per host) | `WG_MANAGER_ROLE=primary`, `MYSQL_BIND_ADDR=<rv private/VPN IP>` | `WG_MANAGER_ROLE=standby`, `MYSQL_BIND_ADDR=<general private/VPN IP>` |
+| `.env.host` (gitignored, per host) | `WG_MANAGER_ROLE=primary`, `MYSQL_BIND_ADDR=<rv private/VPN IP>`, `MYSQL_PEER_HOST=general.vpn` | `WG_MANAGER_ROLE=standby`, `MYSQL_BIND_ADDR=<general private/VPN IP>`, `MYSQL_PEER_HOST=rv.vpn` |
 | Runs | `make prod-up`: full stack, mysqld `--server-id=1` | `make standby-up`: mysql only, `--server-id=2`, read-only |
 | Refuses | `make standby-up` (would restart its mysqld read-only) | `make prod-up` (a second `beat` would race host-cert renewals) |
 
@@ -64,7 +64,15 @@ hosts' names and stays valid after failover.
    ```bash
    WG_MANAGER_ROLE=primary
    MYSQL_BIND_ADDR=<rv's private/VPN IP>
+   MYSQL_PEER_HOST=general.vpn          # the standby's name on the MySQL cert
+   MYSQL_PEER_ADDR=<general's private/VPN IP>
    ```
+
+   The peer entries put the standby's name into the mysql
+   container's `/etc/hosts`. Replication connects by that name (it
+   must match the cert), and containers can't see names that only
+   the host's `/etc/hosts` or a private DNS knows. The primary needs
+   it once roles swap after a failover.
 
    Never use a public address. Docker-published ports bypass `ufw`,
    so every VPN peer can reach 3306 on that address. Install the two
@@ -120,6 +128,8 @@ hosts' names and stays valid after failover.
    ```bash
    WG_MANAGER_ROLE=standby
    MYSQL_BIND_ADDR=<general's private/VPN IP>
+   MYSQL_PEER_HOST=rv.vpn               # what standby-seed primary=... names
+   MYSQL_PEER_ADDR=<rv's private/VPN IP>
    STANDBY_PRIMARY_SSH=ops@rv.vpn       # user@host the pull logs in as
    STANDBY_PRIMARY_DIR=wg_manager       # the checkout on rv (relative to that home, or absolute)
    STANDBY_SSH_KEY=/home/ops/.ssh/wg-standby
@@ -282,6 +292,7 @@ Never run this on the primary.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `standby-seed`: *the dump from rv.vpn failed*, `SSL ... certificate verify failed` | `rv.vpn` isn't a SAN on the primary's MySQL cert | Primary: add it to `MYSQL_SERVER_EXTRA_SANS`, then `make certs-rotate`. Standby: re-copy `tls/`. |
+| `standby-seed`: *Unknown MySQL server host 'rv.vpn'* | The mysql container can't resolve the primary's name | Set `MYSQL_PEER_HOST` / `MYSQL_PEER_ADDR` in the standby's `.env.host`, then `make standby-down && make standby-up`. |
 | `standby-seed`: *Can't connect ... (111)* or a timeout | Primary's `MYSQL_BIND_ADDR`, firewall, or VPN route | `nc -vz rv.vpn 3306` from the standby. On the primary, `sudo iptables -S DOCKER-USER` must allow the standby's IP: check the `wg-manager-mysql-firewall@` instance. |
 | `standby-seed`: *Access denied for user 'wg_repl'* | `repl-primary-setup` not run, a password mismatch, or no client cert | Primary: `make repl-primary-setup`. Check that both hosts have the same `.env.prod`. |
 | `standby-seed`: *runs with the PRIMARY flags (server-id 1)* | mysql was started by `prod-up` or plain compose | `make standby-down && make standby-up`. |
