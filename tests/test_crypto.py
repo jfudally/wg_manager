@@ -7,8 +7,9 @@ they share observable behaviour — round-trip, context binding, tamper
 detection — so production callers never need to know which backend is
 active.
 
-Vault-backed cases are auto-skipped when no Vault is reachable at
-``$VAULT_ADDR`` (default ``http://127.0.0.1:8200``). The plain
+Vault-backed cases are auto-skipped unless an unsealed dev-mode Vault
+answers at ``$VAULT_ADDR`` (default ``http://127.0.0.1:8200``); a prod
+Vault on that address is skipped too (``tests/dev_vault.py``). The plain
 ``pytest -q`` run stays hermetic; ``make vault-up`` + ``pytest -q``
 exercises the full matrix. Phase 2b's acceptance criteria require both
 modes green.
@@ -16,14 +17,12 @@ modes green.
 
 from __future__ import annotations
 
-import os
-
 import hvac
 import pytest
-import requests
 from cryptography.fernet import Fernet
 from hvac.exceptions import InvalidRequest as HvacInvalidRequest
 
+from tests.dev_vault import VAULT_ADDR, VAULT_TOKEN, dev_vault_available
 from wg_manager.config import Settings
 from wg_manager.crypto import (
     CryptoBackend,
@@ -37,26 +36,11 @@ from wg_manager.crypto import (
 # Vault availability probe
 # ---------------------------------------------------------------------------
 
-_VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
-_VAULT_TOKEN = os.environ.get("VAULT_TOKEN", "dev-only-root")
-
-
-def _vault_reachable() -> bool:
-    """Return ``True`` if a Vault listener answers at ``$VAULT_ADDR``.
-
-    Used by the ``vault_backend`` fixture to decide whether to skip the
-    Vault half of the parameterised matrix. The probe uses a 0.5s
-    timeout — if the operator wanted Vault tests they'd have already
-    brought it up; we don't want to block the local-only run.
-    """
-    try:
-        resp = requests.get(f"{_VAULT_ADDR}/v1/sys/health", timeout=0.5)
-        return resp.status_code < 500
-    except requests.RequestException:
-        return False
-
-
-_VAULT_AVAILABLE = _vault_reachable()
+_VAULT_ADDR = VAULT_ADDR
+_VAULT_TOKEN = VAULT_TOKEN
+# Only an unsealed dev-mode Vault counts: on a host that also runs prod,
+# 127.0.0.1:8200 is the production Vault (see tests/dev_vault.py).
+_VAULT_AVAILABLE = dev_vault_available(_VAULT_ADDR)
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +64,7 @@ def vault_backend(request: pytest.FixtureRequest) -> VaultTransitBackend:
     cryptographically bound to the ciphertext rather than ignored.
     """
     if not _VAULT_AVAILABLE:
-        pytest.skip(f"Vault not reachable at {_VAULT_ADDR}")
+        pytest.skip(f"No dev-mode Vault at {_VAULT_ADDR}")
     client = hvac.Client(url=_VAULT_ADDR, token=_VAULT_TOKEN)
     try:
         client.sys.enable_secrets_engine(backend_type="transit", path="transit")
@@ -196,7 +180,7 @@ class TestMakeBackend:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         if not _VAULT_AVAILABLE:
-            pytest.skip(f"Vault not reachable at {_VAULT_ADDR}")
+            pytest.skip(f"No dev-mode Vault at {_VAULT_ADDR}")
         monkeypatch.setenv("CRYPTO_BACKEND", "vault")
         monkeypatch.setenv("VAULT_ADDR", _VAULT_ADDR)
         monkeypatch.setenv("VAULT_TOKEN", _VAULT_TOKEN)
@@ -234,7 +218,7 @@ class TestMakeBackend:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _VAULT_AVAILABLE, reason="Vault not reachable")
+@pytest.mark.skipif(not _VAULT_AVAILABLE, reason="No dev-mode Vault")
 class TestVaultRotation:
     """Behaviours that depend on Transit's versioned key model.
 

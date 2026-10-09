@@ -4,7 +4,8 @@ The fixture stack:
 
 * :func:`vault_client` — module-level (session-scoped) ``hvac.Client``
   pointed at the dev Vault declared in ``docker-compose.yml``. Skips
-  the suite if Vault is not reachable so an operator who hasn't run
+  the suite unless a dev-mode Vault answers (never a prod one), so an
+  operator who hasn't run
   ``make vault-up`` gets a clear message instead of a stack trace.
 
 * :func:`vault_ssh_ca` — session-scoped :class:`VaultSSHCA`
@@ -48,6 +49,7 @@ from typing import Iterator
 import hvac
 import pytest
 
+from tests.dev_vault import VAULT_ADDR, VAULT_TOKEN, dev_vault_available
 from wg_manager.ssh_ca import VaultSSHCA
 
 
@@ -83,8 +85,6 @@ def pytest_collection_modifyitems(
 # Connection constants — match docker-compose.yml's ``sshd-e2e`` service
 # ---------------------------------------------------------------------------
 
-VAULT_ADDR = "http://127.0.0.1:8200"
-VAULT_TOKEN = "dev-only-root"
 
 E2E_MOUNT = "ssh-e2e"
 E2E_USER_ROLE = "wg-manager-e2e-user"
@@ -119,19 +119,6 @@ E2E_HOST_PUBKEY_PATH = "/etc/ssh/ssh_host_ed25519_key.pub"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _vault_reachable() -> bool:
-    """Return ``True`` iff the dev Vault TCP port accepts a connection.
-
-    Used by the skipper on :func:`vault_client` so the suite degrades
-    gracefully when an operator hasn't run ``make vault-up``.
-    """
-    try:
-        with socket.create_connection(("127.0.0.1", 8200), timeout=1.0):
-            return True
-    except OSError:
-        return False
 
 
 def _docker_exec(
@@ -198,9 +185,11 @@ def _wait_for_ssh(host: str, port: int, timeout: float = 30.0) -> None:
 @pytest.fixture(scope="session")
 def vault_client() -> hvac.Client:
     """Authenticate to the dev Vault. Skip the suite if it's not up."""
-    if not _vault_reachable():
+    # Only an unsealed dev-mode Vault: on a host that also runs prod,
+    # 127.0.0.1:8200 is the production Vault (see tests/dev_vault.py).
+    if not dev_vault_available(VAULT_ADDR):
         pytest.skip(
-            f"Vault not reachable at {VAULT_ADDR} — run `make vault-up` first"
+            f"No dev-mode Vault at {VAULT_ADDR} — run `make vault-up` first"
         )
     client = hvac.Client(url=VAULT_ADDR, token=VAULT_TOKEN)
     if not client.is_authenticated():
