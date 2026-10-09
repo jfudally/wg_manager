@@ -10,6 +10,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+### Fixed
+
+- **`WgStandbyDrillFailed` dropped the `job` label** when the newest drill
+  had failed after an earlier success. Its `> on(instance)` comparison
+  keeps only `instance`, unlike every other standby alert. It now matches
+  `on(job, instance)`. The alert tests never set `job`, so a new case uses
+  the labels a real node_exporter scrape carries.
+
 ## [v0.11.2] - 2026-10-09
 
 **Upgrading.** Nothing to do on prod hosts: check out this release and
