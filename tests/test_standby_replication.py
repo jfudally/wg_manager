@@ -283,10 +283,15 @@ class TestEnvTemplates:
 
     def test_password_recipe_fits_mysqls_32_character_limit(self) -> None:
         # `openssl rand -hex N` prints 2N characters; 16 gives exactly 32.
-        for path in (REPO_ROOT / ".env.prod.example", RUNBOOK):
-            text = path.read_text()
-            assert "openssl rand -hex 32" not in text, path
-            assert "openssl rand -hex 16" in text, path
+        # Only the replication password has the cap, so check just the
+        # comment above it in .env.prod.example (other secrets keep -hex 32).
+        env_text = (REPO_ROOT / ".env.prod.example").read_text()
+        comment = env_text[: env_text.index("# MYSQL_REPL_PASSWORD=")]
+        comment = comment[comment.rindex("# Password of the `wg_repl`") :]
+        runbook = RUNBOOK.read_text()
+        for where, text in ((".env.prod.example", comment), ("runbook", runbook)):
+            assert "openssl rand -hex 32" not in text, where
+            assert "openssl rand -hex 16" in text, where
 
 
 # ---------------------------------------------------------------------------
