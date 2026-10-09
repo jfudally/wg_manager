@@ -10,6 +10,15 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.11.4] - 2026-10-09
+
+**Upgrading.** Check out this release on both HA hosts together; no
+`prod-up` is needed (only `scripts/failover.sh` and docs changed). A
+Cinc-managed standby follows the `wg_manager` cookbook's `revision`, so
+bump that too, or `WgStandbyCodeDrift` fires after an hour.
+
+### Added
+
 - **`failover.md` → Planned switchover → Before you start**, from the
   first `rv` → `general` → `rv` drill: pause configuration management
   that owns `.env.host`, set up the reverse pull path before a failback,
