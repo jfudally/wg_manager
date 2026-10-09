@@ -60,6 +60,42 @@ Check these now, not during an outage:
 The primary hands over cleanly: no transaction is lost and Vault is
 current to the second.
 
+### Before you start
+
+The first drill (2026-10-09, `rv` → `general` → `rv`, about 2.5 and
+1.5 minutes of API downtime) needed these, and the steps below don't do
+them for you:
+
+- **Pause configuration management on both hosts.** If Chef, Ansible or
+  similar owns `.env.host`, its next run rewrites the role that
+  `make failover` and `make rejoin` just flipped, then re-runs
+  `make standby-up` under a live primary. Pause its schedule for the
+  whole switchover. After the final rejoin, check that `.env.host`
+  matches what it would write before you resume it.
+- **Set up the reverse pull path first.** After a switchover the old
+  primary becomes the standby, and it pulls bundles from the new
+  primary. That needs a **pull key** on the old primary, authorized on the
+  new one with the forced command (setup step 3 of
+  [`standby-replication.md`](standby-replication.md), reversed), and its
+  `STANDBY_PRIMARY_SSH` / `STANDBY_PRIMARY_DIR` / `STANDBY_SSH_KEY` in
+  `.env.host`. A failback's `make failover` pulls its final bundle this
+  way, so without it you can switch over but not back.
+- **Stop the timers that would act on the wrong role.** That means the
+  three standby timers on the standby, and `wg-manager-certs-rotate.timer`
+  on the primary (it must not run while that host is a standby). Step 5
+  below flips them for a lasting switchover; for a round-trip drill, stop
+  them all and start them again at the end.
+- **Silence the standby alerts** (`WgStandby*`, plus `WgManagerScrapeDown`
+  and `WgHostCertRotationFailing` for the DNS moves) in Alertmanager for
+  the drill window. Once the standby is promoted, its metrics report no
+  replication.
+- **Know how the DNS name moves, and its TTL.** Use the shortest TTL you
+  can (the first drill used 0). If the record is managed in code (for
+  example a cookbook that owns the resolver's local records), override it
+  directly for the drill and pause that tool too. A config edit can take a
+  second to apply, so a lookup right after it may still return the old
+  address.
+
 1. **On the primary (`rv`):**
 
    ```bash

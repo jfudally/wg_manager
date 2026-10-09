@@ -10,6 +10,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`failover.md` → Planned switchover → Before you start**, from the
+  first `rv` → `general` → `rv` drill: pause configuration management
+  that owns `.env.host`, set up the reverse pull path before a failback,
+  stop the timers that would act on the wrong role, silence the standby
+  alerts, and plan the DNS move around its TTL.
+
 ## [v0.11.3] - 2026-10-09
 
 **Upgrading.** Optional on the hosts: only the example alert rules in
