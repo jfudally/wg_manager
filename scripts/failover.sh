@@ -28,7 +28,7 @@
 #                 failure resumes: an already-promoted MySQL is detected.
 #   rejoin HOST   On the OLD PRIMARY. Refuse unless HOST answers as a
 #                 writable primary. Then flip the role to standby, remove
-#                 the app containers and Vault, restart MySQL with the
+#                 everything but MySQL, restart MySQL with the
 #                 standby flags, and replicate from HOST. Works without re-seeding
 #                 only if this host has no transactions HOST lacks.
 #
@@ -49,6 +49,11 @@ HELPER_IMAGE="${HELPER_IMAGE:-alpine:3.20}"
 REPO_DIR="$(cd "${REPO_DIR:-$PWD}" && pwd)"
 REPL="${MYSQL_REPL_SCRIPT:-$REPO_DIR/scripts/mysql_replication.sh}"
 APP_SERVICES=(api worker beat web enroll)
+# Everything a primary runs that a standby doesn't: a standby runs MySQL
+# only (make standby-up). rejoin removes these; leaving valkey, vector and
+# the exited one-shot bootstrap containers was found in the first drill.
+# tests/test_failover.py checks this against the compose files.
+NON_STANDBY_SERVICES=("${APP_SERVICES[@]}" vault valkey vector bootstrap-substrate bootstrap-app)
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 log() { echo "==> $*"; }
@@ -174,8 +179,8 @@ cmd_rejoin() {
     [ "$(field state "$probe")" = writable ] \
         || die "$new_primary is not a writable primary ($(field state "$probe")). Run rejoin on the OLD primary, after make failover has finished on $new_primary. Nothing was changed."
     set_role standby
-    log "Removing the app containers and Vault (a standby runs MySQL only)..."
-    compose rm -s -f "${APP_SERVICES[@]}" vault
+    log "Removing everything but MySQL (${NON_STANDBY_SERVICES[*]}): a standby runs MySQL only..."
+    compose rm -s -f "${NON_STANDBY_SERVICES[@]}"
     log "Restarting MySQL with the standby flags..."
     "$MAKE" standby-up
     "$REPL" rejoin "$new_primary"

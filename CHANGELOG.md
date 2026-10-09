@@ -16,6 +16,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   stop the timers that would act on the wrong role, silence the standby
   alerts, and plan the DNS move around its TTL.
 
+### Fixed
+
+- **`make rejoin` left Valkey, Vector and the exited bootstrap containers
+  running** on the new standby, although it says a standby runs MySQL
+  only. It now removes every service but MySQL. A test checks the list
+  against the compose files, so a service added later can't leak onto
+  standbys the same way.
+
 ## [v0.11.3] - 2026-10-09
 
 **Upgrading.** Optional on the hosts: only the example alert rules in
