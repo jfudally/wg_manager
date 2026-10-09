@@ -10,6 +10,14 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.11.3] - 2026-10-09
+
+**Upgrading.** Optional on the hosts: only the example alert rules in
+`docs/observability/` changed (reload your Prometheus if it loads them).
+If you do upgrade, move both HA hosts together. A Cinc-managed standby
+follows the `wg_manager` cookbook's `revision`, so bump that too, or
+`WgStandbyCodeDrift` fires after an hour.
+
 ### Fixed
 
 - **`WgStandbyDrillFailed` dropped the `job` label** when the newest drill
