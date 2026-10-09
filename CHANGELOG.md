@@ -6,6 +6,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
+### Security
+
+- **Release workflow: script injection through the CHANGELOG or a commit
+  message.** The release step spliced the release notes into its shell
+  script, so a CHANGELOG line reading `BODY` ended the heredoc and ran the
+  following lines as commands on a runner holding a `contents: write`
+  token (reproduced with a stubbed `gh`). A comment in the same script
+  held a literal `github.*` expression, which GitHub expands even in
+  comments, to every github-context value, including the multi-line
+  event payload. The notes now come in through `env:` and are written
+  with `printf`. The comment holds no expression. The notes output uses a
+  random heredoc delimiter, so a line reading `EOF` can't end it. Tests
+  allow only `github.repository` in the release scripts, and actionlint
+  is clean on every workflow.
+
 ## [Unreleased]
 
 ### Added
