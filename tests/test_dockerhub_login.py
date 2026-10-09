@@ -29,6 +29,7 @@ PULLING_JOBS = [
     ("image-build.yml", "web-image", "docker/build-push-action"),
     ("release.yml", "build-and-push-api", "docker/build-push-action"),
     ("release.yml", "build-and-push-web", "docker/build-push-action"),
+    ("sast.yml", "semgrep", "semgrep/semgrep"),
 ]
 
 FLAG = "${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}"
@@ -79,3 +80,17 @@ def test_login_uses_the_token_and_is_optional(
     assert job_def["env"]["HAS_DOCKERHUB_LOGIN"] == FLAG
     others = {k: v for k, v in job_def["env"].items() if k != "HAS_DOCKERHUB_LOGIN"}
     assert not any("DOCKERHUB_TOKEN" in str(v) for v in others.values()), others
+
+
+def test_no_job_pulls_its_container_from_docker_hub_before_logging_in() -> None:
+    # A job-level `container:` image is pulled before any step runs, so the
+    # login step can't cover it, and `container.credentials` would fail the
+    # job wherever the secret is empty (forks, Dependabot). Run such images
+    # with `docker run` after the login step instead (semgrep does).
+    for path in sorted(WORKFLOWS.glob("*.yml")):
+        doc = yaml.safe_load(path.read_text())
+        for name, job in doc.get("jobs", {}).items():
+            container = job.get("container")
+            image = container.get("image") if isinstance(container, dict) else container
+            if image and not str(image).startswith(("ghcr.io/", "mcr.microsoft.com/")):
+                raise AssertionError(f"{path.name}:{name} pulls {image} as a job container")
