@@ -10,6 +10,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.11.2] - 2026-10-09
+
+**Upgrading.** Nothing to do on prod hosts: check out this release and
+run `make prod-up`. The prod compose project is still `wg_manager`, so
+no containers or volumes change. Dev checkouts start the dev stack on
+fresh `wg_manager_dev_*` volumes.
+
 ### Changed
 
 - **The dev stack has its own compose project, `wg_manager_dev`.** The
