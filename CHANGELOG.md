@@ -10,6 +10,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.11.1] - 2026-10-09
+
+**Upgrading.** Check out this release and run `make prod-up`; upgrade
+both HA hosts together. If your `MYSQL_REPL_PASSWORD` is over 32
+characters, replace it first (Fixed, below).
+
 ### Fixed
 
 - **`make standby-seed` failed with `ERROR 3056` after loading the dump**
