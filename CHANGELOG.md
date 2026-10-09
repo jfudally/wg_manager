@@ -16,6 +16,11 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
   rate-limits anonymous pulls per IP, and GitHub's runners share IPs, so
   429s failed the v0.11.4 release PR. Without them (forks, Dependabot),
   jobs pull anonymously as before.
+- **The semgrep job logs in to Docker Hub too.** It ran inside a
+  job-level `semgrep/semgrep` container, which is pulled before any step
+  and so before the login. It now runs the same image with `docker run`
+  after the gated login step. A test fails any workflow that pulls a
+  Docker Hub image as a job container.
 
 ## [v0.11.4] - 2026-10-09
 

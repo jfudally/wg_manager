@@ -52,11 +52,29 @@ jobs:
   semgrep:
     name: semgrep (p/python)
     runs-on: ubuntu-latest
-    container:
-      image: semgrep/semgrep:latest
+    # Not a job-level `container:`: that image is pulled before any step
+    # runs, so it can't use the Docker Hub login below, and
+    # `container.credentials` would fail the job wherever the secret is
+    # empty (forks, Dependabot). Docker Hub rate-limits anonymous pulls per
+    # IP, and hosted runners share IPs. Only a boolean, not the token,
+    # reaches the job's environment.
+    env:
+      HAS_DOCKERHUB_LOGIN: ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v7
 
+      # Authenticated pulls get their own quota. Skipped when the variable
+      # or secret is unset (forks, Dependabot): the job pulls anonymously.
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
       - name: Run semgrep
-        run: semgrep --config=p/python --error --metrics=off src/
+        run: >
+          docker run --rm -v "$GITHUB_WORKSPACE:/src" -w /src
+          semgrep/semgrep:latest
+          semgrep --config=p/python --error --metrics=off src/
