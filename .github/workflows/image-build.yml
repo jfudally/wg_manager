@@ -50,9 +50,23 @@ jobs:
   api-image:
     name: Build API + worker image
     runs-on: ubuntu-latest
+    # Docker Hub rate-limits anonymous pulls per IP, and hosted runners
+    # share IPs (429s blocked the v0.11.4 release PR). Only a boolean, not
+    # the token, reaches the job's environment.
+    env:
+      HAS_DOCKERHUB_LOGIN: ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v7
+
+      # Authenticated pulls get their own quota. Skipped when the variable
+      # or secret is unset (forks, Dependabot): the job pulls anonymously.
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -71,9 +85,23 @@ jobs:
   web-image:
     name: Build dashboard image
     runs-on: ubuntu-latest
+    # Docker Hub rate-limits anonymous pulls per IP, and hosted runners
+    # share IPs (429s blocked the v0.11.4 release PR). Only a boolean, not
+    # the token, reaches the job's environment.
+    env:
+      HAS_DOCKERHUB_LOGIN: ${{ vars.DOCKERHUB_USERNAME != '' && secrets.DOCKERHUB_TOKEN != '' }}
     steps:
       - name: Check out repo
         uses: actions/checkout@v7
+
+      # Authenticated pulls get their own quota. Skipped when the variable
+      # or secret is unset (forks, Dependabot): the job pulls anonymously.
+      - name: Log in to Docker Hub
+        if: env.HAS_DOCKERHUB_LOGIN == 'true'
+        uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

@@ -10,6 +10,13 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **CI logs in to Docker Hub before pulling** (the promtool job, the
+  image builds and the release builds) when the `DOCKERHUB_USERNAME`
+  repo variable and `DOCKERHUB_TOKEN` secret are set. Docker Hub
+  rate-limits anonymous pulls per IP, and GitHub's runners share IPs, so
+  429s failed the v0.11.4 release PR. Without them (forks, Dependabot),
+  jobs pull anonymously as before.
+
 ## [v0.11.4] - 2026-10-09
 
 **Upgrading.** Check out this release on both HA hosts together; no
