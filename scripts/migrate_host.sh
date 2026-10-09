@@ -243,14 +243,15 @@ cmd_import() {
         die "bundle was exported at commit $manifest_commit but this checkout is at $head. Check out the same commit (or set MIGRATE_ALLOW_COMMIT_MISMATCH=1)."
     fi
 
-    # Volume names derive from the compose project (the checkout's dir
-    # name). A mismatch would restore into volumes prod-up never mounts,
+    # Volume names derive from the compose project (the Makefile's
+    # PROD_PROJECT; before it was pinned, the checkout's dir name, so an
+    # old host's bundle can carry another name). A mismatch would restore into volumes prod-up never mounts,
     # and prod-up would then initialise a brand-new, empty Vault.
     local want_project have_project
     want_project="$(sed -n 's/^project=//p' "$in/MANIFEST")"
     have_project="$(compose_query project)"
     [ "$want_project" = "$have_project" ] \
-        || die "compose project is '$have_project' but the bundle came from '$want_project' — clone into a directory named '$want_project'."
+        || die "compose project is '$have_project' but the bundle came from '$want_project' — set PROD_PROJECT := $want_project in the Makefile."
 
     local f found
     for f in "${REQUIRED_FILES[@]}" "${OPTIONAL_FILES[@]}"; do

@@ -748,10 +748,10 @@ Verify a record was written:
 #    from the dev-compose environment block (both are set so
 #    ``docker compose exec vault vault …`` Just Works — no extra
 #    ``-e VAULT_TOKEN=…`` flag needed).
-docker compose exec vault vault kv put secret/audit-test foo=bar
+docker compose -p wg_manager_dev exec vault vault kv put secret/audit-test foo=bar
 
 # 2. Tail the audit file:
-docker compose exec vault tail /vault/logs/audit.log
+docker compose -p wg_manager_dev exec vault tail /vault/logs/audit.log
 ```
 
 Each line is a JSON record with the request method, path, client
@@ -777,15 +777,15 @@ no `docker compose exec vault tail …` ceremony.
 Bring it up (after cycle 1's `make vault-audit-bootstrap`):
 
 ```bash
-docker compose up -d vector
+docker compose -p wg_manager_dev up -d vector
 
 # Write to Vault to generate an audit record. ``VAULT_ADDR`` +
 # ``VAULT_TOKEN`` are already set on the vault container's env
 # (dev compose) so the CLI authenticates without ceremony.
-docker compose exec vault vault kv put secret/cycle-2-test foo=bar
+docker compose -p wg_manager_dev exec vault vault kv put secret/cycle-2-test foo=bar
 
 # Read the audit feed off the sidecar's stdout:
-docker compose logs vector
+docker compose -p wg_manager_dev logs vector
 ```
 
 Each line is one JSON record straight from Vault's audit log — the

@@ -236,9 +236,9 @@ data tier comes up under both the default flow and the ha flow.
 ### Boot the profile
 
 ```bash
-make ha-up                  # docker compose --profile ha up -d --build
+make ha-up                  # docker compose -p wg_manager_dev --profile ha up -d --build
 make ha-logs                # tail all ha services
-make ha-down                # docker compose --profile ha down
+make ha-down                # docker compose -p wg_manager_dev --profile ha down
 ```
 
 ### Reachable endpoints from the host
@@ -286,14 +286,14 @@ curl --cacert tls/ca-bundle.crt https://127.0.0.1:8444/healthz
 Stop one replica and curl repeatedly through the LB:
 
 ```bash
-docker compose --profile ha stop api1
+docker compose -p wg_manager_dev --profile ha stop api1
 
 for _ in $(seq 1 6); do
   curl --cacert tls/ca-bundle.crt -s https://127.0.0.1:8443/healthz
   echo
 done
 
-docker compose --profile ha start api1
+docker compose -p wg_manager_dev --profile ha start api1
 ```
 
 The first one or two requests after `stop api1` may show a single

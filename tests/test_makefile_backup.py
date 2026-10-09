@@ -58,8 +58,10 @@ class TestBackupVaultTarget:
         wrapped in a make target — operators run it against their own
         Vault address)."""
         block = _block_for_target("backup-vault")
-        assert "docker compose exec" in block, (
-            f"backup-vault must `docker compose exec vault …` — got:\n{block}"
+        # DEV_COMPOSE is `docker compose -p wg_manager_dev`, so this can't
+        # reach prod's Vault on a host that runs both stacks.
+        assert "$(DEV_COMPOSE) exec" in block, (
+            f"backup-vault must `$(DEV_COMPOSE) exec vault …` — got:\n{block}"
         )
 
     def test_target_writes_to_dedicated_snapshots_path(self) -> None:

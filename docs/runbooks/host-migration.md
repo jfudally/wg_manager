@@ -74,10 +74,10 @@ most migrations take under an hour.
 - Install Docker and Compose v2 and enable Docker at boot
   (`sudo systemctl enable docker`).
 - Clone the repo at **the same commit** as the old host
-  (`git rev-parse HEAD` there), into a directory with **the same
-  name**. Compose derives volume names from the directory name
-  (`wg_manager` → `wg_manager_wg_manager_mysql_data`). `host-import`
-  refuses a mismatch, because `prod-up` would otherwise start on empty
+  (`git rev-parse HEAD` there). Volume names derive from the compose
+  project, which the Makefile pins to `wg_manager` (`PROD_PROJECT`)
+  whatever the directory is called: `wg_manager_wg_manager_mysql_data`.
+  `host-import` refuses a bundle from a different project, because `prod-up` would otherwise start on empty
   volumes and initialise a brand-new Vault.
 - Do **not** create `.env.prod` or run `make prod-up` yet. The import
   brings `.env.prod` over and refuses to overwrite one.
@@ -258,7 +258,7 @@ before operators start using the new host.
 | `host-export`: *stack is still running* | Run `make prod-down` first. The export won't copy live MySQL/Vault files. |
 | `host-export`: *compose volume 'X' is not classified* | Someone added a volume to compose. Add it to `MIGRATE_VOLUMES` or `SKIP_VOLUMES` in `scripts/migrate_host.sh` with a reason, and add a test. |
 | `host-import`: *checksum verification failed* | The transfer was truncated. Re-run the `rsync` from step 5. |
-| `host-import`: *compose project is 'X' but the bundle came from 'Y'* | Re-clone into a directory named `Y`. |
+| `host-import`: *compose project is 'X' but the bundle came from 'Y'* | The old host ran under project `Y` (before `PROD_PROJECT` was pinned, its checkout's directory name). Set `PROD_PROJECT := Y` in the Makefile for the import. |
 | `host-import`: *couldn't find env file .env.prod* | You're running a version before the fresh-clone fix. `host-import` now reads `.env.prod` from the bundle. Update `scripts/migrate_host.sh`. |
 | `host-import`: *… already exists — refusing to overwrite* | The target isn't clean (a previous attempt, or a `prod-up` run too early). Inspect it before removing anything. If it came from an early `prod-up`, it's an empty, freshly initialised Vault that you don't need. |
 | Vault stays sealed after `prod-up` | `vault-init.json` doesn't belong to the restored Vault data. Both must come from the same bundle. See [`vault-down.md`](vault-down.md). |

@@ -359,6 +359,10 @@ def _ensure_container_up() -> None:
         [
             "docker",
             "compose",
+            # The dev stack's project (Makefile DEV_COMPOSE), never the
+            # directory-named one, which on a prod host is prod's.
+            "-p",
+            "wg_manager_dev",
             "--profile",
             "e2e",
             "up",

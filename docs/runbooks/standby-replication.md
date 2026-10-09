@@ -120,8 +120,9 @@ hosts' names and stays valid after failover.
 
 ### On the standby (`general`)
 
-1. **Clone the repo at the primary's commit**, into a directory with
-   the same name (`wg_manager`). Compose derives volume names from it.
+1. **Clone the repo at the primary's commit.** The Makefile pins the
+   compose project to `wg_manager`, so volume names don't depend on the
+   directory's name.
 
 2. **Create `.env.host`:**
 
