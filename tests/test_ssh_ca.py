@@ -9,8 +9,8 @@ the backend's advertised CA, log scrubbing — so callers in
 ``wg_manager.tasks`` and ``wg_manager.ssh`` never need to know which
 backend is active.
 
-Vault-backed cases are auto-skipped when no Vault is reachable at
-``$VAULT_ADDR`` (default ``http://127.0.0.1:8200``). The plain
+Vault-backed cases are auto-skipped unless an unsealed dev-mode Vault
+answers at ``$VAULT_ADDR`` (default ``http://127.0.0.1:8200``). The plain
 ``pytest -q`` run stays hermetic; ``make vault-up`` + ``pytest -q``
 exercises the full matrix. Phase 2c acceptance requires both modes
 green, mirroring the Phase 2b pattern documented in ``docs/vault-cookbook.md``.
@@ -24,12 +24,10 @@ attacker replay an unexpired user cert.
 from __future__ import annotations
 
 import logging
-import os
 import time
 
 import hvac
 import pytest
-import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
@@ -39,6 +37,7 @@ from cryptography.hazmat.primitives.serialization import (
 )
 from hvac.exceptions import InvalidRequest as HvacInvalidRequest
 
+from tests.dev_vault import VAULT_ADDR, VAULT_TOKEN, dev_vault_available
 from wg_manager.config import Settings
 from wg_manager.ssh_ca import (
     HostCert,
@@ -55,20 +54,11 @@ from wg_manager.ssh_ca import (
 # we don't want a test-helpers import graph for two callers).
 # ---------------------------------------------------------------------------
 
-_VAULT_ADDR = os.environ.get("VAULT_ADDR", "http://127.0.0.1:8200")
-_VAULT_TOKEN = os.environ.get("VAULT_TOKEN", "dev-only-root")
-
-
-def _vault_reachable() -> bool:
-    """Return ``True`` if a Vault listener answers at ``$VAULT_ADDR``."""
-    try:
-        resp = requests.get(f"{_VAULT_ADDR}/v1/sys/health", timeout=0.5)
-        return resp.status_code < 500
-    except requests.RequestException:
-        return False
-
-
-_VAULT_AVAILABLE = _vault_reachable()
+_VAULT_ADDR = VAULT_ADDR
+_VAULT_TOKEN = VAULT_TOKEN
+# Only an unsealed dev-mode Vault counts: on a host that also runs prod,
+# 127.0.0.1:8200 is the production Vault (see tests/dev_vault.py).
+_VAULT_AVAILABLE = dev_vault_available(_VAULT_ADDR)
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +87,7 @@ def vault_ssh_ca(request: pytest.FixtureRequest) -> VaultSSHCA:
     anyway.
     """
     if not _VAULT_AVAILABLE:
-        pytest.skip(f"Vault not reachable at {_VAULT_ADDR}")
+        pytest.skip(f"No dev-mode Vault at {_VAULT_ADDR}")
     client = hvac.Client(url=_VAULT_ADDR, token=_VAULT_TOKEN)
 
     suffix = (
@@ -314,7 +304,7 @@ class TestLocalDevSSHCA:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _VAULT_AVAILABLE, reason="Vault not reachable")
+@pytest.mark.skipif(not _VAULT_AVAILABLE, reason="No dev-mode Vault")
 class TestVaultSSHCA:
     """Behaviours that depend on the real Vault SSH secrets engine."""
 
@@ -376,7 +366,7 @@ class TestMakeSSHCABackend:
         doesn't quietly depend on ``make ssh-ca-bootstrap`` having been
         run out of band."""
         if not _VAULT_AVAILABLE:
-            pytest.skip(f"Vault not reachable at {_VAULT_ADDR}")
+            pytest.skip(f"No dev-mode Vault at {_VAULT_ADDR}")
         mount = "ssh-factory-test"
         client = hvac.Client(url=_VAULT_ADDR, token=_VAULT_TOKEN)
         try:
@@ -467,7 +457,7 @@ class TestVaultSSHCASettings:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skipif(not _VAULT_AVAILABLE, reason="Vault not reachable")
+@pytest.mark.skipif(not _VAULT_AVAILABLE, reason="No dev-mode Vault")
 class TestVaultSSHCABootstrapDefaults:
     """The bootstrap defaults must produce roles that actually sign certs.
 
