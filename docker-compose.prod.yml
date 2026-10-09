@@ -90,6 +90,15 @@ services:
     # fails to bind.
     ports: !override
       - "${MYSQL_BIND_ADDR:-127.0.0.1}:3306:3306"
+    # Warm standby: the other HA host's name and VPN address, from
+    # .env.host. The standby's seed dump and its replication connect
+    # from inside this container, by the name on the peer's MySQL cert
+    # (VERIFY_IDENTITY), and containers don't see the host's
+    # /etc/hosts. After failover the old primary dials the other way,
+    # so each host maps its peer whatever the role. Unset, this maps a
+    # reserved `.invalid` name nothing ever looks up.
+    extra_hosts:
+      - "${MYSQL_PEER_HOST:-mysql-peer.invalid}=${MYSQL_PEER_ADDR:-127.0.0.1}"
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
       interval: 10s
