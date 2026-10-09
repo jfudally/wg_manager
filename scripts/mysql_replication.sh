@@ -88,8 +88,12 @@ check_repl_password() {
     [ -n "${MYSQL_REPL_PASSWORD:-}" ] || die "MYSQL_REPL_PASSWORD is not set — add it to .env.prod (shared by both hosts) and recreate mysql."
     # It is spliced into SQL string literals below.
     case "$MYSQL_REPL_PASSWORD" in
-        *"'"'"'"*|*\\*) die "MYSQL_REPL_PASSWORD must not contain quotes or backslashes (use openssl rand -hex 32)." ;;
+        *"'"'"'"*|*\\*) die "MYSQL_REPL_PASSWORD must not contain quotes or backslashes (use openssl rand -hex 16)." ;;
     esac
+    # CHANGE REPLICATION SOURCE TO rejects a SOURCE_PASSWORD over 32
+    # characters (ERROR 3056). Catch it here, before seed has loaded a
+    # dump or primary-setup has created a user no replica can log in as.
+    [ "${#MYSQL_REPL_PASSWORD}" -le 32 ] || die "MYSQL_REPL_PASSWORD is ${#MYSQL_REPL_PASSWORD} characters; MySQL replication allows at most 32 (use openssl rand -hex 16)."
 }
 TLS_CA=/etc/mysql/certs/ca.crt
 TLS_CERT=/etc/mysql/certs/client.crt
