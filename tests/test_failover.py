@@ -42,6 +42,9 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
+
+from tests.test_compose_prod_overlay import _ComposeLoader
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REPL_SH = REPO_ROOT / "scripts" / "mysql_replication.sh"
@@ -872,11 +875,32 @@ class TestRejoinHost:
         _order(
             calls,
             "repl probe general.vpn",
-            "compose rm -s -f api worker beat web enroll vault",
+            "compose rm -s -f api worker beat web enroll vault valkey vector"
+            " bootstrap-substrate bootstrap-app",
             "make standby-up",
             "repl rejoin general.vpn",
         )
         assert primary.role() == "standby"
+
+    def test_removes_every_service_but_mysql(self, primary: Host) -> None:
+        # A standby runs MySQL only. The 2026-10-09 drill found valkey,
+        # vector and the exited bootstrap containers left behind after a
+        # rejoin. Checked against the compose file, so a service added to
+        # the prod stack later can't leak onto standbys the same way.
+        # The prod stack is docker-compose.yml + docker-compose.prod.yml;
+        # profile-gated services (the ha and e2e dev ones) never run there.
+        services: set[str] = set()
+        for name in ("docker-compose.yml", "docker-compose.prod.yml"):
+            doc = yaml.load((REPO_ROOT / name).read_text(), Loader=_ComposeLoader)
+            services |= {s for s, cfg in doc["services"].items() if not (cfg or {}).get("profiles")}
+        proc = primary.run("rejoin", "general.vpn")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        (rm,) = [c for c in primary.calls().splitlines() if c.startswith("compose rm -s -f ")]
+        removed = set(rm.removeprefix("compose rm -s -f ").split())
+        assert "mysql" not in removed
+        # Superset: opt-in services such as enroll (profile-gated) are
+        # removed too, in case they're enabled.
+        assert removed >= services - {"mysql"}, sorted(services - {"mysql"} - removed)
 
     @pytest.mark.parametrize("state", ["state=readonly\n", "state=unreachable\n"])
     def test_refuses_unless_host_is_a_writable_primary(

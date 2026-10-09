@@ -214,7 +214,8 @@ This guards against running it on the wrong host or with a typo. Then
 it:
 
 1. Flips `.env.host` to `standby`.
-2. Removes the app containers and Vault.
+2. Removes everything but MySQL: the app containers, Vault, Valkey,
+   Vector and the exited bootstrap containers.
 3. Restarts MySQL with the standby flags and makes it read-only.
 4. Checks that this host has no transactions the new primary lacks.
 5. Replicates from the new primary, with no re-seed.
