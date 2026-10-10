@@ -72,6 +72,23 @@ them for you:
   `make standby-up` under a live primary. Pause its schedule for the
   whole switchover. After the final rejoin, check that `.env.host`
   matches what it would write before you resume it.
+
+  Pausing the schedule doesn't stop a **pending run** that already
+  started. Cron-driven runs often sleep for a splay before converging
+  (the second drill caught one 103 s and another 129 s in), and a run can
+  also be converging right then. So right before `make demote`, and again
+  before failing back, check both hosts:
+
+  ```bash
+  # Chef/Cinc example; adjust the client name for your tool.
+  ps -eo pid,ppid,args | grep -E "[c]inc-client -c|[c]hef-client|[/]bin/sleep [0-9]+$"
+  ```
+
+  - A pending run is a wrapper shell (`sh -c "sleep N; …-client …"`)
+    plus its `sleep`. Kill both in one command, **shell first**. Killing
+    only the `sleep` lets the shell go straight on to the converge.
+  - A run that's converging: let it finish, then pause again. A run may
+    re-create the schedule you paused (the drill's did).
 - **Set up the reverse pull path first.** After a switchover the old
   primary becomes the standby, and it pulls bundles from the new
   primary. That needs a **pull key** on the old primary, authorized on the
