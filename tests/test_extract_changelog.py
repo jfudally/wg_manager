@@ -165,3 +165,18 @@ class TestCliEntrypoint:
         )
         assert result.returncode != 0
         assert "v9.9.9" in (result.stderr + result.stdout)
+
+
+class TestRepoChangelogLayout:
+    """The real CHANGELOG.md keeps every entry under a version heading.
+
+    The intro mentions ``## [Unreleased]`` in prose, and a scripted edit
+    that searched for that string once inserted a ``### Security`` section
+    above the real heading, where no release's notes would pick it up.
+    """
+
+    def test_no_section_heading_before_the_first_version_heading(self) -> None:
+        text = (Path(__file__).resolve().parents[1] / "CHANGELOG.md").read_text()
+        intro = text.split("\n## [", 1)[0]
+        stray = [line for line in intro.splitlines() if line.startswith("### ")]
+        assert not stray, f"section headings above `## [Unreleased]`: {stray}"
