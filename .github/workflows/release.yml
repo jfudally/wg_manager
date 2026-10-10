@@ -63,10 +63,14 @@ jobs:
           # accepts either the v-prefixed or bare form.
           NOTES=$(python scripts/extract_changelog.py "${GITHUB_REF_NAME}")
           # Multi-line outputs use the heredoc form so newlines survive.
+          # The delimiter is random: a fixed one (EOF) would let a
+          # CHANGELOG line reading EOF end the output early and inject
+          # further outputs.
+          delim="notes_$(openssl rand -hex 16)"
           {
-            echo "notes<<EOF"
+            echo "notes<<${delim}"
             echo "${NOTES}"
-            echo "EOF"
+            echo "${delim}"
           } >> "${GITHUB_OUTPUT}"
 
   build-and-push-api:
@@ -332,8 +336,12 @@ jobs:
           # The release body is the CHANGELOG section + a footer that
           # points at the published images and explains the bundled
           # SBOM + cosign attestation surface.
-          cat > release-body.md <<'BODY'
-          ${{ needs.extract-notes.outputs.notes }}
+          # The notes come in through env (NOTES), never spliced into this
+          # script: GitHub substitutes expressions before the shell runs, so
+          # a CHANGELOG line reading BODY would end the heredoc below and
+          # run the rest as commands. printf writes them as data.
+          printf '%s\n' "$NOTES" > release-body.md
+          cat >> release-body.md <<'BODY'
 
           ---
 
@@ -367,8 +375,9 @@ jobs:
 
           # Substitute the bare version into the placeholder lines. The
           # heredoc is quoted (no shell expansion), so this sed pass is
-          # what fills `__VERSION__` — keeping the `${{ github.* }}`
-          # render-time expressions untouched.
+          # what fills `__VERSION__`, after GitHub has already substituted
+          # the repository name. (Never write an expression in a comment
+          # here: GitHub expands it anyway.)
           sed -i "s/__VERSION__/${VERSION}/g" release-body.md
 
           # ``gh release create … <files…>`` attaches every positional

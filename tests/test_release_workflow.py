@@ -12,6 +12,7 @@ workflow itself runs — we don't shell out to docker here.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -158,6 +159,54 @@ class TestChangelogExtraction:
             "workflow must create a GitHub release (gh release create or "
             "softprops/action-gh-release)"
         )
+
+
+class TestReleaseNotesAreData:
+    """The CHANGELOG section must never become part of a shell script.
+
+    ``${{ }}`` expressions are substituted before the shell runs, so notes
+    spliced into ``run:`` can end a heredoc (a line reading ``BODY``) and
+    run the rest as commands, on a runner holding a ``contents: write``
+    token. actionlint flagged it. The notes go through ``env:`` and the
+    output's heredoc delimiter is random, so a line reading ``EOF`` can't
+    end it early or inject another output.
+    """
+
+    def _runs(self, workflow: dict) -> list[str]:
+        return [
+            s["run"]
+            for job in workflow["jobs"].values()
+            for s in job.get("steps", [])
+            if "run" in s
+        ]
+
+    def test_notes_output_never_expands_inside_a_script(self, workflow: dict) -> None:
+        for script in self._runs(workflow):
+            assert "outputs.notes" not in script, script[:200]
+
+    def test_release_step_reads_notes_from_env(self, workflow: dict) -> None:
+        steps = workflow["jobs"]["release"]["steps"]
+        (step,) = [s for s in steps if "gh release create" in s.get("run", "")]
+        assert step["env"]["NOTES"] == "${{ needs.extract-notes.outputs.notes }}"
+        assert '"$NOTES"' in step["run"] or '"${NOTES}"' in step["run"]
+
+    def test_scripts_expand_only_safe_expressions(self, workflow: dict) -> None:
+        # Expressions expand even inside shell comments. A comment once
+        # held a literal `github.*` expression, which expands to every
+        # github-context value, including the multi-line event payload
+        # (commit messages), and its later lines would run as commands.
+        # Only values a pusher can't shape may appear in a script; the
+        # rest go through env:.
+        allowed = {"github.repository"}
+        for script in self._runs(workflow):
+            used = {e.strip() for e in re.findall(r"\$\{\{(.*?)\}\}", script)}
+            assert used <= allowed, sorted(used - allowed)
+
+    def test_notes_output_uses_a_random_delimiter(self, workflow: dict) -> None:
+        steps = workflow["jobs"]["extract-notes"]["steps"]
+        (script,) = [s["run"] for s in steps if s.get("id") == "extract"]
+        assert 'echo "notes<<EOF"' not in script
+        assert "openssl rand" in script
 
 
 class TestConcurrency:
