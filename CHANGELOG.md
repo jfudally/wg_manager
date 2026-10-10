@@ -10,6 +10,12 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **`failover.md` → Before you start: check for a pending run** of
+  configuration management right before `make demote` and before failing
+  back. Pausing its schedule doesn't stop a run that already started (a
+  cron run that sleeps, then converges), and a run can re-create the
+  schedule. Kill a pending wrapper shell before its `sleep`.
+
 ## [v0.11.5] - 2026-10-10
 
 **Upgrading.** Nothing to do on the hosts: only CI workflows changed

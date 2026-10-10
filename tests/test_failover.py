@@ -992,6 +992,7 @@ class TestDocs:
             "pull key",                  # the failback needs the reverse pull path
             "silence",                   # the standby alerts fire while roles are swapped
             "ttl",                       # the DNS move takes effect only as fast as caches expire
+            "pending run",               # pausing a schedule doesn't stop a run already started
         ):
             assert needle in section, needle
 
