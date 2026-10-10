@@ -10,6 +10,15 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+## [v0.11.6] - 2026-10-10
+
+**Upgrading.** Nothing to do on the hosts: only the failover runbook
+changed. If you do move them, move both HA hosts together and bump the
+`wg_manager` cookbook's `revision` for a Cinc-managed standby, or
+`WgStandbyCodeDrift` fires.
+
+### Added
+
 - **`failover.md` → Before you start: check for a pending run** of
   configuration management right before `make demote` and before failing
   back. Pausing its schedule doesn't stop a run that already started (a
