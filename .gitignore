@@ -81,3 +81,6 @@ deploy/terraform/**/.terraform.lock.hcl
 deploy/terraform/**/*.tfstate
 deploy/terraform/**/*.tfstate.*
 .terraform-plugin-cache/
+
+# pex cache for `make cli-binary` (resolved wheels + interpreters).
+.pex-cache/

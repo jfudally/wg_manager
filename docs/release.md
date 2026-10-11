@@ -20,6 +20,10 @@ A single `git push origin v<X.Y.Z>` produces:
 - A GitHub release at `v<X.Y.Z>` whose body is the matching
   `## [v<X.Y.Z>]` section from `CHANGELOG.md` plus a footer with
   the image-pull lines.
+- Portable `wg-manager` CLI binaries attached to that release —
+  `wg-manager-linux-x86_64`, `wg-manager-linux-aarch64`,
+  `wg-manager-macos-aarch64` — and a `SHA256SUMS` file. See
+  [CLI binaries](#cli-binaries).
 
 Phase 2f cycle 2 ships this much. Cycle 3 layers cosign keyless
 signing on top; cycle 4 attaches SBOMs to the GitHub release.
@@ -107,6 +111,13 @@ The workflow runs four jobs in this order:
    extracted notes + image-pull footer. `--verify-tag` ensures the
    tag exists and matches the workflow's ref.
 
+Before the image builds, **Build CLI binary** (`build-cli`) runs
+`make cli-binary` once per target, each on a runner of that OS/arch,
+and uploads the binary. Both image builds wait for it, so a binary
+that fails to build stops the release before anything is pushed to
+GHCR. The release job downloads the binaries, writes `SHA256SUMS`
+and attaches all of them.
+
 The two image builds run in parallel; the release job blocks on
 both. Cycle 3's cosign signing will land between the image push
 and the release creation (signing each pushed image, then
@@ -131,6 +142,45 @@ If a release is **incorrect** (bad notes, wrong artifact), do not
 re-use the same tag. Cut a `v<X.Y.Z>+1` or `v<X.Y.Z+1>` instead;
 GHCR tags are immutable in practice and consumers may have
 already pulled `v<X.Y.Z>`.
+
+## CLI binaries
+
+`make cli-binary` builds `dist/wg-manager-<os>-<arch>` with
+[pypackager](https://github.com/jfudally/pypackager), which wraps
+`pex --scie eager`: the binary embeds CPython 3.13 and the runtime
+deps, so it runs on a host with no Python. The spec is
+`packaging/wg-manager-cli.toml`.
+
+```bash
+uv python install 3.13        # pex resolves wheels for python3.13 on PATH
+make cli-binary               # this host's target; CLI_TARGET=... to name it
+```
+
+- **Native builds only.** `CLI_TARGET` must match the host: pex's
+  abbreviated cross-platforms can't evaluate the
+  `python_full_version` markers in the `uv.lock` export, so each
+  target builds on a runner of its own OS/arch.
+- **Locked deps.** The target exports `uv.lock` (runtime deps only)
+  to `build/cli-requirements.txt` first, so the binary carries the
+  versions the test suite ran against.
+- **glibc floor.** The Linux binaries are built on `ubuntu-22.04`
+  runners and need glibc 2.35 or newer (Debian 12, Ubuntu 22.04,
+  Raspberry Pi OS bookworm and later).
+- **pypackager pin.** The Makefile pins pypackager to a commit
+  (`PYPACKAGER`). Bump it to a newer release's commit, not a tag.
+- CI's `cli-binary` job builds and smoke-runs (`--help`) every target
+  on each PR, with a pex cache; the release builds without one.
+
+To install a released binary:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS   # macOS: shasum -a 256 -c --ignore-missing
+chmod +x wg-manager-linux-x86_64
+./wg-manager-linux-x86_64 --help
+```
+
+The first run unpacks the interpreter into `~/.cache/nce`; later runs
+start from there.
 
 ## Local preview
 

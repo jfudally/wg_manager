@@ -1,4 +1,4 @@
-.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status standby-bundle standby-pull demote failover rejoin standby-metrics standby-drill alerts-check gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes terraform-check
+.PHONY: help install test lint fmt shellcheck test-e2e test-e2e-tls run run-enroll worker beat db-up db-down db-logs ha-up ha-down ha-logs prod-up prod-down prod-logs prod-config migrate migrate-down migration db-backup prod-db-backup db-restore clean ui-install ui-dev ui-run ui-build ui-test ui-clean vault-up vault-down vault-logs vault-smoke vault-audit-bootstrap ssh-ca-bootstrap pki-bootstrap transit-bootstrap e2e-up e2e-down e2e-logs mysql-tls-issue certs-rotate certs-rotate-if-due host-export host-import db-counts vault-migrate-raft repl-primary-setup standby-up standby-down standby-seed standby-status standby-bundle standby-pull demote failover rejoin standby-metrics standby-drill alerts-check gitleaks pip-audit npm-audit bandit semgrep security backup-vault lockfiles evidence release-notes terraform-check cli-binary
 
 PYTHON := .venv/bin/python
 PYTEST := .venv/bin/pytest
@@ -91,6 +91,7 @@ help:
 	@echo "  lockfiles      Verify pyproject.toml/uv.lock + web/package*.json parity (Phase 2e cycle 3)"
 	@echo "  evidence       Generate SOC 2-style evidence pack into evidence/ (Phase 2e cycle 4)"
 	@echo "  release-notes  Preview the release-notes body for VERSION=vX.Y.Z (Phase 2f cycle 2)"
+	@echo "  cli-binary     Build the portable CLI binary dist/wg-manager-<os>-<arch> (CLI_TARGET=linux-x86_64|linux-aarch64|macos-aarch64)"
 	@echo "  node-bootstrap VPN-first node enrollment — see scripts/wg_bootstrap.sh --help"
 	@echo "  clean          Remove caches and build artifacts"
 
@@ -469,7 +470,7 @@ db-restore:
 	$(WG_MANAGER) db restore --input "$(i)" --drop-existing
 
 clean:
-	rm -rf .pytest_cache build dist *.egg-info src/*.egg-info
+	rm -rf .pytest_cache build dist .pex-cache *.egg-info src/*.egg-info
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 
 # ---------------------------------------------------------------------------
@@ -697,6 +698,27 @@ evidence:
 release-notes:
 	@if [ -z "$(VERSION)" ]; then echo "usage: make release-notes VERSION=vX.Y.Z"; exit 2; fi
 	$(PYTHON) scripts/extract_changelog.py "$(VERSION)"
+
+# Portable CLI binary: pypackager (github.com/jfudally/pypackager) wraps
+# `pex --scie eager`, embedding CPython 3.13 + the locked deps so the
+# binary runs on a host with no Python. Spec: packaging/wg-manager-cli.toml.
+# Builds natively only: CLI_TARGET defaults to this host's os-arch, and
+# python3.13 must be on PATH (`uv python install 3.13`). CI and the
+# release workflow run this target. See docs/release.md.
+#
+# pypackager is pinned to the v0.1.0 commit (a tag can move) and runs on
+# Python 3.14, which uvx fetches.
+#
+# --no-hashes: pip's hash mode requires every requirement pinned with ==,
+# and pex also passes pyproject.toml's ranges (--project). The export
+# still pins every dep to its uv.lock version.
+PYPACKAGER := uvx --python 3.14 --from git+https://github.com/jfudally/pypackager@0fbbef40e43d596c12a15d6ebb83e6ccc08c6fe3 pypackager
+CLI_TARGET ?= $(shell uname -s | tr A-Z a-z | sed 's/darwin/macos/')-$(shell uname -m | sed 's/arm64/aarch64/; s/amd64/x86_64/')
+
+cli-binary:
+	uv export --frozen --no-dev --no-emit-project --no-hashes -q -o build/cli-requirements.txt
+	$(PYPACKAGER) build -f packaging/wg-manager-cli.toml --target $(CLI_TARGET)
+	./dist/wg-manager-$(CLI_TARGET) --help >/dev/null
 
 # ---------------------------------------------------------------------------
 # Node enrollment — VPN-first bootstrap (scripts/wg_bootstrap.sh)

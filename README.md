@@ -75,6 +75,13 @@ Phase 3 (multi-tenant, HA, public API versioning, Helm/Terraform).
                               └────────────────────────────────┘
 ```
 
+## CLI binaries
+
+Every release attaches self-contained `wg-manager` CLI binaries for
+Linux (x86_64, aarch64) and macOS (Apple Silicon) that need no Python
+on the host. Build one locally with `make cli-binary`; see
+[docs/release.md → CLI binaries](docs/release.md#cli-binaries).
+
 ## Quickstart (local dev)
 
 ```bash

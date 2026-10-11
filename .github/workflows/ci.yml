@@ -134,6 +134,52 @@ jobs:
       - name: promtool
         run: make alerts-check
 
+  # Portable CLI binaries (pypackager -> pex --scie eager). Builds every
+  # target the release workflow ships, without publishing, and runs each
+  # one, so a dep that breaks the binary fails the PR, not the release.
+  # Each target builds on a runner of its own OS/arch (see
+  # packaging/wg-manager-cli.toml for why there's no cross-build). The
+  # ubuntu-22.04 runners keep the glibc floor at 2.35 (Debian 12,
+  # Ubuntu 22.04, Raspberry Pi OS bookworm).
+  cli-binary:
+    name: CLI binary (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x86_64
+            runner: ubuntu-22.04
+          - target: linux-aarch64
+            runner: ubuntu-22.04-arm
+          - target: macos-aarch64
+            runner: macos-15
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      # pex resolves wheels for this interpreter (the spec's --python).
+      - name: Install Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+
+      # Resolved wheels + downloaded interpreters. Branch runs only: the
+      # release workflow builds without a cache.
+      - name: Cache pex
+        uses: actions/cache@v6
+        with:
+          path: .pex-cache
+          key: pex-${{ matrix.target }}-${{ hashFiles('uv.lock', 'packaging/wg-manager-cli.toml') }}
+
+      - name: Build + smoke-run
+        run: make cli-binary CLI_TARGET="$CLI_TARGET"
+        env:
+          CLI_TARGET: ${{ matrix.target }}
+
   dashboard:
     name: Dashboard (tsc + vitest)
     runs-on: ubuntu-latest
