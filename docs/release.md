@@ -170,6 +170,11 @@ make cli-binary               # this host's target; CLI_TARGET=... to name it
   (`PYPACKAGER`). Bump it to a newer release's commit, not a tag.
 - CI's `cli-binary` job builds and smoke-runs (`--help`) every target
   on each PR, with a pex cache; the release builds without one.
+- **GitHub API quota.** pex's scie builder looks up
+  python-build-standalone releases on `api.github.com`. Both workflows
+  pass the job token as `SCIENCE_AUTH_API_GITHUB_COM_BEARER`; set it
+  locally (e.g. to `gh auth token`) if a build fails with
+  `403 rate limit exceeded`.
 
 To install a released binary:
 

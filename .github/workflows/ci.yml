@@ -179,6 +179,10 @@ jobs:
         run: make cli-binary CLI_TARGET="$CLI_TARGET"
         env:
           CLI_TARGET: ${{ matrix.target }}
+          # pex's scie builder looks up python-build-standalone releases
+          # on api.github.com; anonymously it shares the runner IP's
+          # 60/hour quota (a 403 failed the first run).
+          SCIENCE_AUTH_API_GITHUB_COM_BEARER: ${{ secrets.GITHUB_TOKEN }}
 
   dashboard:
     name: Dashboard (tsc + vitest)

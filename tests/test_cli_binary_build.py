@@ -194,3 +194,29 @@ class TestRelease:
 
     def test_footer_lists_the_binaries(self) -> None:
         assert "### CLI binaries" in RELEASE_PATH.read_text()
+
+
+def _build_step(job: dict) -> dict:
+    (step,) = [s for s in job["steps"] if s.get("run", "").startswith("make cli-binary")]
+    return step
+
+
+class TestGithubApiAuth:
+    """pex's scie builder (science) looks up the latest
+    python-build-standalone release on api.github.com. Anonymous calls
+    share the runner IP's 60/hour quota, and a 403 failed the first CI
+    run. science reads a bearer token from this variable."""
+
+    TOKEN_VAR = "SCIENCE_AUTH_API_GITHUB_COM_BEARER"
+
+    def test_ci_build_authenticates(self, job: dict) -> None:
+        assert _build_step(job)["env"][self.TOKEN_VAR] == "${{ secrets.GITHUB_TOKEN }}"
+
+    def test_release_build_authenticates(self, workflow: dict) -> None:
+        step = _build_step(workflow["jobs"]["build-cli"])
+        assert step["env"][self.TOKEN_VAR] == "${{ secrets.GITHUB_TOKEN }}"
+
+    def test_release_build_token_is_read_only(self, workflow: dict) -> None:
+        """The workflow grants contents/packages write; the build runs
+        third-party code (pypackager, pex, wheel builds) and needs none."""
+        assert workflow["jobs"]["build-cli"]["permissions"] == {"contents": "read"}

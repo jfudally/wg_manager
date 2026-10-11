@@ -83,6 +83,10 @@ jobs:
     name: Build CLI binary (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     needs: extract-notes
+    # Runs third-party build code (pypackager, pex, wheel builds): no
+    # write token. The upload uses the runtime token, not this one.
+    permissions:
+      contents: read
     # Same targets and runners as ci.yml's cli-binary job. The
     # ubuntu-22.04 runners keep the glibc floor at 2.35.
     strategy:
@@ -113,6 +117,10 @@ jobs:
         run: make cli-binary CLI_TARGET="$CLI_TARGET"
         env:
           CLI_TARGET: ${{ matrix.target }}
+          # pex's scie builder looks up python-build-standalone releases
+          # on api.github.com; anonymously it shares the runner IP's
+          # 60/hour quota (a 403 failed the first run).
+          SCIENCE_AUTH_API_GITHUB_COM_BEARER: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload binary
         uses: actions/upload-artifact@v7
