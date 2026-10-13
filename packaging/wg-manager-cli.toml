@@ -1,0 +1,44 @@
+# pypackager build spec for the portable wg-manager CLI binaries.
+#
+# pypackager (https://github.com/jfudally/pypackager) wraps
+# `pex --scie eager`: each binary embeds a CPython interpreter plus the
+# locked runtime deps, so `wg-manager` runs on a host with no Python.
+#
+# Build with `make cli-binary` (one target: the host's, or CLI_TARGET=..);
+# it exports uv.lock to build/cli-requirements.txt first. CI and the
+# release workflow call the same target. See docs/release.md.
+
+[app]
+project = "."
+name = "wg-manager"                # -> dist/wg-manager-<os>-<arch>
+console_script = "wg-manager"
+
+[build]
+scie = "eager"
+# The Python the Dockerfile and the CI test suite use.
+python_version = "3.13"
+output_dir = "dist"
+# --python: pypackager runs pex on its own 3.14 interpreter, and pex
+#   resolves wheels for the interpreter it's given. Without this it picks
+#   cp314 wheels (pydantic_core, cffi, ...) the embedded 3.13 can't load.
+# -r: the uv.lock export, so the binary ships the versions the tests ran
+#   against rather than whatever pyproject.toml's ranges resolve to today.
+extra_pex_args = ["--python", "python3.13", "-r", "build/cli-requirements.txt"]
+# Every target is built natively, on a host of its own OS/arch. Cross-
+# resolving with pex's abbreviated platforms fails: they can't evaluate
+# the `python_full_version` markers in the uv.lock export.
+auto_platform = false
+manifest = "dist/manifest.json"
+cache_dir = ".pex-cache"
+
+[[targets]]
+os = "linux"
+arch = "x86_64"
+
+[[targets]]
+os = "linux"
+arch = "aarch64"
+
+[[targets]]
+os = "macos"
+arch = "aarch64"

@@ -10,6 +10,18 @@ for any tagged releases. Pre-tag work lands under `## [Unreleased]`.
 
 ### Added
 
+- **Portable CLI binaries** on every release: `wg-manager-linux-x86_64`,
+  `wg-manager-linux-aarch64` (glibc 2.35+) and `wg-manager-macos-aarch64`,
+  plus a `SHA256SUMS` file. Each one embeds CPython 3.13 and the
+  `uv.lock` runtime deps, so it runs on a host with no Python. Built with
+  [pypackager](https://github.com/jfudally/pypackager) (`pex --scie
+  eager`) by the new `make cli-binary` target, from
+  `packaging/wg-manager-cli.toml`. CI builds and smoke-runs all three on
+  every PR (the `cli-binary` job); the release workflow's `build-cli` job
+  builds them again from scratch, and the image pushes wait for it, so a
+  binary that fails to build stops the release before anything reaches
+  GHCR.
+
 ## [v0.11.6] - 2026-10-10
 
 **Upgrading.** Nothing to do on the hosts: only the failover runbook
